@@ -273,7 +273,7 @@ actor CodexAppServerSessionRuntime {
         let baseProjects = try await projects()
         let projects = projectsIncludingWorkspace(baseProjects, workspace: workspace)
         let workspaceProject = workspace.project
-        let listCWD = threadListCWD(for: workspace, projects: baseProjects)
+        let listCWD = threadListCWD(for: workspace)
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: projects)
         let page = try await threadListPageWithIndexedFallback(
             cwd: listCWD,

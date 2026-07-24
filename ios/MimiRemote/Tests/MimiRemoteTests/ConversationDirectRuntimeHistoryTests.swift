@@ -1219,7 +1219,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(page.sessions.map(\.id), ["thr_cold_start"])
     }
 
-    func testCodexAppServerSessionRuntimeListsRootProjectForChildWorkspace() async throws {
+    func testCodexAppServerSessionRuntimeListsExactChildWorkspaceDirectory() async throws {
         let project = AgentProject(id: "proj_root_list", name: "Root List", path: "/tmp/root-list")
         let childWorkspace = AgentWorkspace(
             id: "ws_root_list_child",
@@ -1257,11 +1257,12 @@ extension ConversationDataFlowTests {
         let childMessages = try await waitForFakeAppServerMessages(transport, count: 3)
         let childList = try decodeAppServerRequest(childMessages[2])
         XCTAssertEqual(childList.method, "thread/list")
-        XCTAssertEqual(childList.params?.objectValue?["cwd"]?.stringValue, project.path)
-        transport.enqueue(#"{"id":\#(try jsonFragment(for: childList.id)),"result":{"data":[{"id":"thr_child_root_history","sessionId":"thr_child_root_history","preview":"root history","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"notLoaded"},"path":null,"cwd":"/tmp/root-list","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Root history","turns":[]}],"nextCursor":null,"backwardsCursor":null}}"#)
+        XCTAssertEqual(childList.params?.objectValue?["cwd"]?.stringValue, childWorkspace.path)
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: childList.id)),"result":{"data":[{"id":"thr_child_history","sessionId":"thr_child_history","preview":"child history","ephemeral":false,"modelProvider":"openai","createdAt":1780490300,"updatedAt":1780490301,"status":{"type":"notLoaded"},"path":null,"cwd":"/tmp/root-list/apps/ios","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"Child history","turns":[]}],"nextCursor":null,"backwardsCursor":null}}"#)
 
         let childPage = try await childPageTask.value
-        XCTAssertEqual(childPage.sessions.map(\.id), ["thr_child_root_history"])
+        XCTAssertEqual(childPage.sessions.map(\.id), ["thr_child_history"])
+        XCTAssertEqual(childPage.sessions.first?.projectID, childWorkspace.id)
 
         let worktreePageTask = Task {
             try await runtime.sessionsPage(workspace: worktreeWorkspace, cursor: nil, limit: 20)
