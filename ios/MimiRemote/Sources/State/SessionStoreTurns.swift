@@ -292,6 +292,7 @@ extension SessionStore {
     }
 
     func returnToSessionList() {
+        let previousSession = selectedSession
         let wasAlreadyOnList = selectedSessionID == nil
             && errorMessage == nil
             && connectedSessionID == nil
@@ -300,11 +301,15 @@ extension SessionStore {
             && pendingApprovalDecisionIDsBySessionID.isEmpty
             && pendingUserInputResponseIDsBySessionID.isEmpty
             && pendingUserInputRequestsBySessionID.isEmpty
+        // 返回列表即使是状态上的 no-op，也必须提交失效事件，使所有迟到的恢复/创建任务失去 lease。
+        _ = commitSelection(
+            projectID: selectedProjectID,
+            sessionID: nil,
+            reason: .invalidation
+        )
         guard !wasAlreadyOnList else {
             return
         }
-        let previousSession = selectedSession
-        setSelectedSessionID(nil)
         setErrorMessage(nil)
         disconnectWebSocket()
         if let previousSession, supportsCodexThreadManagement(previousSession) {
@@ -484,7 +489,13 @@ extension SessionStore {
     }
 
     /// 打开本地通知对应会话。安全边界：只允许当前 profile，最多做一次有界首屏刷新，绝不自动切 Mac。
-    func openSessionFromNotification(_ route: SessionNotificationRoute) async -> SessionNotificationOpenOutcome {
+    func openSessionFromNotification(
+        _ route: SessionNotificationRoute,
+        ifCurrent expectedLease: SessionSelectionLease? = nil
+    ) async -> SessionNotificationOpenOutcome {
+        if let expectedLease, !isSelectionLeaseCurrent(expectedLease) {
+            return .ignored
+        }
         let activeProfileID = appStore.notificationRoutingProfileID
         guard route.profileID == activeProfileID else {
             let profileName = appStore.connectionProfiles
@@ -499,6 +510,7 @@ extension SessionStore {
             setStatusMessage(message)
             return .requiresProfileSwitch(displayName: profileName)
         }
+        let selectionIntent = reserveSelectionIntent()
 
         let connectionGeneration = appStore.connectionGeneration
         var targetSession = sessionsByID[route.sessionID]
@@ -515,7 +527,8 @@ extension SessionStore {
                 )
                 if targetSession == nil {
                     guard connectionGeneration == appStore.connectionGeneration,
-                          route.profileID == appStore.notificationRoutingProfileID else {
+                          route.profileID == appStore.notificationRoutingProfileID,
+                          isSelectionLeaseCurrent(selectionIntent) else {
                         return .ignored
                     }
                     let message = L10n.text("ui.the_session_corresponding_to_the_notification_is_temporarily")
@@ -526,6 +539,9 @@ extension SessionStore {
                 if terminateConnectionIfCredentialsInvalid(error) {
                     return .unavailable(message: L10n.text("ui.the_current_connection_credentials_have_expired_please_re"))
                 }
+                guard isSelectionLeaseCurrent(selectionIntent) else {
+                    return .ignored
+                }
                 let message = L10n.text("ui.the_session_corresponding_to_the_notification_cannot_be")
                 setStatusMessage(message)
                 return .unavailable(message: message)
@@ -534,6 +550,7 @@ extension SessionStore {
 
         guard connectionGeneration == appStore.connectionGeneration,
               route.profileID == appStore.notificationRoutingProfileID,
+              isSelectionLeaseCurrent(selectionIntent),
               let targetSession,
               targetSession.id == route.sessionID,
               targetSession.projectID == route.projectID
@@ -541,9 +558,14 @@ extension SessionStore {
             return .ignored
         }
 
-        await selectSession(targetSession)
+        let didSelect = await selectSession(
+            targetSession,
+            reason: .notification,
+            ifCurrent: selectionIntent
+        )
         guard connectionGeneration == appStore.connectionGeneration,
               route.profileID == appStore.notificationRoutingProfileID,
+              didSelect,
               selectedSessionID == route.sessionID
         else {
             return .ignored
@@ -593,14 +615,26 @@ extension SessionStore {
         return target
     }
 
-    func selectSession(_ session: AgentSession) async {
-        if isNoOpHistorySelection(session) {
-            return
-        }
+    @discardableResult
+    func selectSession(
+        _ candidate: AgentSession,
+        reason: SessionSelectionCommit.Reason = .userOpen,
+        ifCurrent expectedLease: SessionSelectionLease? = nil
+    ) async -> Bool {
         let previousSession = selectedSession
-        let session = sessionForExplicitSelection(session)
-        setSelectedProjectID(session.projectID)
-        setSelectedSessionID(session.id)
+        let session = sessionForExplicitSelection(candidate)
+        let wasNoOpSelection = isNoOpHistorySelection(session)
+        guard let selectionLease = commitSelection(
+            projectID: session.projectID,
+            sessionID: session.id,
+            reason: reason,
+            ifCurrent: expectedLease
+        ) else {
+            return false
+        }
+        if wasNoOpSelection {
+            return true
+        }
         if let previousSession,
            previousSession.id != session.id,
            supportsCodexThreadManagement(previousSession) {
@@ -613,12 +647,16 @@ extension SessionStore {
         stopQueuedSessionMonitoring(sessionID: session.id)
         revealProjectInSidebar(session.projectID)
         setErrorMessage(nil)
+        if connectedSessionID != nil, connectedSessionID != session.id {
+            // 历史加载可能很慢；选择一提交就释放旧前台连接，避免“当前是 A、Socket 仍属于 B”。
+            disconnectWebSocket()
+        }
         conversationStore.retainSessionCache(sessionID: session.id)
         logStore.retainSessionCache(sessionID: session.id)
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else {
             setStatusMessage(L10n.format("ui.debug_session_value_selected", session.title))
-            return
+            return true
         }
 #endif
 
@@ -626,10 +664,12 @@ extension SessionStore {
             // 重新点回运行会话时，离开期间的输出先用 thread/read 快照一次性补齐；
             // 随后的 WebSocket 只回放状态级 backlog，避免消息区把旧 delta 逐条直播。
             let didRefreshHistory = await loadHistory(for: session)
+            guard isSelectionLeaseCurrent(selectionLease) else { return false }
             connectWebSocket(session, replayBufferedEvents: !didRefreshHistory)
         } else if session.isRunning {
             // 其他客户端正在运行：只读观察，不建立可发送的事件通道。
             await loadHistoryIfNeeded(for: session)
+            guard isSelectionLeaseCurrent(selectionLease) else { return false }
             disconnectWebSocket()
         } else {
             // 非运行会话有两种可能：真历史，或被瞬时 idle 误读降级的运行会话。
@@ -643,8 +683,10 @@ extension SessionStore {
             } else {
                 didRefreshHistory = await loadHistoryIfNeeded(for: session)
             }
+            guard isSelectionLeaseCurrent(selectionLease) else { return false }
             connectWebSocket(session, replayBufferedEvents: !didRefreshHistory, allowNonRunning: true)
         }
+        return true
     }
 
     // 新建会话在点击瞬间就急切创建空线程并绑定 runtime；不传 runtimeProvider 时由默认模型
@@ -1536,6 +1578,7 @@ extension SessionStore {
             return
         }
 
+        let foregroundSelectionLease = currentSelectionLease()
         let reconnectSessionID = appLifecycleSuspendedSessionID ?? networkSuspendedSessionID
         appLifecycleSuspendedSessionID = nil
         networkSuspendedSessionID = nil
@@ -1555,6 +1598,7 @@ extension SessionStore {
         guard connectionTermination == nil,
               !appStore.requiresRePairing,
               !isNetworkUnavailable,
+              isSelectionLeaseCurrent(foregroundSelectionLease),
               let reconnectSessionID,
               selectedSessionID == reconnectSessionID,
               let session = sessionsByID[reconnectSessionID],

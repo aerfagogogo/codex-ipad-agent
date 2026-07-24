@@ -1219,8 +1219,11 @@ extension SessionStore {
         sessions = sessions.filter { $0.projectID != project.id }
         clearWorkspaceUnavailable(project.id)
         if selectedProjectID == project.id {
-            setSelectedProjectID(nil)
-            setSelectedSessionID(nil)
+            _ = commitSelection(
+                projectID: nil,
+                sessionID: nil,
+                reason: .invalidation
+            )
             disconnectWebSocket()
         }
     }
@@ -1269,7 +1272,11 @@ extension SessionStore {
         }
     }
 
-    func handleWorkspaceLoadFailure(workspace: AgentWorkspace, error: Error) async {
+    func handleWorkspaceLoadFailure(
+        workspace: AgentWorkspace,
+        error: Error,
+        reportForeground: Bool = true
+    ) async {
         if terminateConnectionIfCredentialsInvalid(error) {
             return
         }
@@ -1279,6 +1286,7 @@ extension SessionStore {
                 "ui.session_list_retry_seconds_count",
                 count: policyFailure.retryAfterSeconds
             )
+            guard reportForeground else { return }
             if sessions(forProjectID: workspace.id).isEmpty {
                 // 首屏还没有可展示数据时保留一个友好错误标记，让 bootstrap 按 cooldown 继续自愈。
                 setStatusMessage(message)
@@ -1294,11 +1302,15 @@ extension SessionStore {
         case .unavailable(let message):
             markWorkspaceUnavailable(workspace.id)
             // 明确的不可用态：清掉全局错误，bootstrap 的退避重试不再死磕一个已失效的目录。
-            setErrorMessage(nil)
-            setStatusMessage(message)
+            if reportForeground {
+                setErrorMessage(nil)
+                setStatusMessage(message)
+            }
         case .available, .indeterminate:
             clearWorkspaceUnavailable(workspace.id)
-            setErrorMessage(error.localizedDescription)
+            if reportForeground {
+                setErrorMessage(error.localizedDescription)
+            }
         }
     }
 
@@ -1401,10 +1413,82 @@ extension SessionStore {
         rebuildProjectSessionListSnapshot(forProjectID: projectID)
     }
 
+    func currentSelectionLease() -> SessionSelectionLease {
+        SessionSelectionLease(
+            generation: selectionGeneration,
+            projectID: selectedProjectID,
+            sessionID: selectedSessionID
+        )
+    }
+
+    func isSelectionLeaseCurrent(_ lease: SessionSelectionLease) -> Bool {
+        lease == currentSelectionLease()
+    }
+
+    /// 为“点击通知后加载”“创建 Worktree 后打开”等延迟导航预留一次意图。
+    /// 后续任何用户选择都会推进代次，使旧请求完成时无法再提交导航。
+    @discardableResult
+    func reserveSelectionIntent() -> SessionSelectionLease {
+        selectionGeneration &+= 1
+        return currentSelectionLease()
+    }
+
+    @discardableResult
+    func commitSelection(
+        projectID: String?,
+        sessionID: SessionID?,
+        reason: SessionSelectionCommit.Reason,
+        ifCurrent lease: SessionSelectionLease? = nil
+    ) -> SessionSelectionLease? {
+        if let lease, !isSelectionLeaseCurrent(lease) {
+            return nil
+        }
+
+        selectionGeneration &+= 1
+        if selectedProjectID != projectID {
+            selectedProjectID = projectID
+        }
+        if selectedSessionID != sessionID {
+            selectedSessionID = sessionID
+        }
+        let committedLease = currentSelectionLease()
+        lastSelectionCommit = SessionSelectionCommit(
+            sequence: committedLease.generation,
+            projectID: projectID,
+            sessionID: sessionID,
+            reason: reason
+        )
+        return committedLease
+    }
+
+    /// optimistic/resume ID 只能替换自己持有的当前选择。数据迁移不依赖该结果，
+    /// 因而用户已经切走时仍可完成后台归档，但不会抢回页面或 WebSocket。
+    @discardableResult
+    func replaceSelectionIfCurrent(
+        from previousID: SessionID,
+        to session: AgentSession,
+        lease: SessionSelectionLease
+    ) -> SessionSelectionLease? {
+        guard isSelectionLeaseCurrent(lease),
+              selectedSessionID == previousID else {
+            return nil
+        }
+        guard previousID != session.id else {
+            return lease
+        }
+        return commitSelection(
+            projectID: session.projectID,
+            sessionID: session.id,
+            reason: .identityReplacement(previousID: previousID),
+            ifCurrent: lease
+        )
+    }
+
     func setSelectedProjectID(_ value: String?) {
         guard selectedProjectID != value else {
             return
         }
+        selectionGeneration &+= 1
         selectedProjectID = value
     }
 
@@ -1412,6 +1496,7 @@ extension SessionStore {
         guard selectedSessionID != value else {
             return
         }
+        selectionGeneration &+= 1
         selectedSessionID = value
     }
 
@@ -1468,8 +1553,11 @@ extension SessionStore {
         queuedTurnAwaitingStartSessionIDs.removeAll()
         queuedTurnBlockedCompletionIDBySessionID.removeAll()
         queuedGuidanceDispatchClientMessageIDs.removeAll()
-        setSelectedSessionID(nil)
-        setSelectedProjectID(nil)
+        _ = commitSelection(
+            projectID: nil,
+            sessionID: nil,
+            reason: .invalidation
+        )
         setProjectsIfChanged([])
         setRecentWorkspacesIfChanged([])
         setSidebarProjectsIfChanged([])

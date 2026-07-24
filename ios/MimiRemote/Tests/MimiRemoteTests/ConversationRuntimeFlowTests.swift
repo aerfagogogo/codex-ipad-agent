@@ -1769,6 +1769,10 @@ extension ConversationDataFlowTests {
         let sendSucceeded = await sendTask.value
         XCTAssertTrue(sendSucceeded)
         XCTAssertEqual(store.selectedSessionID, created.id)
+        XCTAssertEqual(
+            store.lastSelectionCommit?.reason,
+            .identityReplacement(previousID: optimisticSessionID)
+        )
         XCTAssertFalse(store.sessions.contains { $0.id == optimisticSessionID })
         XCTAssertTrue(conversationStore.messages(for: optimisticSessionID).isEmpty)
         let messages = conversationStore.messages(for: created.id)
@@ -1776,6 +1780,122 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(messages.first?.clientMessageID, clientMessageID)
         XCTAssertEqual(messages.first?.sendStatus, .confirmed)
         XCTAssertEqual(messages.first?.stableID, "client:\(clientMessageID)")
+    }
+
+    func testDelayedCreateMigratesOptimisticDataWithoutReclaimingSelectionOrSocket() async throws {
+        let project = makeProject(id: "proj_delayed_create_selection")
+        let second = makeSession(
+            id: "thread_user_selected_b",
+            projectID: project.id,
+            title: "B",
+            status: "history",
+            source: "codex"
+        )
+        let created = makeSession(
+            id: "thread_delayed_created_a",
+            projectID: project.id,
+            title: "A",
+            status: "running",
+            source: "codex"
+        )
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [second])
+        let conversationStore = ConversationStore()
+        let socket = MockWebSocketClient()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { socket }
+        )
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(second)
+
+        let createTask = Task {
+            await store.createSession(
+                projectID: project.id,
+                prompt: "创建 A",
+                resume: nil,
+                clientMessageID: "client-delayed-a"
+            )
+        }
+        await client.waitForCreateRequestCount(1)
+        let optimisticID = try XCTUnwrap(store.selectedSessionID)
+        XCTAssertTrue(optimisticID.hasPrefix("local:"))
+
+        await store.selectSession(second)
+        client.resolveCreate(with: .success(try makeCreateSessionResponse(session: created)))
+        let didCreate = await createTask.value
+        XCTAssertTrue(didCreate)
+
+        XCTAssertEqual(store.selectedSessionID, second.id)
+        XCTAssertEqual(store.connectedSessionID, second.id)
+        XCTAssertEqual(socket.connectedSessionIDs.last, second.id)
+        XCTAssertTrue(store.sessions.contains { $0.id == created.id })
+        XCTAssertFalse(store.sessions.contains { $0.id == optimisticID })
+        XCTAssertTrue(conversationStore.messages(for: optimisticID).isEmpty)
+        XCTAssertEqual(conversationStore.messages(for: created.id).map(\.content), ["创建 A"])
+    }
+
+    func testDelayedHistoryResumeCompletesWithoutReclaimingLaterSelection() async throws {
+        let project = makeProject(id: "proj_delayed_resume_selection")
+        let history = makeSession(
+            id: "thread_resume_source_a",
+            projectID: project.id,
+            title: "历史 A",
+            status: "history",
+            source: "codex",
+            resumeID: "resume-source-a"
+        )
+        let second = makeSession(
+            id: "thread_resume_selected_b",
+            projectID: project.id,
+            title: "用户 B",
+            status: "history",
+            source: "codex"
+        )
+        let resumed = makeSession(
+            id: "thread_resumed_real_a",
+            projectID: project.id,
+            title: "继续 A",
+            status: "running",
+            source: "codex"
+        )
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [history, second])
+        let conversationStore = ConversationStore()
+        let socket = MockWebSocketClient()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { socket }
+        )
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+
+        let resumeTask = Task {
+            await store.createSession(
+                projectID: project.id,
+                prompt: "继续处理 A",
+                resume: history,
+                clientMessageID: "client-resume-a"
+            )
+        }
+        await client.waitForCreateRequestCount(1)
+        XCTAssertEqual(store.selectedSessionID, history.id)
+
+        await store.selectSession(second)
+        client.resolveCreate(with: .success(try makeCreateSessionResponse(session: resumed)))
+        let didResume = await resumeTask.value
+
+        XCTAssertTrue(didResume)
+        XCTAssertEqual(store.selectedSessionID, second.id)
+        XCTAssertEqual(store.connectedSessionID, second.id)
+        XCTAssertEqual(socket.connectedSessionIDs.last, second.id)
+        XCTAssertTrue(store.sessions.contains { $0.id == resumed.id })
+        XCTAssertEqual(conversationStore.messages(for: resumed.id).map(\.content), ["继续处理 A"])
     }
 
     func testNewSessionPromptFailureKeepsFailedLocalEcho() async throws {

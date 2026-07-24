@@ -43,7 +43,7 @@ enum WorkbenchNavigationEffect: Equatable {
 enum WorkbenchNavigationEvent: Equatable {
     case open(AppDestination, source: WorkbenchRootPage?)
     case synchronize(WorkbenchRestorationRoute)
-    case selectedSessionChanged(SessionID?)
+    case selectionCommitted(SessionSelectionCommit)
     case compactPathChanged(tab: CompactWorkbenchTab, path: [AppDestination])
     case compactTabChanged(CompactWorkbenchTab)
     case sessionSelectionFinished(SessionID)
@@ -110,19 +110,56 @@ struct WorkbenchNavigationState: Equatable {
             restoreCompactPath(for: restoredRoute)
             return nil
 
-        case .selectedSessionChanged(let sessionID):
+        case .selectionCommitted(let commit):
             pendingSessionSelectionID = nil
-            guard let sessionID else {
+            switch commit.reason {
+            case .invalidation:
                 guard route.detailSessionID != nil else { return nil }
                 applyRoot(route.rootPage, usesCompactNavigation: usesCompactNavigation)
-                return nil
+
+            case .identityReplacement(let previousID):
+                guard route.detailSessionID == previousID,
+                      let sessionID = commit.sessionID else { return nil }
+                applySession(
+                    sessionID,
+                    source: route.rootPage,
+                    usesCompactNavigation: usesCompactNavigation,
+                    replacesCompactPath: true
+                )
+
+            case .restoration:
+                // Root 只允许仍与启动快照一致的恢复提交；这里再约束一次，
+                // 防止恢复结果把用户后来进入的列表或其他详情重新覆盖。
+                guard let sessionID = commit.sessionID,
+                      route.detailSessionID == sessionID else { return nil }
+                applySession(
+                    sessionID,
+                    source: route.rootPage,
+                    usesCompactNavigation: usesCompactNavigation,
+                    replacesCompactPath: true
+                )
+
+            case .notification:
+                guard let sessionID = commit.sessionID else { return nil }
+                applySession(
+                    sessionID,
+                    source: .sessions,
+                    usesCompactNavigation: usesCompactNavigation,
+                    replacesCompactPath: false
+                )
+
+            case .userOpen:
+                guard let sessionID = commit.sessionID else { return nil }
+                let source = route.detailSessionID == sessionID
+                    ? route.rootPage
+                    : (usesCompactNavigation ? activeRootPage : route.rootPage)
+                applySession(
+                    sessionID,
+                    source: source,
+                    usesCompactNavigation: usesCompactNavigation,
+                    replacesCompactPath: false
+                )
             }
-            applySession(
-                sessionID,
-                source: usesCompactNavigation ? activeRootPage : route.rootPage,
-                usesCompactNavigation: usesCompactNavigation,
-                replacesCompactPath: false
-            )
             return nil
 
         case .compactPathChanged(let tab, let path):
@@ -272,7 +309,9 @@ struct WorkbenchNavigationState: Equatable {
     ) -> WorkbenchNavigationEffect? {
         switch destination {
         case .sessions, .workspaces:
-            return selectedSessionID == nil ? nil : .returnToSessionList
+            // 返回列表本身就是显式用户意图；即使当前 ID 已为空也要推进选择代次，
+            // 让仍在等待的恢复、通知和创建任务立即失效。
+            return .returnToSessionList
         case .session(let sessionID):
             guard selectedSessionID != sessionID,
                   pendingSessionSelectionID != sessionID else { return nil }
@@ -390,8 +429,9 @@ struct UnifiedWorkbenchShell: View {
                 guard usesCompactNavigation else { return }
                 synchronizeNavigation(for: layout)
             }
-            .onChange(of: sessionStore.selectedSessionID) { _, sessionID in
-                handleSelectedSessionChange(sessionID, layout: layout)
+            .onChange(of: sessionStore.lastSelectionCommit) { _, commit in
+                guard let commit else { return }
+                handleSelectionCommit(commit, layout: layout)
             }
             .onChange(of: restorationRoute) { _, route in
                 guard navigationState.route != route else { return }
@@ -856,15 +896,11 @@ struct UnifiedWorkbenchShell: View {
         applyNavigation(.synchronize(restorationRoute), layout: layout)
     }
 
-    private func handleSelectedSessionChange(
-        _ sessionID: SessionID?,
+    private func handleSelectionCommit(
+        _ commit: SessionSelectionCommit,
         layout: WorkbenchLayout
     ) {
-        if sessionID == nil, presentedSheet == .newSession {
-            // 新建流程会先清空旧 ID，再写入 local:*；中间态不能把详情先 pop 回根页面。
-            return
-        }
-        applyNavigation(.selectedSessionChanged(sessionID), layout: layout)
+        applyNavigation(.selectionCommitted(commit), layout: layout)
     }
 
     private func applyNavigation(

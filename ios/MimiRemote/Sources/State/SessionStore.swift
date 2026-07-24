@@ -48,6 +48,8 @@ final class SessionStore: ObservableObject {
     @Published var sessionRemindersByID: [SessionID: SessionReminder] = [:]
     @Published var selectedProjectID: String?
     @Published var selectedSessionID: String?
+    /// 路由只监听明确的导航提交，不再把后台数据更新等同于“打开会话”。
+    @Published var lastSelectionCommit: SessionSelectionCommit?
     @Published var sessionSearchQuery = "" {
         didSet {
             guard oldValue != sessionSearchQuery else {
@@ -155,6 +157,7 @@ final class SessionStore: ObservableObject {
     let sessionSearchSleep: (UInt64) async throws -> Void
     var webSocket: (any SessionWebSocketClient)?
     var connectedSessionID: String?
+    var selectionGeneration: UInt64 = 0
     var webSocketConnectionGeneration = 0
     var webSocketReconnectTask: Task<Void, Never>?
     var webSocketReconnectAttemptBySessionID: [SessionID: Int] = [:]

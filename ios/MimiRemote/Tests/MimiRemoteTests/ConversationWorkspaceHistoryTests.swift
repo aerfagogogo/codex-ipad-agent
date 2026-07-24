@@ -2555,6 +2555,65 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
+    func testLateHistoryLoadFromPreviousSelectionCannotDisconnectOrReplaceCurrentSocket() async {
+        let project = makeProject(id: "proj_history_selection_lease")
+        let first = makeSession(
+            id: "thread_history_first",
+            projectID: project.id,
+            title: "A",
+            status: "history",
+            source: "codex"
+        )
+        let second = makeSession(
+            id: "thread_history_second",
+            projectID: project.id,
+            title: "B",
+            status: "history",
+            source: "codex"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [first, second])
+        )
+        let socket = MockWebSocketClient()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { socket }
+        )
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+
+        let firstSelection = Task { await store.selectSession(first) }
+        await client.waitForHistoryRequestCount(1)
+        let secondSelection = Task { await store.selectSession(second) }
+        await client.waitForHistoryRequestCount(2)
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(
+                    id: "rollout:second",
+                    role: "assistant",
+                    content: "B 历史",
+                    createdAt: Date(timeIntervalSince1970: 20)
+                )
+            ])
+        )
+        _ = await secondSelection.value
+        XCTAssertEqual(store.connectedSessionID, second.id)
+
+        client.failHistoryRequest(at: 0, with: MockError.timeout)
+        _ = await firstSelection.value
+
+        XCTAssertEqual(store.selectedSessionID, second.id)
+        XCTAssertEqual(store.connectedSessionID, second.id)
+        XCTAssertEqual(socket.connectedSessionIDs.last, second.id)
+        XCTAssertFalse(store.statusMessage?.contains("完整历史加载失败") == true)
+    }
+
     func testConcurrentRunningHistoryFirstPageLoadsCoalesceRequest() async {
         let project = makeProject(id: "proj_1")
         let running = makeSession(id: "codex_running", projectID: project.id, title: "运行中", status: "running", source: "codex")

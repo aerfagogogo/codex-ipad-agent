@@ -15,6 +15,8 @@ struct RootView: View {
     @SceneStorage("root.workbenchRoute.v1") private var workbenchRouteStorage = WorkbenchRestorationRoute.defaultStorageValue
     @State private var notificationRouteAlertMessage: String?
     @State private var hasCompletedInitialBootstrap = false
+    @State private var workbenchRouteRevision: UInt64 = 0
+    @State private var pendingNotificationRouteRevision: UInt64?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -28,20 +30,46 @@ struct RootView: View {
             }
         }
         .task {
+            defer { hasCompletedInitialBootstrap = true }
 #if targetEnvironment(macCatalyst)
             // Catalyst 先完成本机选路，再创建首批 REST/WebSocket client；否则并行 bootstrap
             // 可能已经拿 Tailscale 地址建好 runtime，导致本次启动无法真正切到 loopback。
             await appStore.preflightConnection()
 #endif
-            let requestedDetailSessionID = workbenchRoute.detailSessionID
+            let requestedRoute = workbenchRoute
+            let requestedRouteRevision = workbenchRouteRevision
             let requestedSnapshot = decodedSessionRestoreSnapshot
-            let didRestoreRequestedSession = await sessionStore.bootstrap(restoring: requestedSnapshot)
-            if requestedDetailSessionID != nil,
-               (requestedSnapshot == nil || !didRestoreRequestedSession) {
-                // endpoint、工作区或会话快照失效时安全回到列表，不能保留一个空详情路由。
-                setWorkbenchRoute(.sessions)
+            await sessionStore.bootstrap()
+
+            guard workbenchRoute == requestedRoute,
+                  workbenchRouteRevision == requestedRouteRevision else {
+                return
             }
-            hasCompletedInitialBootstrap = true
+            guard requestedRoute.detailSessionID != nil else {
+                return
+            }
+            guard let requestedSnapshot else {
+                // endpoint 或快照失效时安全回到列表，但不能覆盖 bootstrap 期间产生的新导航。
+                setWorkbenchRoute(.sessions)
+                return
+            }
+
+            let restoreLease = sessionStore.currentSelectionLease()
+            let restoredSession = await sessionStore.resolveSessionForRestore(requestedSnapshot)
+            guard workbenchRoute == requestedRoute,
+                  workbenchRouteRevision == requestedRouteRevision,
+                  sessionStore.isSelectionLeaseCurrent(restoreLease) else {
+                return
+            }
+            guard let restoredSession else {
+                setWorkbenchRoute(.sessions)
+                return
+            }
+            _ = await sessionStore.selectSession(
+                restoredSession,
+                reason: .restoration,
+                ifCurrent: restoreLease
+            )
         }
         .task {
 #if targetEnvironment(macCatalyst)
@@ -52,13 +80,27 @@ struct RootView: View {
 #endif
         }
         .task(id: notificationRouteTaskID) {
-            // 冷启动恢复必须先结束，否则 restoreSessionIfPossible 可能覆盖通知刚选中的会话。
-            // bootstrap 完成前不 consume；完成状态变化会连同 pending route 重新触发此 task。
-            guard hasCompletedInitialBootstrap,
-                  let route = notificationResponseAdapter.pendingRoute else { return }
+            guard let route = notificationResponseAdapter.pendingRoute else {
+                pendingNotificationRouteRevision = nil
+                return
+            }
+            // 记录通知到达时的内容路由。bootstrap 自己可能补齐默认项目，因此不能保存它之前的
+            // selection lease；用户真正去往别处会推进 route revision，仍可淘汰这条旧通知。
+            guard hasCompletedInitialBootstrap else {
+                if pendingNotificationRouteRevision == nil {
+                    pendingNotificationRouteRevision = workbenchRouteRevision
+                }
+                return
+            }
+            let expectedRouteRevision = pendingNotificationRouteRevision ?? workbenchRouteRevision
             // 先消费再做网络操作；新点击可独立入队，不会被旧任务结束时误清。
             notificationResponseAdapter.consume(route)
-            await handleNotificationRoute(route)
+            pendingNotificationRouteRevision = nil
+            guard expectedRouteRevision == workbenchRouteRevision else {
+                return
+            }
+            let expectedSelectionLease = sessionStore.currentSelectionLease()
+            await handleNotificationRoute(route, ifCurrent: expectedSelectionLease)
         }
         .task(id: scenePhase == .active ? sessionStore.selectedProjectID : nil) {
             guard scenePhase == .active else {
@@ -110,8 +152,11 @@ struct RootView: View {
         )
     }
 
-    private func handleNotificationRoute(_ route: SessionNotificationRoute) async {
-        switch await sessionStore.openSessionFromNotification(route) {
+    private func handleNotificationRoute(
+        _ route: SessionNotificationRoute,
+        ifCurrent selectionLease: SessionSelectionLease
+    ) async {
+        switch await sessionStore.openSessionFromNotification(route, ifCurrent: selectionLease) {
         case .opened:
             selectedAppTabRawValue = AppTab.sessions.rawValue
         case .requiresProfileSwitch(let displayName):
@@ -146,6 +191,8 @@ struct RootView: View {
     }
 
     private func setWorkbenchRoute(_ route: WorkbenchRestorationRoute) {
+        guard workbenchRoute != route else { return }
+        workbenchRouteRevision &+= 1
         workbenchRouteStorage = route.storageValue
         if route.detailSessionID == nil {
             // 用户已经真实离开详情页；旧快照继续存在会让下次冷启动再次进入会话。

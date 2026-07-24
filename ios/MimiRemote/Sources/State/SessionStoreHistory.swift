@@ -23,18 +23,24 @@ extension SessionStore {
         payload: CodexAppServerTurnPayload,
         resume: AgentSession?,
         clientMessageID: ClientMessageID? = nil,
-        initialGoalObjective: String? = nil
+        initialGoalObjective: String? = nil,
+        ifCurrent expectedSelectionLease: SessionSelectionLease? = nil
     ) async -> Bool {
+        let createIntent = expectedSelectionLease ?? reserveSelectionIntent()
         // 空会话只执行 thread/start，没有 turn/start；提前拉 model/list 既不会影响线程创建，
         // 还会在远程链路上平白增加一次串行往返。只有真正要发送首轮输入时才解析模型。
         let payload = payload.isEmpty ? payload : await payloadResolvingRequiredModel(payload)
         if !payload.isEmpty, let notice = selectedQuotaNotice, notice.blocksSending {
-            setErrorMessage(notice.message)
+            if isSelectionLeaseCurrent(createIntent) {
+                setErrorMessage(notice.message)
+            }
             return false
         }
         var projectID = projectID
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
-            setErrorMessage(L10n.text("ui.the_workspace_has_expired_please_reopen_it"))
+            if isSelectionLeaseCurrent(createIntent) {
+                setErrorMessage(L10n.text("ui.the_workspace_has_expired_please_reopen_it"))
+            }
             return false
         }
         projectID = workspace.id
@@ -47,6 +53,7 @@ extension SessionStore {
             clientMessageID: clientMessageID,
             prompt: prompt
         ) ?? (resume == nil && payload.isEmpty ? "local:\(projectID):\(UUID().uuidString)" : nil)
+        var optimisticSelectionLease: SessionSelectionLease?
         if let optimisticSessionID {
             // 空会话也先发布本地占位，让 UI 立即离开创建弹窗；带首轮输入时继续用
             // client_message_id 合并本地气泡，服务端确认后再迁移到真实 session_id。
@@ -58,8 +65,12 @@ extension SessionStore {
                     runtimeProvider: payload.options.runtimeProvider
                 ))
             }
-            setSelectedProjectID(projectID)
-            setSelectedSessionID(optimisticSessionID)
+            optimisticSelectionLease = commitSelection(
+                projectID: projectID,
+                sessionID: optimisticSessionID,
+                reason: .userOpen,
+                ifCurrent: createIntent
+            )
             insertExpandedProjectID(projectID)
             if let clientMessageID {
                 conversationStore.appendLocalUser(prompt, sessionID: optimisticSessionID, clientMessageID: clientMessageID, sendStatus: .sending, turnPayload: payload)
@@ -112,16 +123,39 @@ extension SessionStore {
             }
             upsert(responseSession)
             setSessionControlState(resume == nil ? .ipadOwned : .takenOver, sessionID: responseSession.id)
-            setSelectedProjectID(responseSession.projectID)
-            setSelectedSessionID(responseSession.id)
             insertExpandedProjectID(responseSession.projectID)
+
+            let responseSelectionLease: SessionSelectionLease?
+            if let optimisticSessionID, let optimisticSelectionLease {
+                if optimisticSessionID == responseSession.id {
+                    responseSelectionLease = isSelectionLeaseCurrent(optimisticSelectionLease)
+                        ? optimisticSelectionLease
+                        : nil
+                } else {
+                    responseSelectionLease = replaceSelectionIfCurrent(
+                        from: optimisticSessionID,
+                        to: responseSession,
+                        lease: optimisticSelectionLease
+                    )
+                }
+            } else {
+                responseSelectionLease = commitSelection(
+                    projectID: responseSession.projectID,
+                    sessionID: responseSession.id,
+                    reason: .userOpen,
+                    ifCurrent: createIntent
+                )
+            }
 
             // 历史 resume 必须先补齐上下文，再追加本次用户输入，避免“发完历史没了”；
             // 带首轮 prompt 的新会话也保留 thread/read 快照，用它校准后续事件回放。
             // 新建空交互会话没有历史可补；启动后立刻请求完整历史容易撞上后端 thread/read
             // 初始化窗口并误报“大历史加载失败”，因此只跳过这类空会话的首屏补拉。
             let didLoadInitialHistory: Bool
-            if hasLoadedFullHistorySnapshot(sessionID: responseSession.id) {
+            if responseSelectionLease == nil {
+                // 用户已经切走：保留服务端创建结果和本地投影，历史在再次打开时按需补拉。
+                didLoadInitialHistory = false
+            } else if hasLoadedFullHistorySnapshot(sessionID: responseSession.id) {
                 // 用户刚从历史列表进入时可复用已有快照，避免同一会话立刻再打一次 full。
                 didLoadInitialHistory = true
             } else if resume != nil || !payload.isEmpty {
@@ -159,11 +193,14 @@ extension SessionStore {
             }
             // 历史已成为 canonical 快照后，WS 只需要补连接状态；否则 buffered content replay
             // 会把同一 turn 的过程卡再次 append 到时间线。历史加载失败时仍保留 replay，避免漏消息。
-            let shouldReplayBufferedEvents = resume == nil || !didLoadInitialHistory
-            connectWebSocket(responseSession, replayBufferedEvents: shouldReplayBufferedEvents)
-            // 恢复反馈属于页面生命周期状态，不是服务端 transcript 内容，避免它参与历史排序。
-            setStatusMessage(resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"))
-            setErrorMessage(nil)
+            if let responseSelectionLease,
+               isSelectionLeaseCurrent(responseSelectionLease) {
+                let shouldReplayBufferedEvents = resume == nil || !didLoadInitialHistory
+                connectWebSocket(responseSession, replayBufferedEvents: shouldReplayBufferedEvents)
+                // 恢复反馈属于页面生命周期状态，不是服务端 transcript 内容，避免它参与历史排序。
+                setStatusMessage(resume == nil ? L10n.text("ui.session_started") : L10n.text("ui.this_historical_conversation_has_been_continued"))
+                setErrorMessage(nil)
+            }
             return true
         } catch {
             if let optimisticSessionID {
@@ -177,7 +214,10 @@ extension SessionStore {
                 }
                 clearForegroundActivity(sessionID: optimisticSessionID)
             }
-            setErrorMessage(error.localizedDescription)
+            if let optimisticSelectionLease,
+               isSelectionLeaseCurrent(optimisticSelectionLease) {
+                setErrorMessage(error.localizedDescription)
+            }
             return false
         }
     }
@@ -292,7 +332,8 @@ extension SessionStore {
             allowPolicyRetry: allowPolicyRetry,
             task: task,
             requiresForegroundReporting: !quiet,
-            foregroundSuccessStatusMessage: quiet ? nil : successStatusMessage
+            foregroundSuccessStatusMessage: quiet ? nil : successStatusMessage,
+            foregroundSelectionLease: quiet ? nil : currentSelectionLease()
         )
         historyLoadJobsBySessionID[session.id] = job
         if !quiet {
@@ -323,6 +364,7 @@ extension SessionStore {
             return
         }
         current.requiresForegroundReporting = true
+        current.foregroundSelectionLease = currentSelectionLease()
         if let successStatusMessage {
             current.foregroundSuccessStatusMessage = successStatusMessage
         }
@@ -390,7 +432,9 @@ extension SessionStore {
             // 当前 job 已被用户选择 summary 或新的刷新取代；旧结果可以完成，但不能覆盖界面。
             return historyLoadedSignatureBySessionID[sessionID] == job.sessionSignature
         }
-        let effectiveQuiet = quiet && !current.requiresForegroundReporting
+        let hasCurrentForegroundOwner = current.foregroundSelectionLease
+            .map(isSelectionLeaseCurrent) ?? false
+        let effectiveQuiet = !current.requiresForegroundReporting || !hasCurrentForegroundOwner
         let effectiveSuccessStatusMessage = current.foregroundSuccessStatusMessage ?? successStatusMessage
         historyLoadJobsBySessionID.removeValue(forKey: sessionID)
         guard isCurrentHistoryPageRequest(sessionID: sessionID, token: result.token) else {
@@ -427,7 +471,9 @@ extension SessionStore {
         guard let current = historyLoadJobsBySessionID[sessionID], current.token == job.token else {
             return false
         }
-        let effectiveQuiet = quiet && !current.requiresForegroundReporting
+        let hasCurrentForegroundOwner = current.foregroundSelectionLease
+            .map(isSelectionLeaseCurrent) ?? false
+        let effectiveQuiet = !current.requiresForegroundReporting || !hasCurrentForegroundOwner
         historyLoadJobsBySessionID.removeValue(forKey: sessionID)
         if error is CancellationError {
             return false
@@ -802,11 +848,17 @@ extension SessionStore {
         reportErrorOnFailure: Bool = true,
         reuseRecent: Bool? = nil,
         consistency: SessionListConsistency = .fastIndexed,
-        activatesProject: Bool = true
+        activatesProject: Bool = true,
+        foregroundLease: SessionSelectionLease? = nil
     ) async {
+        let canReportForeground: () -> Bool = {
+            foregroundLease.map(self.isSelectionLeaseCurrent) ?? true
+        }
         var projectID = projectID
         guard let workspace = ensureWorkspaceForKnownProjectID(projectID) else {
-            setErrorMessage(L10n.text("ui.the_workspace_has_expired_please_reopen_it"))
+            if canReportForeground() {
+                setErrorMessage(L10n.text("ui.the_workspace_has_expired_please_reopen_it"))
+            }
             return
         }
         projectID = workspace.id
@@ -842,11 +894,11 @@ extension SessionStore {
             replaceSessionsIfChanged(with: pageSessionsPreservingLoadedWindow(pageSessions, projectID: projectID), projectID: projectID)
             updateSessionPageState(projectID: projectID, page: page)
             clearWorkspaceUnavailable(projectID)
-            if updateStatusMessage {
+            if updateStatusMessage, canReportForeground() {
                 setStatusMessage(L10n.plural("ui.sessions_loaded_count", count: filteredSessions.count))
             }
             // 手动刷新/切换工作区成功时可以清掉旧错误；发送后的后台刷新不能抢掉刚产生的发送失败提示。
-            if clearErrorOnSuccess {
+            if clearErrorOnSuccess, canReportForeground() {
                 setErrorMessage(nil)
             }
         } catch {
@@ -854,7 +906,11 @@ extension SessionStore {
                 return
             }
             if reportErrorOnFailure, selectedProjectID == projectID {
-                await handleWorkspaceLoadFailure(workspace: workspace, error: error)
+                await handleWorkspaceLoadFailure(
+                    workspace: workspace,
+                    error: error,
+                    reportForeground: canReportForeground()
+                )
             }
         }
     }
@@ -1024,8 +1080,14 @@ extension SessionStore {
         sessionListCooldownUntilByBudgetKey.removeValue(forKey: sessionListBudgetKey(for: workspace))
     }
 
-    func prepareSelectedSessionAfterRefresh(_ session: AgentSession, autoAttach: Bool) async {
+    func prepareSelectedSessionAfterRefresh(
+        _ session: AgentSession,
+        autoAttach: Bool,
+        selectionLease: SessionSelectionLease
+    ) async {
+        guard isSelectionLeaseCurrent(selectionLease) else { return }
         await loadHistoryIfNeeded(for: session)
+        guard isSelectionLeaseCurrent(selectionLease) else { return }
         if session.isRunning {
             if autoAttach && canControlSession(session) {
                 // 前台恢复会反复走到这里；已加载会话的 loadHistoryIfNeeded 是 no-op，此时若做

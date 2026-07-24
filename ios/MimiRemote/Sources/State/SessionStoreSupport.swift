@@ -110,6 +110,7 @@ struct HistoryLoadJob {
     let task: Task<HistoryFirstPageResult, Error>
     var requiresForegroundReporting: Bool
     var foregroundSuccessStatusMessage: String?
+    var foregroundSelectionLease: SessionSelectionLease?
 }
 
 struct ProjectSessionListSnapshot: Equatable {
@@ -819,6 +820,29 @@ struct HistoryLoadProgress: Equatable {
 struct SessionRestoreSnapshot: Codable, Equatable {
     let endpoint: String
     let session: AgentSession
+}
+
+/// 跨 await 的前台选择凭证。除了代次，还同时校验项目和会话，避免同一 ID
+/// 在工作区切换、身份替换等场景下被误认为仍是当前选择。
+struct SessionSelectionLease: Equatable {
+    let generation: UInt64
+    let projectID: String?
+    let sessionID: SessionID?
+}
+
+struct SessionSelectionCommit: Equatable {
+    enum Reason: Equatable {
+        case userOpen
+        case notification
+        case restoration
+        case identityReplacement(previousID: SessionID)
+        case invalidation
+    }
+
+    let sequence: UInt64
+    let projectID: String?
+    let sessionID: SessionID?
+    let reason: Reason
 }
 
 enum WorkbenchRootPage: String, Codable, Equatable {

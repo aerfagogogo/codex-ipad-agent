@@ -480,8 +480,11 @@ extension SessionStore {
         sessions = sessions.filter { $0.projectID != project.id }
         clearWorkspaceUnavailable(project.id)
         if selectedProjectID == project.id {
-            setSelectedProjectID(nil)
-            setSelectedSessionID(nil)
+            _ = commitSelection(
+                projectID: nil,
+                sessionID: nil,
+                reason: .invalidation
+            )
             disconnectWebSocket()
         }
         setStatusMessage(L10n.format("ui.value_has_been_removed_from_the_current_device", project.name))
@@ -716,8 +719,11 @@ extension SessionStore {
 
         insertExpandedProjectID(workspace.id)
         if selectedProjectID != workspace.id {
-            setSelectedProjectID(workspace.id)
-            setSelectedSessionID(nil)
+            _ = commitSelection(
+                projectID: workspace.id,
+                sessionID: nil,
+                reason: .invalidation
+            )
             setErrorMessage(nil)
             disconnectWebSocket()
         }

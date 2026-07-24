@@ -640,6 +640,142 @@ extension ConversationDataFlowTests {
         XCTAssertNil(store.errorMessage)
     }
 
+    func testRefreshAllLateResponseDoesNotReplaceNewSelectionInSameProject() async {
+        let project = makeProject(id: "proj_refresh_selection_lease")
+        let first = makeSession(
+            id: "thread_refresh_first",
+            projectID: project.id,
+            title: "A",
+            status: "history",
+            source: "codex"
+        )
+        let second = makeSession(
+            id: "thread_refresh_second",
+            projectID: project.id,
+            title: "B",
+            status: "history",
+            source: "codex"
+        )
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: [first, second])
+        )
+        let socket = MockWebSocketClient()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { socket }
+        )
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(first)
+
+        let refreshTask = Task { await store.refreshAll(autoAttach: true) }
+        await client.waitForBlockedSessionListRefresh()
+        await store.selectSession(second)
+        client.releaseBlockedSessionListRefresh()
+        await refreshTask.value
+
+        XCTAssertEqual(store.selectedProjectID, project.id)
+        XCTAssertEqual(store.selectedSessionID, second.id)
+        XCTAssertEqual(store.connectedSessionID, second.id)
+        XCTAssertEqual(socket.connectedSessionIDs.last, second.id)
+    }
+
+    func testRefreshAllLateResponseMergesOldProjectWithoutReplacingNewProjectSelection() async {
+        let firstProject = makeProject(id: "proj_refresh_old")
+        let secondProject = makeProject(id: "proj_refresh_new")
+        let first = makeSession(
+            id: "thread_refresh_old",
+            projectID: firstProject.id,
+            title: "A",
+            status: "history",
+            source: "codex"
+        )
+        let second = makeSession(
+            id: "thread_refresh_new",
+            projectID: secondProject.id,
+            title: "B",
+            status: "history",
+            source: "codex"
+        )
+        let client = BlockingSessionListRefreshClient(
+            projects: [firstProject, secondProject],
+            page: SessionsPage(sessions: [first])
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { MockWebSocketClient() }
+        )
+        store.selectedProjectID = firstProject.id
+        await store.refreshAll(autoAttach: false)
+        _ = store.ensureWorkspace(for: secondProject)
+        store.upsert(second)
+        await store.selectSession(first)
+
+        let refreshTask = Task { await store.refreshAll(autoAttach: true) }
+        await client.waitForBlockedSessionListRefresh()
+        await store.selectSession(second)
+        client.releaseBlockedSessionListRefresh()
+        await refreshTask.value
+
+        XCTAssertEqual(store.selectedProjectID, secondProject.id)
+        XCTAssertEqual(store.selectedSessionID, second.id)
+        XCTAssertEqual(store.connectedSessionID, second.id)
+        XCTAssertTrue(store.sessions.contains { $0.id == first.id })
+    }
+
+    func testForegroundResumeLateRefreshKeepsUserSelectionAndSocket() async {
+        let project = makeProject(id: "proj_foreground_selection_lease")
+        let first = makeSession(
+            id: "thread_foreground_first",
+            projectID: project.id,
+            title: "A",
+            status: "history",
+            source: "codex"
+        )
+        let second = makeSession(
+            id: "thread_foreground_second",
+            projectID: project.id,
+            title: "B",
+            status: "history",
+            source: "codex"
+        )
+        let client = BlockingSessionListRefreshClient(
+            projects: [project],
+            page: SessionsPage(sessions: [first, second])
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let socket = MockWebSocketClient()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: { socket }
+        )
+        store.selectedProjectID = project.id
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(first)
+        store.suspendForBackground()
+
+        let resumeTask = Task { await store.resumeFromForeground() }
+        await client.waitForBlockedSessionListRefresh()
+        await store.selectSession(second)
+        client.releaseBlockedSessionListRefresh()
+        await resumeTask.value
+
+        XCTAssertEqual(store.selectedSessionID, second.id)
+        XCTAssertEqual(store.connectedSessionID, second.id)
+        XCTAssertEqual(socket.connectedSessionIDs.last, second.id)
+    }
+
     func testBootstrapHonorsThreadListRetryAfterBeforeRetrying() async {
         let project = makeProject(id: "proj_list_retry_after")
         let session = makeSession(id: "thread_list_retry_after", projectID: project.id, title: "限流恢复", status: "history", source: "codex")
