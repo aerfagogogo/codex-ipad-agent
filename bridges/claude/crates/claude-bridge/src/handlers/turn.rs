@@ -788,7 +788,11 @@ mod tests {
                 claude_session_id: id.into(),
             },
         };
-        state.thread_index().insert(entry("empty", "")).await.unwrap();
+        state
+            .thread_index()
+            .insert(entry("empty", ""))
+            .await
+            .unwrap();
         state
             .thread_index()
             .insert(entry("named", "已有预览"))
