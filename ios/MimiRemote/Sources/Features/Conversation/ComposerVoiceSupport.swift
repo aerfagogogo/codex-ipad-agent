@@ -27,7 +27,7 @@ struct VoiceMicButton: View {
             }
             .foregroundStyle(tokens.primaryAction)
             .frame(width: 44, height: 44)
-            .background(tokens.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .modifier(
                 ComposerFlatControlSurface(
                     tokens: tokens,
@@ -90,18 +90,31 @@ struct ComposerPressButtonStyle: ButtonStyle {
     }
 }
 
-/// Composer 控件统一使用实色和细边界分组，层级来自布局关系而不是高光或投影。
+/// Composer 内部控件默认融入同一个承载面；只有确实需要分组时才显示静态边界。
 struct ComposerFlatControlSurface: ViewModifier {
     let tokens: ThemeTokens
     let cornerRadius: CGFloat
     let isEmphasized: Bool
+    let showsRestingBorder: Bool
+
+    init(
+        tokens: ThemeTokens,
+        cornerRadius: CGFloat,
+        isEmphasized: Bool,
+        showsRestingBorder: Bool = false
+    ) {
+        self.tokens = tokens
+        self.cornerRadius = cornerRadius
+        self.isEmphasized = isEmphasized
+        self.showsRestingBorder = showsRestingBorder
+    }
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
     private var borderColor: Color {
-        if isEmphasized {
+        if isEmphasized || !showsRestingBorder {
             return .clear
         }
         return tokens.border.opacity(tokens.resolvedScheme == .light ? 0.62 : 0.82)

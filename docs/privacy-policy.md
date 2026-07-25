@@ -30,7 +30,7 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 #### 系统权限
 
 - 相机：仅在用户打开扫码页时读取配对二维码。
-- 麦克风与语音识别：仅在用户主动录入语音时使用。App 使用系统的设备端语音框架实时处理；系统可能下载并维护语言模型，但语音录音不会发送到 Mimi Remote 开发者、用户配置的主机或模型提供方端点。
+- 麦克风与语音识别：仅在用户主动录入语音时使用。用户可以选择设备端或 Codex 转写。设备端模式使用系统 SpeechAnalyzer 实时处理；系统可能下载并维护语言模型，但录音不会发送到模型提供方。Codex 模式会把录音发送到用户配置的主机，再由 `agentd` 使用用户自己的 Codex 登录态请求转写；相关处理受用户与服务提供方之间的条款约束。Mimi Remote 开发者不接收这些录音。
 - 照片与文件：仅处理用户通过系统选择器明确选择的内容；内容随后按用户指令发送到其 Mac 上的运行时。
 
 拒绝上述权限不会阻止用户通过手动输入、键盘输入或其他不需要该权限的方式使用对应核心功能。
@@ -78,7 +78,7 @@ Connections may use a local network, a private network such as Tailscale, or an 
 #### System permissions
 
 - Camera: used only while you open the QR pairing scanner.
-- Microphone and speech recognition: used only when you actively dictate text. The app uses the system on-device speech framework for real-time processing. The system may download and maintain language models, but recordings are not sent to the Mimi Remote developer, the host you configure, or a model-provider endpoint.
+- Microphone and speech recognition: used only when you actively dictate text. You can choose on-device or Codex transcription. On-device mode uses the system SpeechAnalyzer framework in real time; the system may download and maintain language models, but recordings are not sent to a model provider. Codex mode sends the recording to the host you configured, where `agentd` uses your own Codex session to request transcription under the terms between you and the service provider. The developer of Mimi Remote does not receive these recordings.
 - Photos and files: only items you explicitly choose through system pickers are processed, then sent to the runtime on your Mac as you direct.
 
 Declining a permission does not prevent use of alternatives such as manual pairing or keyboard input.

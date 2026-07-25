@@ -15,7 +15,7 @@ struct SettingsView: View {
 
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
-    @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
+    @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -146,7 +146,7 @@ struct SettingsView: View {
             }
 
             Section {
-                ForEach(VoiceInputProvider.storeAvailableCases) { provider in
+                ForEach(VoiceInputProvider.allCases) { provider in
                     VoiceInputProviderRow(
                         provider: provider,
                         isSelected: voiceInputProviderSelection.wrappedValue == provider,
@@ -211,8 +211,6 @@ struct SettingsView: View {
         }
         .themedSettingsForm(tokens: tokens)
         .task {
-            // 升级用户可能仍保留旧的远端转写偏好；进入设置时明确迁移到设备端。
-            voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
             guard !appStore.requiresRePairing else {
                 return
@@ -278,7 +276,7 @@ struct SettingsView: View {
 
     private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
         Binding(
-            get: { .apple },
+            get: { VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex },
             set: { provider in
                 voiceInputProviderRawValue = provider.rawValue
             }
@@ -522,8 +520,10 @@ private struct ConnectionSpeedTestView: View {
                     title: L10n.text("ui.tailscale_network_path"),
                     tokens: tokens
                 ) {
-                    Label(networkPath.localizedSummary, systemImage: networkPath.kind.settingsSystemImage)
-                        .foregroundStyle(tailscaleNetworkPathTone(networkPath.kind, tokens: tokens))
+                    connectionSpeedNetworkPathBadge(
+                        networkPath: networkPath,
+                        tokens: tokens
+                    )
                 }
             }
         }
@@ -606,19 +606,62 @@ private struct ConnectionSpeedTestView: View {
         tokens: ThemeTokens,
         @ViewBuilder value: () -> Value
     ) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(title)
-                .font(themeStore.uiFont(.callout))
-                .foregroundStyle(tokens.primaryText)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(title)
+                    .font(themeStore.uiFont(.callout))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
 
-            Spacer(minLength: 12)
+                Spacer(minLength: 12)
 
-            value()
-                .font(themeStore.uiFont(.callout))
-                .multilineTextAlignment(.trailing)
+                value()
+                    .font(themeStore.uiFont(.callout))
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            // 窄屏或大字号时让右侧状态整体换到下一行，避免状态文字被挤成逐字换行。
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(themeStore.uiFont(.callout))
+                    .foregroundStyle(tokens.primaryText)
+
+                value()
+                    .font(themeStore.uiFont(.callout))
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func connectionSpeedNetworkPathBadge(
+        networkPath: TailscaleNetworkPathResponse,
+        tokens: ThemeTokens
+    ) -> some View {
+        let tone = tailscaleNetworkPathTone(networkPath.kind, tokens: tokens)
+
+        return HStack(spacing: 6) {
+            Image(systemName: networkPath.kind.settingsSystemImage)
+                .font(.system(size: 13, weight: .semibold))
+
+            Text(networkPath.localizedSummary)
+                .font(themeStore.uiFont(.footnote, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .foregroundStyle(tone)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(tone.opacity(0.11), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(tone.opacity(0.18), lineWidth: 0.5)
+        }
         .accessibilityElement(children: .combine)
     }
 

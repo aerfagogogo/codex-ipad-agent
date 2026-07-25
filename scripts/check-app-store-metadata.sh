@@ -101,12 +101,6 @@ build_match = re.search(r'CURRENT_PROJECT_VERSION:\s*"(\d+)"', project_spec)
 if not build_match or int(build_match.group(1)) < 100048:
     errors.append("CURRENT_PROJECT_VERSION must be numeric and at least 100048")
 
-voice_preferences = Path(
-    "ios/MimiRemote/Sources/State/VoiceInputPreferences.swift"
-).read_text(encoding="utf-8")
-if "storeAvailableCases: [VoiceInputProvider] = [.apple]" not in voice_preferences:
-    errors.append("Store build must expose on-device voice transcription only")
-
 if errors:
     print("App Store metadata gate failed:", file=sys.stderr)
     for error in errors:

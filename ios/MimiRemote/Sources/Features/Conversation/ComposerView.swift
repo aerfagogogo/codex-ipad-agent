@@ -22,6 +22,7 @@ struct ComposerView: View {
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) var reduceTransparency
     @State var composerState = ComposerState()
     @State var activeComposerDraftScope = ComposerDraftScopeKey.none
     @State var composerTextExternalRevision = 0
@@ -53,7 +54,7 @@ struct ComposerView: View {
     @State var selectedSkillSuggestionIndex = 0
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
-    @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
+    @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
     // 快捷行默认收起：展开与否是用户的全局偏好，不再被宽度变化反向改写。
     @AppStorage("composer.shortcuts.expanded") var prefersExpandedShortcutBar = false
     @State var guidedFollowUpEnabled = false
@@ -839,8 +840,9 @@ struct ComposerView: View {
     func collapsedPhoneComposerCard(tokens: ThemeTokens) -> some View {
         let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
 
-        return HStack(spacing: 8) {
+        return HStack(spacing: 4) {
             addContentButton
+            composerControlDivider(tokens: tokens)
 
             Button(action: expandPhoneComposer) {
                 HStack(spacing: 8) {
@@ -857,12 +859,13 @@ struct ComposerView: View {
                 }
                 .padding(.horizontal, 12)
                 .frame(maxWidth: .infinity, minHeight: 44)
-                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .modifier(
                     ComposerFlatControlSurface(
                         tokens: tokens,
                         cornerRadius: 12,
-                        isEmphasized: false
+                        isEmphasized: false,
+                        showsRestingBorder: true
                     )
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -871,12 +874,16 @@ struct ComposerView: View {
             .accessibilityLabel(L10n.text("ui.expand_input_box"))
             .accessibilityValue(collapsedPhoneComposerText)
 
+            composerControlDivider(tokens: tokens)
             voiceMicControl
+            composerControlDivider(tokens: tokens)
             sendButton(showLabels: false)
         }
-        .padding(8)
+        .padding(6)
         .frame(maxWidth: .infinity)
-        .background(tokens.elevatedSurface, in: shape)
+        .background {
+            composerContainerBackground(shape: shape, tokens: tokens)
+        }
         .overlay {
             shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
         }
@@ -893,11 +900,37 @@ struct ComposerView: View {
         }
         .padding(composerCardPadding)
         .frame(maxWidth: .infinity)
-        .background(tokens.elevatedSurface, in: shape)
+        .background {
+            composerContainerBackground(shape: shape, tokens: tokens)
+        }
         .tint(tokens.accent)
         .overlay {
             shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
         }
+    }
+
+    @ViewBuilder
+    func composerContainerBackground(
+        shape: RoundedRectangle,
+        tokens: ThemeTokens
+    ) -> some View {
+        if reduceTransparency {
+            shape.fill(tokens.elevatedSurface)
+        } else {
+            // 输入区是底部唯一的功能材质层；主题色只轻覆一层，避免再形成白色卡片叠卡片。
+            shape
+                .fill(.thinMaterial)
+                .overlay {
+                    shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
+                }
+        }
+    }
+
+    func composerControlDivider(tokens: ThemeTokens) -> some View {
+        Capsule()
+            .fill(tokens.border.opacity(tokens.resolvedScheme == .light ? 0.52 : 0.72))
+            .frame(width: 0.75, height: 26)
+            .accessibilityHidden(true)
     }
 
     func composerTextArea(tokens: ThemeTokens) -> some View {
@@ -1035,7 +1068,7 @@ struct ComposerView: View {
         if isVoiceTranscribing {
             return tokens.accent.opacity(0.5)
         }
-        return tokens.border.opacity(0.84)
+        return tokens.border.opacity(0.58)
     }
 
     var composerPlaceholderText: String {
@@ -1059,7 +1092,7 @@ struct ComposerView: View {
         if voiceInput.isPreparing || isVoicePressActive {
             return 1.5
         }
-        return voiceInput.isRecording ? 1.25 : 1
+        return voiceInput.isRecording ? 1.25 : 0.75
     }
 
     // 快捷行固定在输入区上方：开关在行首，选项从它右侧展开；主操作行只保留发送链路，
@@ -1433,7 +1466,7 @@ struct ComposerView: View {
                 .padding(.horizontal, usesCompactComposerMetrics ? 0 : 11)
                 .frame(minWidth: usesCompactComposerMetrics ? 44 : 76)
                 .background(
-                    isGuidedSelected ? tokens.accent.opacity(0.12) : tokens.surface,
+                    isGuidedSelected ? tokens.accent.opacity(0.12) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                 )
                 .modifier(

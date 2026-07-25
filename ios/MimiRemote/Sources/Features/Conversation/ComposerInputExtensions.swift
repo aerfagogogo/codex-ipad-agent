@@ -40,7 +40,7 @@ struct ComposerToolbarControlLabel: View {
         .padding(.horizontal, title == nil ? 0 : 12)
         .frame(minWidth: 44)
         .background(
-            isSelected ? tokens.accent : tokens.surface,
+            isSelected ? tokens.accent : Color.clear,
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .modifier(
@@ -59,8 +59,7 @@ struct ComposerToolbarControlLabel: View {
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
     var selectedVoiceInputProvider: VoiceInputProvider {
-        // 商店版本固定走设备端实时转写；旧安装残留的 Codex 偏好不会重新启用远端转写。
-        .apple
+        VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex
     }
 
     var isPhoneComposer: Bool {
@@ -220,6 +219,18 @@ extension ComposerView {
                     .accessibilityLabel(L10n.text("ui.retry_speech_transcription"))
                     .help(L10n.text("ui.resubmit_the_recording_you_just_made"))
                 }
+                if selectedVoiceInputProvider == .apple, retryableVoiceTranscription == nil {
+                    Button {
+                        voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+                        clearVoiceTransientStatus()
+                    } label: {
+                        Label(L10n.text("ui.use_codex_voice_input"), systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .accessibilityIdentifier("composer.voice.useCodex")
+                }
                 Button {
                     clearVoiceTransientStatus()
                 } label: {
@@ -364,7 +375,7 @@ extension ComposerView {
             .padding(.horizontal, showLabels ? 18 : 0)
             .frame(minWidth: 44)
             .background(
-                enabled ? tokens.primaryAction : tokens.surface,
+                enabled ? tokens.primaryAction : Color.clear,
                 in: RoundedRectangle(cornerRadius: 12, style: .continuous)
             )
             .modifier(
