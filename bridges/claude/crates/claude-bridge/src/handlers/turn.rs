@@ -280,6 +280,13 @@ pub async fn handle_turn_start(
         return Err(TurnError::ClaudeRpc(e.to_string()));
     }
 
+    // Backfill the thread preview from the first user message. AppServer
+    // threads are created with an empty preview (thread/start) and, unlike
+    // codex, nothing else fills it in — so clients would fall back to the
+    // "Thread <id>" placeholder title. Mirror the on-disk hydrator, which
+    // uses the first user message's first line as the preview.
+    maybe_backfill_preview(state, &params.thread_id, &params.input).await;
+
     spawn_event_pump(EventPumpArgs {
         state: Arc::clone(state),
         thread_id: params.thread_id.clone(),
@@ -290,6 +297,50 @@ pub async fn handle_turn_start(
     });
 
     Ok(p::TurnStartResponse { turn })
+}
+
+/// If the thread's preview is still empty, backfill it from the first line of
+/// the user's message. Fire-and-forget: any lookup/persist failure is ignored
+/// since a missing preview only degrades the title, never the turn.
+async fn maybe_backfill_preview(
+    state: &Arc<ConnectionState>,
+    thread_id: &str,
+    input: &[p::UserInput],
+) {
+    let Some(entry) = state.thread_index().lookup(thread_id).await else {
+        return;
+    };
+    if !entry.preview.trim().is_empty() {
+        return;
+    }
+    let Some(preview) = preview_from_input(input) else {
+        return;
+    };
+    let _ = state
+        .thread_index()
+        .update_preview_and_updated_at(thread_id, preview, chrono::Utc::now())
+        .await;
+}
+
+/// Derive a one-line preview from the user input, matching the on-disk
+/// hydrator: the first non-empty line of the concatenated text chunks.
+fn preview_from_input(input: &[p::UserInput]) -> Option<String> {
+    let mut text = String::new();
+    for item in input {
+        match item {
+            p::UserInput::Text { text: t, .. } => text.push_str(t),
+            p::UserInput::Skill { name, .. } => text.push_str(&format!("/{name}")),
+            p::UserInput::Mention { name, .. } => {
+                text.push('@');
+                text.push_str(name);
+            }
+            _ => {}
+        }
+    }
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
 }
 
 // ============================================================================
@@ -697,6 +748,65 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, TurnError::ThreadNotLoaded(_)));
+    }
+
+    fn text_input(s: &str) -> p::UserInput {
+        p::UserInput::Text {
+            text: s.into(),
+            text_elements: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn preview_uses_first_non_empty_line() {
+        let input = vec![text_input("\n  \n第一行标题\n第二行\n")];
+        assert_eq!(preview_from_input(&input).as_deref(), Some("第一行标题"));
+    }
+
+    #[test]
+    fn preview_none_when_no_text() {
+        let input = vec![p::UserInput::Image { url: "x".into() }];
+        assert_eq!(preview_from_input(&input), None);
+    }
+
+    #[tokio::test]
+    async fn backfill_sets_empty_preview_and_leaves_existing() {
+        let state = dummy_state().await;
+        let entry = |id: &str, preview: &str| crate::index::IndexEntry {
+            thread_id: id.into(),
+            cwd: "/tmp".into(),
+            name: None,
+            preview: preview.into(),
+            created_at: 0,
+            updated_at: 0,
+            archived: false,
+            forked_from_id: None,
+            model_provider: "anthropic".into(),
+            source: p::ThreadSourceKind::AppServer,
+            metadata: crate::index::ClaudeSessionRef {
+                claude_session_path: "/tmp/a.jsonl".into(),
+                claude_session_id: id.into(),
+            },
+        };
+        state.thread_index().insert(entry("empty", "")).await.unwrap();
+        state
+            .thread_index()
+            .insert(entry("named", "已有预览"))
+            .await
+            .unwrap();
+
+        let input = vec![text_input("你好世界\n更多内容")];
+        maybe_backfill_preview(&state, "empty", &input).await;
+        maybe_backfill_preview(&state, "named", &input).await;
+
+        assert_eq!(
+            state.thread_index().lookup("empty").await.unwrap().preview,
+            "你好世界"
+        );
+        assert_eq!(
+            state.thread_index().lookup("named").await.unwrap().preview,
+            "已有预览"
+        );
     }
 
     #[test]
