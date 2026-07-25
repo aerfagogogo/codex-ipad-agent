@@ -137,7 +137,7 @@ func (p *appServerGatewayPolicy) observeUpstreamFrame(messageType int, payload [
 		return payload, true, nil
 	}
 	if strings.TrimSpace(frame.Method) != "" && frame.ID == nil {
-		if normalizeAppServerRuntimeID(p.runtimeID) == "codex" && appServerMediaRedactNotificationsEnabled() {
+		if appServerRuntimeRedactsInlineImages(p.runtimeID) && appServerMediaRedactNotificationsEnabled() {
 			if redacted, changed := p.router.redactInlineHistoryImagesInGatewayResponse(payload); changed {
 				payload = redacted
 			}
@@ -314,6 +314,19 @@ func appServerServerRequestAllowed(runtimeID string, method string) bool {
 	_ = runtimeID
 	_, ok := appServerAllowedServerRequestMethods[strings.TrimSpace(method)]
 	return ok
+}
+
+// 直播 turn 事件里的内联图（imageGeneration 裸 base64、mcpToolCall/dynamicToolCall
+// 图片 result、data:image URL）在 codex 和 claude 两条 runtime 上形状一致，都会把
+// 大 base64 顺着 WS + 隧道推一遍。两条链路统一改写成短 URL，避免 Claude 通道漏改导致
+// 带宽打满或单帧撞 gateway cap。其它未知 runtime 仍保持原样透传，不改既有语义。
+func appServerRuntimeRedactsInlineImages(runtimeID string) bool {
+	switch normalizeAppServerRuntimeID(runtimeID) {
+	case "codex", "claude":
+		return true
+	default:
+		return false
+	}
 }
 
 func appServerMediaRedactNotificationsEnabled() bool {

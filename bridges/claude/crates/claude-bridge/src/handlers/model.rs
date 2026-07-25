@@ -6,7 +6,8 @@
 //! (`opus`/`sonnet`/`haiku`) the `claude` CLI accepts via `--model`. Fable uses
 //! its full id so the list also works with older CLI builds that predate its alias.
 //!
-//! Default is sonnet — matches the CLI default and is the most common pick.
+//! Default is opus — the remote app defaults to the most capable model for
+//! agentic coding; the picker still lets the user drop to sonnet/haiku.
 
 use std::sync::Arc;
 
@@ -18,7 +19,7 @@ use crate::state::ConnectionState;
 pub const MODEL_PROVIDER: &str = "anthropic";
 
 pub const FABLE_MODEL: &str = "claude-fable-5";
-pub const OPUS_MODEL: &str = "claude-opus-4-7";
+pub const OPUS_MODEL: &str = "claude-opus-5";
 pub const SONNET_MODEL: &str = "claude-sonnet-4-6";
 pub const HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
 
@@ -49,16 +50,16 @@ pub async fn handle_model_list(
         ),
         build_model(
             OPUS_MODEL,
-            "Claude Opus 4.7",
+            "Claude Opus 5",
             "Anthropic's most capable model. Best for hard reasoning, deep refactors, multi-step planning.",
-            false,
+            true,
             p::ReasoningEffort::High,
         ),
         build_model(
             SONNET_MODEL,
             "Claude Sonnet 4.6",
             "Balanced model for everyday coding work — fast, capable, lower cost than Opus.",
-            true,
+            false,
             p::ReasoningEffort::Medium,
         ),
         build_model(
@@ -211,7 +212,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lists_four_concrete_models_plus_established_aliases_with_sonnet_default() {
+    async fn lists_four_concrete_models_plus_established_aliases_with_opus_default() {
         let state = dummy_state();
         let resp = handle_model_list(&state, p::ModelListParams::default()).await;
         assert_eq!(resp.data.len(), 7);
@@ -227,14 +228,17 @@ mod tests {
         assert!(by_id.contains_key("sonnet"));
         assert!(by_id.contains_key("haiku"));
 
-        let sonnet = by_id[SONNET_MODEL];
-        assert!(sonnet.is_default);
-        assert_eq!(sonnet.id, SONNET_MODEL);
+        let opus = by_id[OPUS_MODEL];
+        assert!(opus.is_default);
+        assert_eq!(opus.id, OPUS_MODEL);
         assert!(matches!(
-            sonnet.default_reasoning_effort,
-            p::ReasoningEffort::Medium
+            opus.default_reasoning_effort,
+            p::ReasoningEffort::High
         ));
-        assert_eq!(sonnet.supported_reasoning_efforts.len(), 4);
+        assert_eq!(opus.supported_reasoning_efforts.len(), 4);
+
+        // The other concrete models are no longer the default.
+        assert!(!by_id[SONNET_MODEL].is_default);
 
         // Only one default across the entire list.
         let defaults: Vec<_> = resp.data.iter().filter(|m| m.is_default).collect();

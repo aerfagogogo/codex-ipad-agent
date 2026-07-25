@@ -320,53 +320,101 @@ func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, cli
 }
 
 func copyClaudeBridgeFrames(ctx context.Context, stdout io.Reader, client *websocket.Conn, clientWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) string {
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 4096), int(appServerGatewayReadLimit))
-	for scanner.Scan() {
+	// bufio.Scanner 在单行超过 buffer 上限时会以 ErrTooLong 终止扫描，等于让一条超大
+	// 帧（例如一次超大文件 Read 的 base64 输出）撕掉整条 WS 连接、触发客户端重连循环。
+	// 改用有界逐行读取：超过上限的单帧只丢弃并记诊断，连接继续存活。上限沿用客户端
+	// WS 读上限——比它更大的帧客户端本就无法接收，丢弃是唯一安全选择。
+	reader := bufio.NewReaderSize(stdout, 64*1024)
+	maxLine := int(appServerGatewayReadLimit)
+	for {
 		select {
 		case <-ctx.Done():
 			return "context_done"
 		default:
 		}
-		payload := bytes.TrimSpace(scanner.Bytes())
-		if len(payload) == 0 {
-			continue
-		}
-		policyStart := time.Now()
-		forwardPayload, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
-		policyDuration := time.Since(policyStart)
-		if policyErr != nil {
+		line, oversize, err := readBridgeStdoutLine(reader, maxLine)
+		if oversize {
+			log.Printf("claude bridge stdout line exceeded %d bytes; dropping frame to keep connection alive", maxLine)
 			if monitor != nil {
-				monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
+				monitor.recordDropped("upstream_to_client", maxLine, 0)
 			}
-			if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
-				return "upstream_policy_error_write_failed"
+		} else if payload := bytes.TrimSpace(line); len(payload) > 0 {
+			if reason, ok := forwardClaudeBridgeFrame(payload, client, clientWriteMu, policy, monitor); ok {
+				return reason
 			}
-			continue
 		}
-		if !forward {
-			if monitor != nil {
-				monitor.recordDropped("upstream_to_client", len(payload), policyDuration)
+		if err != nil {
+			if err == io.EOF {
+				return "bridge_stdout_closed"
 			}
-			continue
+			log.Printf("claude bridge stdout read error err=%v", err)
+			return gatewayCloseReason("bridge_stdout_read", err)
 		}
-		frame := append([]byte(nil), forwardPayload...)
-		if rewritten, ok := rewriteClaudeModelListResponse(policy, frame); ok {
-			frame = rewritten
-		}
-		writeStart := time.Now()
-		if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, frame); err != nil {
-			return gatewayCloseReason("client_write", err)
-		}
+	}
+}
+
+// forwardClaudeBridgeFrame runs one upstream frame through the policy layer and
+// forwards it to the client. It returns a non-empty close reason + true only
+// when the caller must tear the connection down (client write failed).
+func forwardClaudeBridgeFrame(payload []byte, client *websocket.Conn, clientWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor) (string, bool) {
+	policyStart := time.Now()
+	forwardPayload, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, payload)
+	policyDuration := time.Since(policyStart)
+	if policyErr != nil {
 		if monitor != nil {
-			monitor.recordForward("upstream_to_client", len(payload), len(frame), policyDuration, time.Since(writeStart), frame)
+			monitor.recordPolicyError("upstream_to_client", len(payload), policyDuration)
 		}
+		if !writeGatewayPolicyError(client, clientWriteMu, policyErr) {
+			return "upstream_policy_error_write_failed", true
+		}
+		return "", false
 	}
-	if err := scanner.Err(); err != nil {
-		log.Printf("claude bridge stdout scanner error err=%v", err)
-		return gatewayCloseReason("bridge_stdout_scan", err)
+	if !forward {
+		if monitor != nil {
+			monitor.recordDropped("upstream_to_client", len(payload), policyDuration)
+		}
+		return "", false
 	}
-	return "bridge_stdout_closed"
+	frame := append([]byte(nil), forwardPayload...)
+	if rewritten, ok := rewriteClaudeModelListResponse(policy, frame); ok {
+		frame = rewritten
+	}
+	writeStart := time.Now()
+	if err := writeWebSocketFrame(client, clientWriteMu, websocket.TextMessage, frame); err != nil {
+		return gatewayCloseReason("client_write", err), true
+	}
+	if monitor != nil {
+		monitor.recordForward("upstream_to_client", len(payload), len(frame), policyDuration, time.Since(writeStart), frame)
+	}
+	return "", false
+}
+
+// readBridgeStdoutLine reads one '\n'-terminated line from reader while bounding
+// resident memory to ~max bytes. When a single line exceeds max the excess is
+// drained to the newline and the function returns oversize=true with a nil line,
+// so the caller can drop that one frame without tearing down the connection.
+// The trailing io.EOF (line without a final newline) is returned alongside any
+// bytes read so the caller can process the last frame before closing.
+func readBridgeStdoutLine(reader *bufio.Reader, max int) ([]byte, bool, error) {
+	var buf []byte
+	oversize := false
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if len(chunk) > 0 && !oversize {
+			buf = append(buf, chunk...)
+			if max > 0 && len(buf) > max {
+				oversize = true
+				buf = nil // release; an oversized frame is never forwarded
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if oversize {
+			return nil, true, err
+		}
+		return buf, false, err
+	}
 }
 
 func writeStdioBridgeFrame(stdin io.Writer, mu *sync.Mutex, payload []byte) ([]byte, error) {
@@ -452,16 +500,16 @@ func claudeCurrentModelList() []map[string]any {
 		),
 		claudeModelOption(
 			"opus",
-			"Claude Opus 4.8",
+			"Claude Opus 5",
 			"Alias resolved by the Claude CLI to the latest available Opus model; best for complex agentic coding and deep reasoning.",
-			false,
+			true,
 			"high",
 		),
 		claudeModelOption(
 			"sonnet",
 			"Claude Sonnet 5",
 			"Alias resolved by the Claude CLI to the latest available Sonnet model; default balanced model for everyday coding work.",
-			true,
+			false,
 			"high",
 		),
 		claudeModelOption(

@@ -630,8 +630,8 @@ final class CodexAppServerProtocolTests: XCTestCase {
             ),
             CodexAppServerModelOption(id: "opus", runtimeProvider: "claude"),
             CodexAppServerModelOption(
-                id: "claude-opus-4-7",
-                title: "Claude Opus 4.7",
+                id: "claude-opus-5",
+                title: "Claude Opus 5",
                 runtimeProvider: "claude",
                 supportedReasoningEfforts: efforts,
                 defaultReasoningEffort: "high"
@@ -650,11 +650,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             layout.rows.map(\.model),
-            ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-7", "claude-fable-5"]
+            ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-5", "claude-fable-5"]
         )
         XCTAssertEqual(
             layout.rows.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
-            ["Haiku 4.5", "Sonnet 4.6", "Opus 4.7", "Fable 5"]
+            ["Haiku 4.5", "Sonnet 4.6", "Opus 5", "Fable 5"]
         )
         XCTAssertEqual(layout.efforts, [.minimal, .low, .medium, .high])
         XCTAssertTrue(layout.contains(modelID: "fable"), "Claude Fable alias 应映射到同一模型家族")
@@ -677,7 +677,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
             supportedReasoningEfforts: ["low", "medium"]
         )
         let opus = CodexAppServerModelOption(
-            id: "claude-opus-4-7",
+            id: "claude-opus-5",
             runtimeProvider: "claude",
             supportedReasoningEfforts: ["high"],
             defaultReasoningEffort: "high"

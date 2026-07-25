@@ -1027,15 +1027,15 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             title: "Claude Sonnet 5",
             provider: "anthropic",
             runtimeProvider: "claude",
-            description: "Claude CLI alias resolved to the latest available Sonnet model.",
-            isDefault: true
+            description: "Claude CLI alias resolved to the latest available Sonnet model."
         ),
         CodexAppServerModelOption(
             id: "opus",
-            title: "Claude Opus 4.8",
+            title: "Claude Opus 5",
             provider: "anthropic",
             runtimeProvider: "claude",
-            description: "Claude CLI alias resolved to the latest available Opus model."
+            description: "Claude CLI alias resolved to the latest available Opus model.",
+            isDefault: true
         ),
         CodexAppServerModelOption(
             id: "haiku",

@@ -1861,6 +1861,44 @@ func TestAppServerHistoryImageRedactionRewritesImageGenerationResult(t *testing.
 	}
 }
 
+func TestAppServerGatewayNotificationRedactsInlineImagesForCodexAndClaude(t *testing.T) {
+	pngBytes := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0xAB}, 20<<10)...)
+	resultPayload := base64.StdEncoding.EncodeToString(pngBytes)
+	// item/completed 通知帧：有 method、无 id，走 observeUpstreamFrame 的通知分支。
+	notification := []byte(`{"method":"item/completed","params":{"item":{"type":"imageGeneration","id":"ig_1","status":"completed","result":"` + resultPayload + `","savedPath":"/tmp/mockup.png"}}}`)
+
+	// codex 与 claude 两条 runtime 都必须把直播通知里的裸 base64 改写成短 URL。
+	for _, runtimeID := range []string{"codex", "claude"} {
+		t.Run(runtimeID, func(t *testing.T) {
+			router := &Router{historyMedia: newAppServerHistoryMediaStore()}
+			policy := &appServerGatewayPolicy{router: router, runtimeID: runtimeID}
+			forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, notification)
+			if policyErr != nil || !forward {
+				t.Fatalf("通知帧应转发：forward=%v err=%+v", forward, policyErr)
+			}
+			if bytes.Contains(forwarded, []byte(resultPayload)) {
+				t.Fatalf("%s 直播通知不应保留裸 base64：len=%d", runtimeID, len(forwarded))
+			}
+			if !bytes.Contains(forwarded, []byte(appServerHistoryMediaURLPrefix)) {
+				t.Fatalf("%s 直播通知应替换为 media URL：%s", runtimeID, forwarded)
+			}
+		})
+	}
+
+	// 未知 runtime 不改写，保持既有透传语义。
+	t.Run("unknown-runtime-passthrough", func(t *testing.T) {
+		router := &Router{historyMedia: newAppServerHistoryMediaStore()}
+		policy := &appServerGatewayPolicy{router: router, runtimeID: "gemini"}
+		forwarded, forward, policyErr := policy.observeUpstreamFrame(websocket.TextMessage, notification)
+		if policyErr != nil || !forward {
+			t.Fatalf("通知帧应转发：forward=%v err=%+v", forward, policyErr)
+		}
+		if !bytes.Equal(forwarded, notification) {
+			t.Fatalf("未知 runtime 通知应原样透传")
+		}
+	})
+}
+
 func TestAppServerHistoryImageRedactionSkipsNonImageBlobsAndSmallRawImages(t *testing.T) {
 	router := &Router{historyMedia: newAppServerHistoryMediaStore()}
 

@@ -60,7 +60,7 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
         XCTAssertEqual(claudeLayout.rows.map(\.model), ["haiku", "sonnet", "opus", "claude-fable-5"])
         XCTAssertEqual(
             claudeLayout.rows.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
-            ["Haiku 4.5", "Sonnet 5", "Opus 4.8", "Fable 5"]
+            ["Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5"]
         )
         XCTAssertEqual(claudeLayout.efforts, [.minimal, .low, .medium, .high])
         XCTAssertFalse(claudeLayout.showsFastMode)
