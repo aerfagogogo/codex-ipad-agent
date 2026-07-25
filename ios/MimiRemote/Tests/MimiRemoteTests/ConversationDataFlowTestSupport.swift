@@ -421,6 +421,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let rateLimitsByRuntime: [String: RateLimitSummary]
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
+    let sessionHandler: ((String, EventSequence?) async throws -> SessionResponse)?
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
     }
@@ -514,7 +515,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         runtimeChannelAvailability: [String: Bool] = [:],
         rateLimitsByRuntime: [String: RateLimitSummary] = [:],
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
-        threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil
+        threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
+        sessionHandler: ((String, EventSequence?) async throws -> SessionResponse)? = nil
     ) {
         self.projectsResult = projects
         self.sessionsResult = sessions
@@ -563,6 +565,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.rateLimitsByRuntime = rateLimitsByRuntime
         self.rateLimitHandler = rateLimitHandler
         self.threadSearchHandler = threadSearchHandler
+        self.sessionHandler = sessionHandler
     }
 
     func projects() async throws -> [AgentProject] {
@@ -904,6 +907,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     func session(id: String, afterSeq: EventSequence?) async throws -> SessionResponse {
         requestedSessionIDs.append(id)
         requestedSessionAfterSeqs.append(afterSeq)
+        if let sessionHandler {
+            return try await sessionHandler(id, afterSeq)
+        }
         guard let response = sessionResponses[id] else {
             throw MockError.unimplemented
         }
