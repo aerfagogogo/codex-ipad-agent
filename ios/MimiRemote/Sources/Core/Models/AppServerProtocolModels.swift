@@ -218,20 +218,28 @@ extension CodexAppServerMessage: Decodable {
         case params
         case result
         case error
+        case replaySequence = "_alleycat_seq"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         if let method = try container.decodeIfPresent(String.self, forKey: .method) {
             let params = try container.decodeIfPresent(CodexAppServerJSONValue.self, forKey: .params)
+            // 分类器必须保留桥接层的 replay cursor，否则离开会话后重连会从错误边界续传。
+            let replaySequence = try container.decodeIfPresent(UInt64.self, forKey: .replaySequence)
             if container.contains(.id) {
                 self = .serverRequest(CodexAppServerServerRequest(
                     id: try container.decode(CodexAppServerRequestID.self, forKey: .id),
                     method: method,
-                    params: params
+                    params: params,
+                    replaySequence: replaySequence
                 ))
             } else {
-                self = .notification(CodexAppServerNotification(method: method, params: params))
+                self = .notification(CodexAppServerNotification(
+                    method: method,
+                    params: params,
+                    replaySequence: replaySequence
+                ))
             }
             return
         }
