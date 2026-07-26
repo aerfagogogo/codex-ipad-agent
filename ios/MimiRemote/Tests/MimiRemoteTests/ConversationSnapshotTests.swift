@@ -63,7 +63,7 @@ final class ConversationSnapshotTests: XCTestCase {
             fallbackSessionID: sessionID
         )
         conversationStore.appendUser(
-            "这是一条比较长的用户消息，用来验证多行情况下紫色气泡依然贴右对齐，而不是漂到屏幕中间。",
+            "这是一条比较长的用户消息，用来验证多行情况下中性气泡依然贴右对齐，而不是漂到屏幕中间。",
             sessionID: sessionID,
             createdAt: snapshotMessageDate
         )
@@ -736,6 +736,15 @@ final class ConversationSnapshotTests: XCTestCase {
         assertSnapshot(
             of: view,
             as: .image(precision: 0.98, layout: .fixed(width: 420, height: 768))
+        )
+    }
+
+    func testComposerStatusTrayExtremelyNarrowCompactWidth() async {
+        let view = await makeComposerStatusTrayCrowdedView(width: 320, height: 700)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 320, height: 700))
         )
     }
 

@@ -17,7 +17,8 @@ struct ComposerToolbarControlLabel: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? tokens.accent)
+        // 品牌紫只表达选中/运行状态；普通输入控件保持中性，降低底部工具区的视觉噪声。
+        let foreground = isSelected ? tokens.primaryActionForeground : (tint ?? tokens.primaryText)
 
         HStack(spacing: 6) {
             Image(systemName: systemImage)
@@ -39,18 +40,19 @@ struct ComposerToolbarControlLabel: View {
         .frame(height: 44)
         .padding(.horizontal, title == nil ? 0 : 12)
         .frame(minWidth: 44)
-        .background(
-            isSelected ? tokens.accent : Color.clear,
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-        )
+        .background {
+            RoundedRectangle(cornerRadius: title == nil ? 22 : 12, style: .continuous)
+                .fill(isSelected ? tokens.accent : Color.clear)
+                .padding(4)
+        }
         .modifier(
             ComposerFlatControlSurface(
                 tokens: tokens,
-                cornerRadius: 12,
+                cornerRadius: title == nil ? 22 : 12,
                 isEmphasized: isSelected
             )
         )
-        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: title == nil ? 22 : 12, style: .continuous))
         .fixedSize(horizontal: true, vertical: false)
         .accessibilityLabel(accessibilityLabel)
     }
@@ -374,18 +376,19 @@ extension ComposerView {
             .frame(height: 44)
             .padding(.horizontal, showLabels ? 18 : 0)
             .frame(minWidth: 44)
-            .background(
-                enabled ? tokens.primaryAction : Color.clear,
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
+            .background {
+                RoundedRectangle(cornerRadius: showLabels ? 12 : 22, style: .continuous)
+                    .fill(enabled ? tokens.primaryAction : Color.clear)
+                    .padding(4)
+            }
             .modifier(
                 ComposerFlatControlSurface(
                     tokens: tokens,
-                    cornerRadius: 12,
+                    cornerRadius: showLabels ? 12 : 22,
                     isEmphasized: enabled
                 )
             )
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: showLabels ? 12 : 22, style: .continuous))
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .keyboardShortcut(.return, modifiers: .command)

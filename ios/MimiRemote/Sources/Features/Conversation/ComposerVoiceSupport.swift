@@ -25,17 +25,22 @@ struct VoiceMicButton: View {
                     Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                 }
             }
-            .foregroundStyle(tokens.primaryAction)
+            // 空闲态和其它工具按钮保持中性；录音、准备和转写才使用主题紫表达活动状态。
+            .foregroundStyle(
+                isRecording || isPreparing || isTranscribing
+                    ? tokens.primaryAction
+                    : tokens.primaryText
+            )
             .frame(width: 44, height: 44)
-            .background(Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.clear, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .modifier(
                 ComposerFlatControlSurface(
                     tokens: tokens,
-                    cornerRadius: 12,
+                    cornerRadius: 22,
                     isEmphasized: false
                 )
             )
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(isPreparing || isTranscribing)
@@ -81,8 +86,9 @@ struct ComposerPressButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            // 平铺控件只用明度变化响应触摸，不再通过缩放和下沉模拟实体键程。
-            .opacity(configuration.isPressed ? 0.68 : 1)
+            // 玻璃键帽用很短的缩放和明度变化确认按压；降低动态效果时只保留明度反馈。
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
             .animation(
                 .easeOut(duration: reduceMotion ? 0 : 0.08),
                 value: configuration.isPressed
@@ -90,40 +96,38 @@ struct ComposerPressButtonStyle: ButtonStyle {
     }
 }
 
-/// Composer 内部控件默认融入同一个承载面；只有确实需要分组时才显示静态边界。
+/// Composer 控件使用页面背景色，在输入卡内部形成一层安静但明确的操作表面。
 struct ComposerFlatControlSurface: ViewModifier {
     let tokens: ThemeTokens
     let cornerRadius: CGFloat
     let isEmphasized: Bool
-    let showsRestingBorder: Bool
 
     init(
         tokens: ThemeTokens,
         cornerRadius: CGFloat,
-        isEmphasized: Bool,
-        showsRestingBorder: Bool = false
+        isEmphasized: Bool
     ) {
         self.tokens = tokens
         self.cornerRadius = cornerRadius
         self.isEmphasized = isEmphasized
-        self.showsRestingBorder = showsRestingBorder
     }
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
-    private var borderColor: Color {
-        if isEmphasized || !showsRestingBorder {
-            return .clear
-        }
-        return tokens.border.opacity(tokens.resolvedScheme == .light ? 0.62 : 0.82)
+    private var restingFill: Color {
+        guard !isEmphasized else { return .clear }
+        return tokens.background
     }
 
     func body(content: Content) -> some View {
         content
-            .overlay {
-                shape.strokeBorder(borderColor, lineWidth: 0.75)
+            .background {
+                // 可见键帽约 36pt，但外层 contentShape 仍保持 44pt 命中面积。
+                shape
+                    .fill(restingFill)
+                    .padding(4)
             }
     }
 }

@@ -838,12 +838,9 @@ struct ComposerView: View {
     }
 
     func collapsedPhoneComposerCard(tokens: ThemeTokens) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
-        return HStack(spacing: 4) {
-            addContentButton
-            composerControlDivider(tokens: tokens)
-
+        return VStack(alignment: .leading, spacing: 8) {
             Button(action: expandPhoneComposer) {
                 HStack(spacing: 8) {
                     Text(collapsedPhoneComposerText)
@@ -857,29 +854,20 @@ struct ComposerView: View {
                         .font(themeStore.uiFont(.caption2, weight: .bold))
                         .foregroundStyle(tokens.tertiaryText)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 10)
                 .frame(maxWidth: .infinity, minHeight: 44)
-                .background(Color.clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .modifier(
-                    ComposerFlatControlSurface(
-                        tokens: tokens,
-                        cornerRadius: 12,
-                        isEmphasized: false,
-                        showsRestingBorder: true
-                    )
-                )
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
             .accessibilityLabel(L10n.text("ui.expand_input_box"))
             .accessibilityValue(collapsedPhoneComposerText)
 
-            composerControlDivider(tokens: tokens)
-            voiceMicControl
-            composerControlDivider(tokens: tokens)
-            sendButton(showLabels: false)
+            ViewThatFits(in: .horizontal) {
+                compactPrimaryComposerToolbar(showsModelTitle: true)
+                compactPrimaryComposerToolbar(showsModelTitle: false)
+            }
         }
-        .padding(6)
+        .padding(8)
         .frame(maxWidth: .infinity)
         .background {
             composerContainerBackground(shape: shape, tokens: tokens)
@@ -892,7 +880,9 @@ struct ComposerView: View {
     func composerCard(tokens: ThemeTokens) -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
         return VStack(alignment: .leading, spacing: composerCardSpacing) {
-            composerShortcutRow
+            if !usesCompactComposerMetrics || prefersExpandedShortcutBar {
+                composerShortcutRow
+            }
             composerTextArea(tokens: tokens)
             skillAutocompletePanel
             voiceReviewNotice
@@ -924,13 +914,6 @@ struct ComposerView: View {
                     shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
                 }
         }
-    }
-
-    func composerControlDivider(tokens: ThemeTokens) -> some View {
-        Capsule()
-            .fill(tokens.border.opacity(tokens.resolvedScheme == .light ? 0.52 : 0.72))
-            .frame(width: 0.75, height: 26)
-            .accessibilityHidden(true)
     }
 
     func composerTextArea(tokens: ThemeTokens) -> some View {
@@ -1140,16 +1123,58 @@ struct ComposerView: View {
         .accessibilityLabel(L10n.text("ui.collapse_input_box"))
     }
 
+    @ViewBuilder
     var primaryComposerToolbar: some View {
-        HStack(spacing: usesCompactComposerMetrics ? 8 : 10) {
-            addContentButton
-            followUpDeliveryMenu
+        if usesCompactComposerMetrics {
+            // 按真实内容宽度降级，长模型名、Fast 标记和大字号都无需猜设备阈值。
+            ViewThatFits(in: .horizontal) {
+                compactPrimaryComposerToolbar(showsModelTitle: true)
+                compactPrimaryComposerToolbar(showsModelTitle: false)
+            }
+        } else {
+            HStack(spacing: 10) {
+                addContentButton
+                followUpDeliveryMenu
+                Spacer(minLength: 0)
+                composerOptionsMenu
+                voiceMicControl
+                sendButton(showLabels: true)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    func compactPrimaryComposerToolbar(showsModelTitle: Bool) -> some View {
+        HStack(spacing: 8) {
+            compactLeadingComposerControls(showsModelTitle: showsModelTitle)
             Spacer(minLength: 0)
             composerOptionsMenu
             voiceMicControl
-            sendButton(showLabels: !usesCompactComposerMetrics)
+            sendButton(showLabels: false)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    func compactLeadingComposerControls(showsModelTitle: Bool) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        // 「添加」和它影响的发送上下文属于同一操作组，用一条连续胶囊表达关系；
+        // 两个子按钮仍保留各自 44pt 命中区和独立的 VoiceOver 动作。
+        HStack(spacing: 0) {
+            addContentButton
+            if canChooseRunningFollowUpDelivery {
+                followUpDeliveryMenu
+            } else {
+                modelPickerControl(showsTitle: showsModelTitle)
+            }
+        }
+        .background {
+            Capsule()
+                .fill(tokens.background)
+                .padding(.vertical, 4)
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     var shortcutBarToggle: some View {
@@ -1189,6 +1214,22 @@ struct ComposerView: View {
                 setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
             } label: {
                 Label(composerState.isGoalModeSelected ? L10n.text("ui.close_target_task") : L10n.text("ui.target_task"), systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
+            }
+
+            if usesCompactComposerMetrics {
+                Divider()
+
+                Button {
+                    prefersExpandedShortcutBar.toggle()
+                } label: {
+                    Label(L10n.text("ui.quick"), systemImage: prefersExpandedShortcutBar ? "checkmark" : "slider.horizontal.3")
+                }
+
+                if canCollapsePhoneComposer {
+                    Button(action: collapsePhoneComposer) {
+                        Label(L10n.text("ui.collapse_input_box"), systemImage: "chevron.down")
+                    }
+                }
             }
         } label: {
             composerToolbarControlLabel(
@@ -1465,18 +1506,19 @@ struct ComposerView: View {
                 .frame(height: 44)
                 .padding(.horizontal, usesCompactComposerMetrics ? 0 : 11)
                 .frame(minWidth: usesCompactComposerMetrics ? 44 : 76)
-                .background(
-                    isGuidedSelected ? tokens.accent.opacity(0.12) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
+                .background {
+                    RoundedRectangle(cornerRadius: usesCompactComposerMetrics ? 22 : 12, style: .continuous)
+                        .fill(isGuidedSelected ? tokens.accent.opacity(0.12) : Color.clear)
+                        .padding(4)
+                }
                 .modifier(
                     ComposerFlatControlSurface(
                         tokens: tokens,
-                        cornerRadius: 12,
+                        cornerRadius: usesCompactComposerMetrics ? 22 : 12,
                         isEmphasized: isGuidedSelected
                     )
                 )
-                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: usesCompactComposerMetrics ? 22 : 12, style: .continuous))
             }
             .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
             .help(isGuidedSelected ? L10n.text("ui.immediately_change_the_reply_currently_being_generated") : L10n.text("ui.save_it_in_this_device_first_and_automatically"))
@@ -1544,14 +1586,20 @@ struct ComposerView: View {
 
     @ViewBuilder
     var modelPickerControl: some View {
+        modelPickerControl(showsTitle: true)
+    }
+
+    @ViewBuilder
+    func modelPickerControl(showsTitle: Bool) -> some View {
         Button {
             showsModelGridPicker.toggle()
         } label: {
             composerToolbarControlLabel(
-                title: modelPickerTriggerTitle,
+                // 320/344pt 设备只隐藏可见标题，完整模型信息仍通过 accessibilityValue 提供。
+                title: showsTitle ? modelPickerTriggerTitle : nil,
                 systemImage: "cpu",
                 trailingSystemImage: isFastModeSelected ? "bolt.fill" : nil,
-                titleMaxWidth: 150,
+                titleMaxWidth: usesCompactComposerMetrics ? 82 : 150,
                 accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")
             )
             .contentTransition(.opacity)

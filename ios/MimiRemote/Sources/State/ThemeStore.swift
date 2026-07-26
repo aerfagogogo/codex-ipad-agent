@@ -301,8 +301,7 @@ extension ThemeTokens {
     }
 
     var userBubbleForeground: Color {
-        guard preset == .codex else { return primaryText }
-        return Color(red: 0.984, green: 0.957, blue: 0.984)
+        primaryText
     }
 
     func tint(for tone: AgentSessionStatusTone) -> Color {
@@ -505,7 +504,8 @@ final class ThemeStore: ObservableObject {
             background: Color(red: 0.976, green: 0.973, blue: 0.961),
             surface: Color(red: 1.00, green: 1.00, blue: 1.00),
             elevatedSurface: Color(red: 0.957, green: 0.953, blue: 0.941),
-            userBubble: .mimiPrimary,
+            // 用户内容退回中性表面，品牌紫只承担操作与运行状态，长对话不会出现大块色斑。
+            userBubble: Color(red: 0.957, green: 0.953, blue: 0.941),
             assistantBubble: .white,
             systemBubble: Color(red: 0.953, green: 0.949, blue: 0.941),
             codeBlock: Color(red: 0.141, green: 0.125, blue: 0.122),
@@ -529,14 +529,14 @@ final class ThemeStore: ObservableObject {
     }
 
     private var codexDarkTokens: ThemeTokens {
-        // 大面积区域保持中性石墨灰，只在交互和用户内容上使用明确的梅紫，避免棕色与灰紫叠加发闷。
+        // 大面积区域保持中性石墨灰，品牌紫只留给交互和运行状态。
         ThemeTokens(
             preset: .codex,
             resolvedScheme: .dark,
             background: Color(red: 0.063, green: 0.067, blue: 0.078),
             surface: Color(red: 0.098, green: 0.106, blue: 0.125),
             elevatedSurface: Color(red: 0.141, green: 0.153, blue: 0.180),
-            userBubble: Color(red: 0.376, green: 0.231, blue: 0.404),
+            userBubble: Color(red: 0.141, green: 0.153, blue: 0.180),
             assistantBubble: Color(red: 0.098, green: 0.106, blue: 0.125),
             systemBubble: Color(red: 0.125, green: 0.137, blue: 0.165),
             codeBlock: Color(red: 0.043, green: 0.051, blue: 0.067),

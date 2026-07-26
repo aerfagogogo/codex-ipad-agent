@@ -181,8 +181,8 @@ struct ConversationMessageContent: View {
     @ViewBuilder
     private func userImageGallery(style: MarkdownStyle) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        // 图片网格位于深色用户气泡之外；加载/失败状态必须使用页面中性表面，
-        // 否则气泡内的浅色文字和透明白底叠到浅色页面后会几乎不可见。
+        // 图片网格位于用户气泡之外；加载/失败状态必须使用页面中性表面，
+        // 避免气泡语义色渗入独立媒体状态卡。
         let statusStyle = MarkdownStyle.make(
             role: .assistant,
             colorScheme: colorScheme,
@@ -467,10 +467,7 @@ struct ConversationMessageContent: View {
 
     private var bubbleBorder: Color {
         let tokens = themeStore.tokens(for: colorScheme)
-        if message.role == .user, tokens.preset == .codex {
-            return Color.white.opacity(tokens.resolvedScheme == .light ? 0.12 : 0.08)
-        }
-        return tokens.border.opacity(message.role == .assistant ? 0.58 : 0.42)
+        return tokens.border.opacity(message.role == .assistant ? 0.58 : 0.54)
     }
 
     private var bubbleShadowColor: Color {
@@ -486,18 +483,14 @@ struct ConversationMessageContent: View {
 
     private var foreground: Color {
         let tokens = themeStore.tokens(for: colorScheme)
-        if message.role == .user, tokens.preset == .codex {
-            return userBubbleForeground
-        }
-        return tokens.primaryText
+        return message.role == .user ? userBubbleForeground : tokens.primaryText
     }
 
     private var timestampForeground: Color? {
-        let tokens = themeStore.tokens(for: colorScheme)
-        guard message.role == .user, tokens.preset == .codex else {
+        guard message.role == .user else {
             return nil
         }
-        return userBubbleForeground.opacity(0.72)
+        return userBubbleForeground.opacity(0.64)
     }
 
     private var userBubbleForeground: Color {
