@@ -353,6 +353,12 @@ fn is_internal_local_command_content(content: &Value) -> bool {
     let Some(text) = content.as_str() else {
         return false;
     };
+    is_internal_local_command_text(text)
+}
+
+/// Claude CLI 内部命令会伪装成 user 文本；索引扫描和历史翻译必须复用同一判定，
+/// 否则列表标题会展示 `<local-command-*>`，打开后又因为历史层过滤而看起来像空会话。
+pub(crate) fn is_internal_local_command_text(text: &str) -> bool {
     let text = text.trim();
     is_complete_reserved_tag(text, "local-command-caveat")
         || is_complete_reserved_tag(text, "local-command-stdout")

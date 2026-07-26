@@ -10,9 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use alleycat_bridge_core::server::{Bridge, Conn};
-use alleycat_bridge_core::{
-    JsonRpcError, LocalLauncher, ProcessLauncher, ThreadIndex as CoreThreadIndex, error_codes,
-};
+use alleycat_bridge_core::{JsonRpcError, LocalLauncher, ProcessLauncher, error_codes};
 use alleycat_codex_proto as p;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -20,7 +18,7 @@ use dashmap::DashMap;
 use serde_json::Value;
 
 use crate::handlers;
-use crate::index::{ClaudeHydrator, ClaudeSessionRef};
+use crate::index::{ClaudeHydrator, open_index_and_hydrate};
 use crate::pool::{ClaudePool, PoolPolicy};
 use crate::state::{ConnectionState, ThreadDefaults};
 
@@ -265,11 +263,7 @@ impl ClaudeBridgeBuilder {
             Some(dir) => ClaudeHydrator::with_override_dir(dir),
             None => ClaudeHydrator::new(),
         };
-        let index = CoreThreadIndex::<ClaudeSessionRef>::open_and_hydrate(
-            codex_home.join("threads.json"),
-            &hydrator,
-        )
-        .await?;
+        let index = open_index_and_hydrate(codex_home.join("threads.json"), &hydrator).await?;
         let thread_index: ThreadIndexHandle = index;
 
         Ok(Arc::new(ClaudeBridge {
