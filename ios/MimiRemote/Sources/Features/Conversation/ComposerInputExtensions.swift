@@ -263,9 +263,12 @@ extension ComposerView {
 
     @ViewBuilder
     var pendingApprovalAction: some View {
-        if !sessionStore.isSelectedSessionObserving, let approval = sessionStore.selectedSession?.pendingApproval {
+        if !sessionStore.isSelectedSessionObserving,
+           let session = sessionStore.selectedSession,
+           let approval = session.pendingApproval {
             PendingApprovalActionCard(
                 approval: approval,
+                runtimePresentation: SessionRuntimePresentation(session: session),
                 isSendingDecision: sessionStore.isApprovalDecisionPending(approval),
                 onDecision: { decision in
                     sessionStore.decideApproval(approval, decision: decision)
@@ -276,30 +279,35 @@ extension ComposerView {
 
     @ViewBuilder
     var pendingUserInputAction: some View {
-        if !sessionStore.isSelectedSessionObserving, let request = sessionStore.selectedSession?.pendingUserInput {
+        if !sessionStore.isSelectedSessionObserving,
+           let session = sessionStore.selectedSession,
+           let request = session.pendingUserInput {
+            let runtimePresentation = SessionRuntimePresentation(session: session)
             if isPhoneComposer {
                 PendingUserInputResumeButton(
                     request: request,
+                    runtimePresentation: runtimePresentation,
                     isSubmitting: sessionStore.isUserInputResponsePending(request),
                     action: { presentPendingUserInputSheet(request) }
                 )
             } else {
                 PendingUserInputActionCard(
                     request: request,
+                    runtimePresentation: runtimePresentation,
                     isSubmitting: sessionStore.isUserInputResponsePending(request),
                     draft: $pendingUserInputFormState.draft,
                     onSubmit: { answers in
                         sessionStore.respondToUserInput(request, answers: answers)
                     }
                 )
-                .id(PendingUserInputPresentation(request: request).id)
+                .id(PendingUserInputPresentation.id(for: request))
             }
         }
     }
 
     var pendingUserInputSelectionIdentity: PendingUserInputSelectionIdentity {
         let requestPresentationID = sessionStore.selectedSession?.pendingUserInput.map {
-            PendingUserInputPresentation(request: $0).id
+            PendingUserInputPresentation.id(for: $0)
         }
         return PendingUserInputSelectionIdentity(
             sessionID: sessionStore.selectedSessionID,
@@ -326,7 +334,13 @@ extension ComposerView {
             return
         }
 
-        let presentation = PendingUserInputPresentation(request: request)
+        guard let session = sessionStore.selectedSession else {
+            return
+        }
+        let presentation = PendingUserInputPresentation(
+            request: request,
+            runtimePresentation: SessionRuntimePresentation(session: session)
+        )
         guard presentation.id == current.requestPresentationID else {
             return
         }
@@ -337,7 +351,13 @@ extension ComposerView {
     }
 
     func presentPendingUserInputSheet(_ request: AgentUserInputRequest) {
-        let presentation = PendingUserInputPresentation(request: request)
+        guard let session = sessionStore.selectedSession else {
+            return
+        }
+        let presentation = PendingUserInputPresentation(
+            request: request,
+            runtimePresentation: SessionRuntimePresentation(session: session)
+        )
         pendingUserInputFormState.activate(presentation.id)
         presentedPendingUserInput = presentation
     }

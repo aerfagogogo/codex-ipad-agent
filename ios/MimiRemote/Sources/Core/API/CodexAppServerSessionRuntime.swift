@@ -1822,7 +1822,12 @@ actor CodexAppServerSessionRuntime {
         return minted
     }
 
-    static func gatewayURL(endpoint: String, sessionID: SessionID, runtimeProvider: String = "codex") throws -> URL {
+    static func gatewayURL(
+        endpoint: String,
+        sessionID: SessionID,
+        runtimeProvider: String = "codex",
+        defaults: UserDefaults = .standard
+    ) throws -> URL {
         // WebSocket 也必须复用 HTTP Endpoint 策略；ATS 不会替应用阻止自行构造的公网 ws:// 地址。
         let validatedEndpoint = try EndpointTransportPolicy.validatedEndpoint(endpoint)
         guard var components = URLComponents(string: validatedEndpoint) else {
@@ -1844,7 +1849,12 @@ actor CodexAppServerSessionRuntime {
         }
         // 命名这条连接对应的常驻会话。不带它，网关只能按连接给一个隔离会话，
         // 断线重连拿不回还在跑的 turn 和未应答的审批。
-        queryItems.append(URLQueryItem(name: "session", value: "\(gatewaySessionKey())-\(runtime)"))
+        queryItems.append(URLQueryItem(name: "session", value: "\(gatewaySessionKey(defaults: defaults))-\(runtime)"))
+        // Go 写 WebSocket 成功不等于 App 已经投影完该帧。由客户端带回最后
+        // 处理完成的 turn 边界，bridge 才能从真正安全的 cursor 继续回放。
+        if runtime == "claude", let lastSeen = gatewayLastSeenSequence(runtimeProvider: runtime, defaults: defaults) {
+            queryItems.append(URLQueryItem(name: "last_seen", value: String(lastSeen)))
+        }
         components.queryItems = queryItems
         guard let url = components.url else {
             throw AgentAPIError.invalidEndpoint
@@ -1862,6 +1872,29 @@ actor CodexAppServerSessionRuntime {
         default:
             return value
         }
+    }
+
+    private static func gatewayLastSeenStorageKey(runtimeProvider: String) -> String {
+        "appServer.gatewayLastSeen.\(normalizedRuntimeProvider(runtimeProvider))"
+    }
+
+    static func gatewayLastSeenSequence(
+        runtimeProvider: String,
+        defaults: UserDefaults = .standard
+    ) -> UInt64? {
+        let key = gatewayLastSeenStorageKey(runtimeProvider: runtimeProvider)
+        guard let raw = defaults.string(forKey: key) else {
+            return nil
+        }
+        return UInt64(raw)
+    }
+
+    static func storeGatewayLastSeenSequence(
+        _ sequence: UInt64,
+        runtimeProvider: String,
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(String(sequence), forKey: gatewayLastSeenStorageKey(runtimeProvider: runtimeProvider))
     }
 
     func detachEvents(sessionID: SessionID, token: UUID) {
@@ -2155,6 +2188,9 @@ actor CodexAppServerSessionRuntime {
     }
 
     func handle(_ notification: CodexAppServerNotification) {
+        defer {
+            acknowledgeReplayBoundary(notification)
+        }
         recordLiveSignal(from: notification)
         updateContext(from: notification)
         let resolved = clearResolvedServerRequest(from: notification)
@@ -2208,6 +2244,17 @@ actor CodexAppServerSessionRuntime {
         for sessionID in resolved.userInputSessionIDs where sessionID != emittedSessionID {
             emitUserInputResolved(sessionID: sessionID, skipped: false)
         }
+    }
+
+    /// 只在完整 turn/线程边界持久化 cursor。delta 中途崩溃宁可在下次连接
+    /// 重放并由投影层去重，也不能把半条 assistant 消息误判为已经交付。
+    func acknowledgeReplayBoundary(_ notification: CodexAppServerNotification) {
+        guard runtimeProvider == "claude",
+              let sequence = notification.replaySequence,
+              notification.method == "turn/completed" || notification.method == "thread/closed" else {
+            return
+        }
+        Self.storeGatewayLastSeenSequence(sequence, runtimeProvider: runtimeProvider)
     }
 
     func handle(_ request: CodexAppServerServerRequest) {

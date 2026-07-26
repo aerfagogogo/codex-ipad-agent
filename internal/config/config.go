@@ -14,6 +14,26 @@ import (
 
 const AppName = "mimi-remote"
 
+// bundledClaudeBridgeName is the Claude bridge shipped next to agentd inside
+// the Mac app bundle.
+const bundledClaudeBridgeName = "alleycat-claude-bridge"
+
+// bundledClaudeBridgeAvailable reports whether a bridge ships alongside this
+// executable. An installed app carries its own, so leaving `claude.bridge_bin`
+// empty is a complete configuration rather than a missing one — which is what
+// lets a fresh install work with no per-machine setup.
+func bundledClaudeBridgeAvailable() bool {
+	executable, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
+	}
+	info, err := os.Stat(filepath.Join(filepath.Dir(executable), bundledClaudeBridgeName))
+	return err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0
+}
+
 type Config struct {
 	Listen        string          `json:"listen"`
 	Network       NetworkConfig   `json:"network"`
@@ -476,7 +496,7 @@ func (c Config) Validate() error {
 	if c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
-	if c.Claude.Enabled && strings.TrimSpace(c.Claude.BridgeBin) == "" {
+	if c.Claude.Enabled && strings.TrimSpace(c.Claude.BridgeBin) == "" && !bundledClaudeBridgeAvailable() {
 		return fmt.Errorf("claude.bridge_bin 不能为空")
 	}
 	if c.Claude.Enabled && c.Claude.MaxConcurrentBridges <= 0 {

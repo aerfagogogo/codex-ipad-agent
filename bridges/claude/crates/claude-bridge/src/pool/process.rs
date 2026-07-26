@@ -40,7 +40,7 @@ use alleycat_bridge_core::{
 use anyhow::{Context, Result, anyhow};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -138,6 +138,9 @@ pub struct ClaudeProcessHandle {
     writer_tx: mpsc::UnboundedSender<String>,
     /// Broadcast end for events. Cloned via `subscribe_events()`.
     events_tx: broadcast::Sender<ClaudeEvent>,
+    /// 独立于 broadcast sender 的进程退出信号。handle 本身会持有
+    /// `events_tx`，因此仅等待 broadcast::Closed 无法识别子进程异常退出。
+    exit_tx: watch::Sender<bool>,
     /// Init readiness slot. Set by the reader task when the first
     /// `system/init` line lands; `wait_for_init` reads it back.
     init_slot: Arc<InitSlot>,
@@ -333,6 +336,7 @@ impl ClaudeProcessHandle {
 
         let (writer_tx, writer_rx) = mpsc::unbounded_channel::<String>();
         let (events_tx, _events_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        let (exit_tx, _exit_rx) = watch::channel(false);
         let init_slot: Arc<InitSlot> = Arc::new(InitSlot::default());
         let pending_controls: Arc<Mutex<HashMap<String, oneshot::Sender<ControlResponseBody>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -353,6 +357,7 @@ impl ClaudeProcessHandle {
             init_slot.clone(),
             events_tx.clone(),
             pending_controls.clone(),
+            exit_tx.clone(),
         ));
         let stderr_handle = tokio::spawn(stderr_task(stderr, pid));
 
@@ -370,6 +375,7 @@ impl ClaudeProcessHandle {
             pid,
             writer_tx,
             events_tx,
+            exit_tx,
             init_slot,
             pending_controls,
             runtime_state,
@@ -402,6 +408,13 @@ impl ClaudeProcessHandle {
     /// kept on the bridge side, not replayed by the pool.
     pub fn subscribe_events(&self) -> broadcast::Receiver<ClaudeEvent> {
         self.events_tx.subscribe()
+    }
+
+    /// Subscribe to the child-process terminal signal. `watch` preserves the
+    /// latest value, so a driver created just after an early process exit still
+    /// observes it immediately.
+    pub fn subscribe_exit(&self) -> watch::Receiver<bool> {
+        self.exit_tx.subscribe()
     }
 
     /// Wait until claude has emitted its `system/init` line, returning a
@@ -600,6 +613,9 @@ impl ClaudeProcessHandle {
     /// Close stdin to signal a clean shutdown, then wait for claude to exit
     /// and reap the child. Idempotent.
     pub async fn shutdown(&self) {
+        // 先通知 driver，保证显式 interrupt/release 即使随后 abort reader，
+        // 也会把当前 turn 收敛为 Failed，而不是永久停在 InProgress。
+        let _ = self.exit_tx.send(true);
         // Aborting the writer task drops its `ChildStdin`, which closes
         // claude's stdin pipe and causes a clean exit.
         if let Some(handle) = self._tasks.writer.lock().await.take() {
@@ -646,6 +662,7 @@ async fn reader_task(
     init_slot: Arc<InitSlot>,
     events_tx: broadcast::Sender<ClaudeEvent>,
     pending_controls: Arc<Mutex<HashMap<String, oneshot::Sender<ControlResponseBody>>>>,
+    exit_tx: watch::Sender<bool>,
 ) {
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
@@ -712,6 +729,8 @@ async fn reader_task(
     // instead of hanging on the deadline.
     let mut pending = pending_controls.lock().await;
     pending.clear();
+    drop(pending);
+    let _ = exit_tx.send(true);
 }
 
 async fn stderr_task(stderr: ChildStderr, pid: Option<u32>) {
@@ -744,6 +763,7 @@ impl ClaudeProcessHandle {
             pid: None,
             writer_tx,
             events_tx,
+            exit_tx: watch::channel(false).0,
             init_slot: Arc::new(InitSlot::default()),
             pending_controls: Arc::new(Mutex::new(HashMap::new())),
             runtime_state: Arc::new(Mutex::new(RuntimeState::default())),
@@ -801,6 +821,22 @@ mod tests {
             .await
             .expect("init");
         assert_eq!(got.session_id, "s1");
+    }
+
+    #[tokio::test]
+    async fn shutdown_notifies_process_exit_subscribers() {
+        let (writer_tx, _writer_rx) = mpsc::unbounded_channel::<String>();
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let handle =
+            ClaudeProcessHandle::__test_dangling(writer_tx, events_tx, PathBuf::from("/tmp"));
+        let mut exit_rx = handle.subscribe_exit();
+
+        handle.shutdown().await;
+        exit_rx
+            .changed()
+            .await
+            .expect("exit signal sender remains live");
+        assert!(*exit_rx.borrow());
     }
 
     #[tokio::test]

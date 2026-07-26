@@ -1103,7 +1103,117 @@ final class ConversationSnapshotTests: XCTestCase {
 }
 
 @MainActor
+final class PendingApprovalCardSnapshotTests: XCTestCase {
+    private let longCommand = """
+    echo "=== find agentd logs ==="; ls -lat /private/tmp/*agentd* /private/tmp/mimi* /tmp/*agentd* 2>/dev/null | head
+    echo "=== app LaunchAgent log config ==="; plutil -p "/Applications/Mimi Remote Mac.app/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
+    echo "=== user logs ==="; ls -lat "$HOME/Library/Logs/" 2>/dev/null | grep -i mimi | head
+    """
+
+    func testPendingApprovalCardFitsIPhoneTouchLayout() {
+        let view = makeCard(horizontalSizeClass: .compact)
+            .padding(16)
+            .frame(width: 390, height: 500, alignment: .top)
+            .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 500))
+        )
+    }
+
+    func testPendingApprovalCardUsesWiderIPadPreview() {
+        let view = makeCard(horizontalSizeClass: .regular)
+            .padding(20)
+            .frame(width: 760, height: 500, alignment: .top)
+            .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 760, height: 500))
+        )
+    }
+
+    private func makeCard(horizontalSizeClass: UserInterfaceSizeClass) -> some View {
+        let suiteName = "PendingApprovalCardSnapshotTests.Theme.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let themeStore = ThemeStore(defaults: defaults)
+        let approval = ApprovalSummary(
+            id: "approval-touch-layout",
+            title: L10n.format("ui.agent_requests_execution_command_value", longCommand),
+            body: longCommand,
+            kind: "command",
+            risk: "high",
+            count: nil
+        )
+
+        return PendingApprovalActionCard(
+            approval: approval,
+            runtimePresentation: SessionRuntimePresentation(
+                runtimeProvider: horizontalSizeClass == .compact ? "codex" : "claude",
+                source: "codex"
+            ),
+            isSendingDecision: false,
+            onDecision: { _ in }
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .environment(\.horizontalSizeClass, horizontalSizeClass)
+    }
+}
+
+@MainActor
 final class PendingUserInputSheetSnapshotTests: XCTestCase {
+    func testInlineUserInputCardMatchesApprovalChromeOnIPad() {
+        let request = AgentUserInputRequest(
+            id: "inline-style-request",
+            threadID: "inline-style-thread",
+            turnID: "inline-style-turn",
+            itemID: "inline-style-item",
+            questions: [
+                AgentUserInputQuestion(
+                    id: "implementation",
+                    header: "实现方式",
+                    question: "你希望接下来按哪一种方式继续？",
+                    isOther: false,
+                    isSecret: false,
+                    options: [
+                        AgentUserInputOption(label: "直接实现", description: "按当前方案完成修改"),
+                        AgentUserInputOption(label: "先看预览", description: "确认界面后再继续")
+                    ]
+                )
+            ]
+        )
+        let suiteName = "PendingUserInputInlineSnapshotTests.Theme.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let themeStore = ThemeStore(defaults: defaults)
+        let view = PendingUserInputActionCard(
+            request: request,
+            runtimePresentation: SessionRuntimePresentation(runtimeProvider: "codex", source: "codex"),
+            isSubmitting: false,
+            draft: .constant(PendingUserInputDraft()),
+            onSubmit: { _ in true }
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .padding(20)
+        .frame(width: 760, height: 360, alignment: .top)
+        .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 760, height: 360))
+        )
+    }
+
     func testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone() {
         let options = (1...6).map { index in
             AgentUserInputOption(
@@ -1134,7 +1244,10 @@ final class PendingUserInputSheetSnapshotTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         let themeStore = ThemeStore(defaults: defaults)
         let view = PendingUserInputSheet(
-            presentation: PendingUserInputPresentation(request: request),
+            presentation: PendingUserInputPresentation(
+                request: request,
+                runtimePresentation: SessionRuntimePresentation(runtimeProvider: "claude", source: "codex")
+            ),
             isSubmitting: false,
             draft: .constant(PendingUserInputDraft()),
             onSubmit: { _ in true }

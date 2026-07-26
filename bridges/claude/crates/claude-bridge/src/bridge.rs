@@ -87,7 +87,12 @@ impl ClaudeBridge {
         let session = ctx.session();
         let key = format!("{}:{}", session.agent, session.node_id);
         if let Some(existing) = self.per_conn.get(&key) {
-            return Arc::clone(existing.value());
+            let state = Arc::clone(existing.value());
+            // 同一个稳定 session key 在 bridge-core 的离线 TTL 之后会得到
+            // 一个新的 replay ring。runtime 状态继续复用，但交付目标必须切到
+            // 本次 attach 的 Session，避免通知写进已经被回收的旧 ring。
+            state.rebind_session(Arc::clone(session));
+            return state;
         }
         let state = Arc::new(ConnectionState::with_launcher(
             Arc::clone(ctx.session()),

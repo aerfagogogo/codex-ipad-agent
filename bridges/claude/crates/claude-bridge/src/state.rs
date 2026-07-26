@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 
 use alleycat_bridge_core::ProcessLauncher;
 use alleycat_bridge_core::session::Session;
@@ -42,7 +43,13 @@ pub use crate::index::{IndexEntry, ListFilter, ListPage, ListSort};
 /// Per-connection bridge state. Cheap to clone via `Arc`.
 pub struct ConnectionState {
     defaults: Mutex<ThreadDefaults>,
-    session: Arc<Session>,
+    /// 当前可交付通知的 bridge session。
+    ///
+    /// `ConnectionState` 会跨 WebSocket 连接复用，而 bridge-core 在长时间
+    /// 离线后可能为同一个稳定 session key 创建新的 `Session`。这里必须
+    /// 可重新绑定，否则后台 runtime 仍会把事件写进已经脱离 registry 的
+    /// 旧 replay ring。
+    session: RwLock<Arc<Session>>,
     claude_pool: Arc<ClaudePool>,
     thread_index: Arc<dyn ThreadIndexHandle>,
     /// Launcher used for `command/exec` shell tools. `None` falls back to a
@@ -189,7 +196,7 @@ impl ConnectionState {
     ) -> Self {
         Self {
             defaults: Mutex::new(defaults),
-            session,
+            session: RwLock::new(session),
             claude_pool,
             thread_index,
             launcher,
@@ -208,8 +215,18 @@ impl ConnectionState {
         self.trust_persisted_cwd
     }
 
-    pub fn session(&self) -> &Arc<Session> {
-        &self.session
+    pub fn session(&self) -> Arc<Session> {
+        Arc::clone(&self.session.read().unwrap())
+    }
+
+    /// 将长期存活的 runtime 状态重新绑定到本次 attach 解析出的 session。
+    /// 已存在的事件驱动器只持有 `ConnectionState`，所以后续通知会自动发往
+    /// 新 ring，而不需要跟随页面或 WebSocket 重建。
+    pub fn rebind_session(&self, session: Arc<Session>) {
+        let mut current = self.session.write().unwrap();
+        if !Arc::ptr_eq(&current, &session) {
+            *current = session;
+        }
     }
 
     pub fn set_capabilities(
@@ -223,7 +240,7 @@ impl ConnectionState {
             .and_then(|c| c.opt_out_notification_methods.as_ref())
             .map(|v| v.iter().cloned().collect())
             .unwrap_or_default();
-        self.session.set_capabilities(Capabilities {
+        self.session().set_capabilities(Capabilities {
             experimental_api: caps.is_some_and(|c| c.experimental_api),
             opt_out_notification_methods: opt_out,
             client_name,
@@ -233,11 +250,11 @@ impl ConnectionState {
     }
 
     pub fn capabilities(&self) -> Capabilities {
-        self.session.capabilities()
+        self.session().capabilities()
     }
 
     pub fn should_emit(&self, method: &str) -> bool {
-        self.session.should_emit(method)
+        self.session().should_emit(method)
     }
 
     pub fn defaults(&self) -> ThreadDefaults {
@@ -252,7 +269,7 @@ impl ConnectionState {
     pub fn send(&self, msg: JsonRpcMessage) -> Result<(), SendError> {
         match serde_json::to_value(&msg) {
             Ok(value) => {
-                self.session.enqueue(value);
+                self.session().enqueue(value);
                 Ok(())
             }
             Err(_) => Err(SendError::ConnectionClosed),
@@ -275,7 +292,7 @@ impl ConnectionState {
         let key = request_id.to_string();
         let (core_tx, core_rx) =
             oneshot::channel::<Result<Value, alleycat_bridge_core::state::ServerRequestError>>();
-        self.session
+        self.session()
             .publish_server_request(key, method, params, core_tx, payload);
         tokio::spawn(async move {
             let mapped = match core_rx.await {
@@ -298,7 +315,8 @@ impl ConnectionState {
         let key = request_id.to_string();
         let (core_tx, core_rx) =
             oneshot::channel::<Result<Value, alleycat_bridge_core::state::ServerRequestError>>();
-        self.session.register_pending(key, method, params, core_tx);
+        self.session()
+            .register_pending(key, method, params, core_tx);
         tokio::spawn(async move {
             let mapped = match core_rx.await {
                 Ok(Ok(v)) => Ok(v),
@@ -333,12 +351,12 @@ impl ConnectionState {
                 Err(alleycat_bridge_core::state::ServerRequestError::TimedOut)
             }
         };
-        self.session
+        self.session()
             .resolve_pending(&request_id.to_string(), mapped)
     }
 
     pub async fn cancel_all_pending_requests(&self) {
-        self.session.cancel_all_pending();
+        self.session().cancel_all_pending();
     }
 
     pub fn claude_pool(&self) -> &Arc<ClaudePool> {
@@ -446,6 +464,31 @@ impl ConnectionState {
             turn.status = status;
             turn.error = error;
         }
+    }
+
+    /// 冷启动/重新 attach 后先用 Claude JSONL 权威历史填充内存日志，再追加
+    /// 实时 turn。这样 `thread/read` 不会在第一个新 turn 到来后只剩本次运行
+    /// 的局部历史。
+    pub fn seed_thread_log_if_empty(&self, thread_id: &str, turns: Vec<Turn>) {
+        if turns.is_empty() {
+            return;
+        }
+        let mut logs = self.thread_logs.lock().unwrap();
+        let slot = logs.entry(thread_id.to_string()).or_default();
+        if !slot.is_empty() {
+            return;
+        }
+        *slot = turns
+            .into_iter()
+            .map(|turn| RecordedTurn {
+                turn_id: turn.id,
+                started_at: turn.started_at.unwrap_or_default(),
+                completed_at: turn.completed_at,
+                status: turn.status,
+                error: turn.error,
+                items: turn.items,
+            })
+            .collect();
     }
 
     pub fn thread_log(&self, thread_id: &str) -> Vec<Turn> {

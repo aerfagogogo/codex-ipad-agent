@@ -19693,6 +19693,23 @@
         }
       }
     },
+    "ui.risk_badge_value" : {
+      "comment" : "Compact standalone risk badge shown on a pending approval card.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Risk: %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "风险：%@"
+          }
+        }
+      }
+    },
     "ui.risk_value" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
