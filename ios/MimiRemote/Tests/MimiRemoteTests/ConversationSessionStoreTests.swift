@@ -999,6 +999,34 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(state.selection, .session("workspace-session"))
     }
 
+    func testWorkbenchNavigationNotificationOpensSessionsDetail() {
+        for usesCompactNavigation in [true, false] {
+            var state = WorkbenchNavigationState(route: .workspaces)
+
+            let effect = state.reduce(
+                .selectionCommitted(SessionSelectionCommit(
+                    sequence: 1,
+                    projectID: "project",
+                    sessionID: "notification-session",
+                    reason: .notification
+                )),
+                usesCompactNavigation: usesCompactNavigation,
+                selectedSessionID: "notification-session"
+            )
+
+            XCTAssertNil(effect)
+            XCTAssertEqual(
+                state.route,
+                .session(id: "notification-session", source: .sessions)
+            )
+            XCTAssertEqual(state.selection, .session("notification-session"))
+            if usesCompactNavigation {
+                XCTAssertEqual(state.compactSelectedTab, .sessions)
+                XCTAssertEqual(state.compactSessionPath, [.session("notification-session")])
+            }
+        }
+    }
+
     func testWorkbenchNavigationCompactWorkspacePopReturnsToWorkspace() {
         var state = WorkbenchNavigationState(
             route: .session(id: "session-workspace", source: .workspaces)

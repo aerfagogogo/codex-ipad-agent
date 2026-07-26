@@ -69,8 +69,7 @@ struct ConversationProcessGroupRow: View, Equatable {
             statusMarker
 
             Text(summaryText)
-                .font(themeStore.uiFont(.caption, weight: .medium))
-                .italic()
+                .font(themeStore.uiFont(size: 14, weight: .medium))
                 .foregroundStyle(headerTint)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -92,7 +91,7 @@ struct ConversationProcessGroupRow: View, Equatable {
         case .running:
             ProgressView()
                 .controlSize(.mini)
-                .tint(tokens.secondaryText)
+                .tint(tokens.accent)
                 .frame(width: 14, height: 18)
         case .completed:
             Image(systemName: "circle.fill")

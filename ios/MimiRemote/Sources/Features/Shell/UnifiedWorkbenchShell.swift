@@ -785,9 +785,9 @@ struct UnifiedWorkbenchShell: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 2) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
-                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .font(themeStore.uiFont(size: 17, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
                         .lineLimit(1)
 
@@ -797,35 +797,61 @@ struct UnifiedWorkbenchShell: View {
                             .frame(width: 5, height: 5)
 
                         Text(sessionTitleSubtitle)
-                            .font(themeStore.uiFont(.caption2, weight: .medium))
+                            .font(themeStore.uiFont(size: 13, weight: .medium))
                             .foregroundStyle(tokens.tertiaryText)
                             .lineLimit(1)
                     }
                 }
-                .frame(maxWidth: layout.titleMaxWidth)
+                .frame(maxWidth: layout.titleMaxWidth, alignment: .leading)
                 .accessibilityElement(children: .combine)
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                workbenchToolbarIconButton(
-                    systemImage: "arrow.clockwise",
-                    accessibilityLabel: L10n.text("ui.refresh_current_session"),
-                    tokens: tokens,
-                    isDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading
-                ) {
-                    Task { await sessionStore.refreshCurrentContext() }
+            if layout.usesCompactNavigation {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            Task { await sessionStore.refreshCurrentContext() }
+                        } label: {
+                            Label(L10n.text("ui.refresh_current_session"), systemImage: "arrow.clockwise")
+                        }
+                        .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
+
+                        Button {
+                            showingInspector.toggle()
+                        } label: {
+                            Label(
+                                showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
+                                systemImage: "sidebar.right"
+                            )
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(tokens.secondaryText)
+                    }
+                    .accessibilityLabel(L10n.text("ui.options"))
                 }
-            }
-            // iOS 26 会让相邻 toolbar item 共用一块 Liquid Glass 背景；
-            // 固定间距把刷新与详情面板拆成两个独立动作，降低误触。
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-            ToolbarItem(placement: .topBarTrailing) {
-                workbenchToolbarIconButton(
-                    systemImage: "sidebar.right",
-                    accessibilityLabel: showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
-                    tokens: tokens,
-                    isActive: showingInspector
-                ) {
-                    showingInspector.toggle()
+            } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    workbenchToolbarIconButton(
+                        systemImage: "arrow.clockwise",
+                        accessibilityLabel: L10n.text("ui.refresh_current_session"),
+                        tokens: tokens,
+                        isDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading
+                    ) {
+                        Task { await sessionStore.refreshCurrentContext() }
+                    }
+                }
+                // 宽屏保留两个独立动作；手机端已经收进单一更多菜单。
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                ToolbarItem(placement: .topBarTrailing) {
+                    workbenchToolbarIconButton(
+                        systemImage: "sidebar.right",
+                        accessibilityLabel: showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
+                        tokens: tokens,
+                        isActive: showingInspector
+                    ) {
+                        showingInspector.toggle()
+                    }
                 }
             }
         }

@@ -18,7 +18,7 @@ struct ConversationLayout: Equatable {
     let emptyStateMaxWidth: CGFloat
 
     var messageRowInsets: EdgeInsets {
-        EdgeInsets(top: 8, leading: horizontalInset, bottom: 8, trailing: horizontalInset)
+        EdgeInsets(top: 10, leading: horizontalInset, bottom: 10, trailing: horizontalInset)
     }
 
     static func usesCompactComposerMetrics(
@@ -59,7 +59,7 @@ struct ConversationLayout: Equatable {
         composerTopPadding = isCompactWidth ? 10 : 12
         // safeAreaInset 已经负责系统手势区；这里只保留卡片与安全区之间的轻量呼吸感，
         // 避免两层底距叠加后让输入卡看起来悬得过高。
-        composerBottomPadding = isCompactWidth ? 8 : 10
+        composerBottomPadding = isCompactWidth ? 0 : 8
 
         // 气泡宽度按实际容器收缩，保留左右身份感，同时避免 iPhone/mini 竖屏横向溢出。
         let rowAvailableWidth = max(240, visibleContainerWidth - horizontalInset * 2 - messageSideSpacer)
