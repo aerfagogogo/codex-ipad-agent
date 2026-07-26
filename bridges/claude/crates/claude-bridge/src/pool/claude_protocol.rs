@@ -114,8 +114,9 @@ pub enum ControlRequestBody {
     SetModel { model: String },
     /// Toggle permission mode mid-thread (e.g. `default → bypassPermissions`).
     SetPermissionMode { mode: String },
-    /// Cap the thinking budget in tokens.
-    SetMaxThinkingTokens { tokens: u32 },
+    /// Apply Claude Code runtime settings without mutating user/project files.
+    /// `effortLevel` is the native effort control used by the bridge.
+    ApplyFlagSettings { settings: Value },
     /// Cancel a single subagent task by its task id.
     StopTask { task_id: String },
     /// Roll the on-disk transcript back to the supplied user message id.
@@ -1086,6 +1087,28 @@ mod tests {
                 "type": "control_request",
                 "request_id": "abc",
                 "request": {"subtype": "set_model", "model": "sonnet"}
+            })
+        );
+    }
+
+    #[test]
+    fn outbound_control_request_apply_flag_settings_serializes() {
+        let req = ClaudeInbound::ControlRequest(ControlRequestEnvelope {
+            request_id: "abc".into(),
+            request: ControlRequestBody::ApplyFlagSettings {
+                settings: json!({"effortLevel": "xhigh"}),
+            },
+        });
+        let serialized = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            serialized,
+            json!({
+                "type": "control_request",
+                "request_id": "abc",
+                "request": {
+                    "subtype": "apply_flag_settings",
+                    "settings": {"effortLevel": "xhigh"}
+                }
             })
         );
     }

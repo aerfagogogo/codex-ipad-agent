@@ -53,25 +53,23 @@ use crate::translate::input::translate_user_input;
 const CONTROL_INTERRUPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Time the bridge gives claude to acknowledge a runtime config setter
-/// (`set_model`, `set_max_thinking_tokens`, `set_permission_mode`). Setters
+/// (`set_model`, `apply_flag_settings`, `set_permission_mode`). Setters
 /// are usually fast (~tens of ms) — keep this tight so a wedged claude
 /// surfaces as an error rather than hanging the turn handler.
 const CONTROL_SET_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Map codex `ReasoningEffort` onto a `--max-thinking-tokens` budget. Values
-/// match the conventions the Anthropic SDK ships with (extended-thinking docs)
-/// — tweak in lockstep with `pi-bridge`'s `ThinkingLevel` if those drift.
-fn effort_to_thinking_tokens(effort: p::ReasoningEffort) -> u32 {
+/// 映射到 Claude Code 原生 effort。新版客户端只会发送最高四档；
+/// 旧客户端残留的 none/minimal/low 统一提升到 medium，保证升级 bridge 后
+/// 不会继续使用已经从产品里移除的低档。
+fn native_effort_level(effort: p::ReasoningEffort) -> &'static str {
     match effort {
-        p::ReasoningEffort::None => 0,
-        p::ReasoningEffort::Minimal => 1024,
-        p::ReasoningEffort::Low => 4096,
-        p::ReasoningEffort::Medium => 16_384,
-        p::ReasoningEffort::High => 32_768,
-        // codex uses XHigh only on a few gpt-5.x models; claude has no
-        // direct equivalent so we cap at the High budget.
-        p::ReasoningEffort::XHigh => 32_768,
-        p::ReasoningEffort::Max => 32_768,
+        p::ReasoningEffort::None
+        | p::ReasoningEffort::Minimal
+        | p::ReasoningEffort::Low
+        | p::ReasoningEffort::Medium => "medium",
+        p::ReasoningEffort::High => "high",
+        p::ReasoningEffort::XHigh => "xhigh",
+        p::ReasoningEffort::Max => "max",
     }
 }
 
@@ -226,12 +224,12 @@ pub async fn handle_turn_start(
     // a turn that doesn't change the model/effort is a no-op (zero RTT).
     let normalized_model_override = params.model.as_deref().map(normalize_claude_model_id);
     let model_override = normalized_model_override.as_deref();
-    let thinking_override = params.effort.map(effort_to_thinking_tokens);
+    let effort_override = params.effort.map(native_effort_level);
     let permission_mode = claude_permission_mode(&params);
     if let Err(err) = handle
         .apply_runtime_overrides(
             model_override,
-            thinking_override,
+            effort_override,
             Some(permission_mode),
             CONTROL_SET_TIMEOUT,
         )
@@ -1230,6 +1228,16 @@ mod tests {
 
         params.approval_policy = Some(p::AskForApproval::Never);
         assert_eq!(claude_permission_mode(&params), "default");
+    }
+
+    #[test]
+    fn native_effort_keeps_the_top_four_levels_and_clamps_legacy_low_values() {
+        assert_eq!(native_effort_level(p::ReasoningEffort::Medium), "medium");
+        assert_eq!(native_effort_level(p::ReasoningEffort::High), "high");
+        assert_eq!(native_effort_level(p::ReasoningEffort::XHigh), "xhigh");
+        assert_eq!(native_effort_level(p::ReasoningEffort::Max), "max");
+        assert_eq!(native_effort_level(p::ReasoningEffort::Minimal), "medium");
+        assert_eq!(native_effort_level(p::ReasoningEffort::Low), "medium");
     }
 
     #[tokio::test]

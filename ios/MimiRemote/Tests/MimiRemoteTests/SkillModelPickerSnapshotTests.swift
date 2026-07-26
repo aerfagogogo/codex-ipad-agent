@@ -62,7 +62,11 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
             claudeLayout.rows.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
             ["Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5"]
         )
-        XCTAssertEqual(claudeLayout.efforts, [.minimal, .low, .medium, .high])
+        XCTAssertEqual(claudeLayout.efforts, [.medium, .high, .xhigh, .max])
+        XCTAssertFalse(
+            ModelReasoningGridCatalog.supports(.medium, option: claudeLayout.rows[0]),
+            "Haiku 4.5 的原生 effort 单元应禁用"
+        )
         XCTAssertFalse(claudeLayout.showsFastMode)
     }
 

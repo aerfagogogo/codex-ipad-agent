@@ -1728,6 +1728,8 @@ struct ComposerView: View {
             return L10n.text("ui.high")
         case .xhigh:
             return L10n.text("ui.extremely_high")
+        case .max:
+            return L10n.text("ui.maximum")
         }
     }
 

@@ -37,7 +37,8 @@ enum ModelReasoningGridCatalog {
     static let codexModelOrder = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
     static let codexEfforts: [CodexAppServerReasoningEffort] = [.medium, .high, .xhigh]
     static let claudeFamilyOrder = ["haiku", "sonnet", "opus", "fable"]
-    static let claudeEfforts: [CodexAppServerReasoningEffort] = [.minimal, .low, .medium, .high]
+    // Claude 原生 effort 只保留最高四档；列从左到右递增，符合现有滑杆手势方向。
+    static let claudeEfforts: [CodexAppServerReasoningEffort] = [.medium, .high, .xhigh, .max]
 
     static func effectiveModelID(
         selectedModelID: String?,
@@ -73,7 +74,7 @@ enum ModelReasoningGridCatalog {
             return ModelReasoningGridLayout(
                 kind: .claude,
                 rows: resolvedRows,
-                efforts: supportedEfforts(in: resolvedRows, fallback: claudeEfforts),
+                efforts: claudeEfforts,
                 showsFastMode: false
             )
         }
@@ -158,12 +159,18 @@ enum ModelReasoningGridCatalog {
         case .low: return L10n.text("ui.low")
         case .medium: return L10n.text("ui.in")
         case .high: return L10n.text("ui.high")
-        case .xhigh: return L10n.text("ui.highest")
+        case .xhigh: return L10n.text("ui.extremely_high")
+        case .max: return L10n.text("ui.maximum")
         }
     }
 
     static func supports(_ effort: CodexAppServerReasoningEffort, option: CodexAppServerModelOption) -> Bool {
-        option.supportedReasoningEfforts.isEmpty || option.supportedReasoningEfforts.contains(effort.rawValue)
+        // Claude model/list 的空数组表示模型不支持原生 effort；Haiku 4.5
+        // 因此保留为可选模型，但网格中的 effort 单元必须禁用。
+        if option.runtimeProvider?.lowercased() == "claude" {
+            return option.supportedReasoningEfforts.contains(effort.rawValue)
+        }
+        return option.supportedReasoningEfforts.isEmpty || option.supportedReasoningEfforts.contains(effort.rawValue)
     }
 
     static func supports(

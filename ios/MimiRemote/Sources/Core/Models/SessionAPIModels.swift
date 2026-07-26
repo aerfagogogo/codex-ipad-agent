@@ -502,6 +502,7 @@ enum CodexAppServerReasoningEffort: String, Codable, CaseIterable, Hashable, Ide
     case medium
     case high
     case xhigh
+    case max
 
     var id: String { rawValue }
 }
@@ -1019,7 +1020,7 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             provider: "anthropic",
             runtimeProvider: "claude",
             description: "Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
-            supportedReasoningEfforts: ["minimal", "low", "medium", "high"],
+            supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
             defaultReasoningEffort: "high"
         ),
         CodexAppServerModelOption(
@@ -1027,7 +1028,9 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             title: "Claude Sonnet 5",
             provider: "anthropic",
             runtimeProvider: "claude",
-            description: "Claude CLI alias resolved to the latest available Sonnet model."
+            description: "Claude CLI alias resolved to the latest available Sonnet model.",
+            supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
+            defaultReasoningEffort: "high"
         ),
         CodexAppServerModelOption(
             id: "opus",
@@ -1035,7 +1038,9 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             provider: "anthropic",
             runtimeProvider: "claude",
             description: "Claude CLI alias resolved to the latest available Opus model.",
-            isDefault: true
+            isDefault: true,
+            supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
+            defaultReasoningEffort: "high"
         ),
         CodexAppServerModelOption(
             id: "haiku",
