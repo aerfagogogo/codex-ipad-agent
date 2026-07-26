@@ -931,6 +931,8 @@ fn parse_effort(value: &serde_json::Value) -> Option<p::ReasoningEffort> {
         "low" => Some(p::ReasoningEffort::Low),
         "medium" => Some(p::ReasoningEffort::Medium),
         "high" => Some(p::ReasoningEffort::High),
+        "xhigh" => Some(p::ReasoningEffort::XHigh),
+        "max" => Some(p::ReasoningEffort::Max),
         _ => None,
     }
 }
@@ -1030,10 +1032,13 @@ mod tests {
             Some(p::ReasoningEffort::Minimal)
         ));
         assert!(matches!(
-            parse_effort(&json!("high")),
-            Some(p::ReasoningEffort::High)
+            parse_effort(&json!("xhigh")),
+            Some(p::ReasoningEffort::XHigh)
         ));
-        assert!(parse_effort(&json!("xhigh")).is_none());
+        assert!(matches!(
+            parse_effort(&json!("max")),
+            Some(p::ReasoningEffort::Max)
+        ));
         assert!(parse_effort(&json!(42)).is_none());
     }
 

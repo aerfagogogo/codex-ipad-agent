@@ -112,10 +112,13 @@ The iOS app stores only the outer `agentd` token in Keychain. The loopback app-s
 
 Requirements:
 
-- A Mac with Codex CLI installed and signed in.
+- A Mac running macOS 26 or later, with Codex CLI installed and signed in.
 - The Mac and iPhone/iPad connected to the same private network. Tailscale is recommended for access across different networks but is optional for same-LAN use.
-- Homebrew on macOS.
 - Xcode 26 or later, including an iOS 26 SDK.
+
+For the normal setup path, download [`Mimi-Remote-Mac.dmg`](https://github.com/gaixianggeng/mimi-remote/releases/latest/download/Mimi-Remote-Mac.dmg), open it, drag **Mimi Remote Mac** to Applications, then finish the first-run setup in the Mac app. It includes `agentd`; Homebrew is not required.
+
+For command-line installation, server use, or recovery:
 
 ```bash
 brew update

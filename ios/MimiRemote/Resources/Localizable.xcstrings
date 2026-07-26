@@ -4536,6 +4536,23 @@
         }
       }
     },
+    "ui.command_line_installation_advanced" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Command-line installation (Advanced)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "命令行安装（高级）"
+          }
+        }
+      }
+    },
     "ui.command_summary" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -10080,6 +10097,23 @@
         }
       }
     },
+    "ui.github_release_accessibility_hint" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opens the public GitHub Release page in your browser."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在浏览器中打开公开的 GitHub Release 页面。"
+          }
+        }
+      }
+    },
     "ui.go_to_system_settings" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -11083,6 +11117,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "检查器"
+          }
+        }
+      }
+    },
+    "ui.install_mimi_remote_mac" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install Mimi Remote Mac"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "安装 Mimi Remote Mac"
           }
         }
       }
@@ -12572,6 +12623,23 @@
         }
       }
     },
+    "ui.maximum" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "maximum"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最大"
+          }
+        }
+      }
+    },
     "ui.mac_assistant_connected" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -12636,6 +12704,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "尚未配置 Mac 连接"
+          }
+        }
+      }
+    },
+    "ui.mac_installer_requirements_and_instructions" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Requires macOS 26 or later. Send the download link to your Mac, open the DMG, then drag the app to Applications."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要 macOS 26 或更高版本。将下载链接发送到你的 Mac，打开 DMG 后拖入“应用程序”。"
           }
         }
       }
@@ -15244,6 +15329,23 @@
         }
       }
     },
+    "ui.open_and_finish_initial_setup" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open and finish initial setup"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开并完成首次设置"
+          }
+        }
+      }
+    },
     "ui.open_as_workspace" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -15788,6 +15890,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "概览"
+          }
+        }
+      }
+    },
+    "ui.pairing_information_only_transmitted_between_your_devices" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pairing information is transmitted only between your devices."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配对信息只在你的设备之间传输。"
           }
         }
       }
@@ -20237,6 +20356,23 @@
         }
       }
     },
+    "ui.scan_qr_code_on_mac" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan the QR code on your Mac"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "扫描 Mac 上的二维码"
+          }
+        }
+      }
+    },
     "ui.scan_qr_code_to_add_mac" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -20250,6 +20386,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "扫描二维码添加 Mac"
+          }
+        }
+      }
+    },
+    "ui.scan_qr_code_to_connect" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan QR code to connect"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "扫描二维码连接"
           }
         }
       }
@@ -20579,6 +20732,23 @@
         }
       }
     },
+    "ui.select_code_directory_then_mac_shows_qr" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose a code directory, then your Mac will show a pairing QR code."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择代码目录后，Mac 会显示配对二维码。"
+          }
+        }
+      }
+    },
     "ui.select_confirm_esc_close" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -20882,6 +21052,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "发送 Ctrl-C"
+          }
+        }
+      }
+    },
+    "ui.send_download_link_to_mac" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Send download link to Mac"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送下载链接到 Mac"
           }
         }
       }
@@ -22301,6 +22488,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "先在 Mac 启动 Mimi Mac 助手"
+          }
+        }
+      }
+    },
+    "ui.start_setup" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Start setup"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "开始设置"
           }
         }
       }
@@ -29636,6 +29840,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "查看图片"
+          }
+        }
+      }
+    },
+    "ui.view_releases_on_github" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "View releases on GitHub"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 GitHub 查看发布版本"
           }
         }
       }

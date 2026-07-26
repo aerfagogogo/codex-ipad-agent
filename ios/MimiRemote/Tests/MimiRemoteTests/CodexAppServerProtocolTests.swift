@@ -670,7 +670,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
     }
 
     func testClaudeModelGridUsesConcreteFamiliesAndBridgeReasoningMetadata() {
-        let efforts = ["minimal", "low", "medium", "high"]
+        let efforts = ["medium", "high", "xhigh", "max"]
         let options = [
             CodexAppServerModelOption(id: "fable", runtimeProvider: "claude"),
             CodexAppServerModelOption(
@@ -687,7 +687,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
                 runtimeProvider: "claude",
                 isDefault: true,
                 supportedReasoningEfforts: efforts,
-                defaultReasoningEffort: "medium"
+                defaultReasoningEffort: "high"
             ),
             CodexAppServerModelOption(id: "opus", runtimeProvider: "claude"),
             CodexAppServerModelOption(
@@ -702,8 +702,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
                 id: "claude-haiku-4-5-20251001",
                 title: "Claude Haiku 4.5",
                 runtimeProvider: "claude",
-                supportedReasoningEfforts: efforts,
-                defaultReasoningEffort: "minimal"
+                supportedReasoningEfforts: []
             )
         ]
 
@@ -717,9 +716,13 @@ final class CodexAppServerProtocolTests: XCTestCase {
             layout.rows.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
             ["Haiku 4.5", "Sonnet 4.6", "Opus 5", "Fable 5"]
         )
-        XCTAssertEqual(layout.efforts, [.minimal, .low, .medium, .high])
+        XCTAssertEqual(layout.efforts, [.medium, .high, .xhigh, .max])
         XCTAssertTrue(layout.contains(modelID: "fable"), "Claude Fable alias 应映射到同一模型家族")
         XCTAssertTrue(layout.contains(modelID: "sonnet"), "Claude alias 应映射到同一模型家族")
+        XCTAssertFalse(
+            ModelReasoningGridCatalog.supports(.medium, option: layout.rows[0]),
+            "Haiku 4.5 不应伪装成支持原生 effort"
+        )
         XCTAssertFalse(layout.showsFastMode)
         XCTAssertEqual(
             ModelReasoningGridCatalog.triggerTitle(for: "fable", effort: .high, layout: layout),
@@ -735,41 +738,41 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let sonnet = CodexAppServerModelOption(
             id: "claude-sonnet-4-6",
             runtimeProvider: "claude",
-            supportedReasoningEfforts: ["low", "medium"]
+            supportedReasoningEfforts: ["medium", "high"]
         )
         let opus = CodexAppServerModelOption(
             id: "claude-opus-5",
             runtimeProvider: "claude",
-            supportedReasoningEfforts: ["high"],
-            defaultReasoningEffort: "high"
+            supportedReasoningEfforts: ["xhigh", "max"],
+            defaultReasoningEffort: "xhigh"
         )
         let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: [sonnet, opus])
 
-        XCTAssertEqual(layout.efforts, [.low, .medium, .high])
-        XCTAssertFalse(ModelReasoningGridCatalog.supports(.high, option: sonnet, layout: layout))
-        XCTAssertTrue(ModelReasoningGridCatalog.supports(.high, option: opus, layout: layout))
+        XCTAssertEqual(layout.efforts, [.medium, .high, .xhigh, .max])
+        XCTAssertFalse(ModelReasoningGridCatalog.supports(.xhigh, option: sonnet, layout: layout))
+        XCTAssertTrue(ModelReasoningGridCatalog.supports(.xhigh, option: opus, layout: layout))
         XCTAssertNil(
             ModelReasoningGridCatalog.reasoningEffortForModelSelection(
                 option: sonnet,
-                current: .high,
+                current: .xhigh,
                 layout: layout
             )
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.reasoningEffortForModelSelection(
                 option: opus,
-                current: .low,
+                current: .medium,
                 layout: layout
             ),
-            .high
+            .xhigh
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.supportedEfforts(for: sonnet, layout: layout),
-            [.low, .medium]
+            [.medium, .high]
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.supportedEfforts(for: opus, layout: layout),
-            [.high]
+            [.xhigh, .max]
         )
     }
 

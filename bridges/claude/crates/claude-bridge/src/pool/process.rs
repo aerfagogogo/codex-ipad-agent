@@ -149,9 +149,9 @@ pub struct ClaudeProcessHandle {
     /// peels each `control_response` out, looks up the entry, and resolves
     /// the oneshot. Cancelled entries (timeout / process exit) are dropped.
     pending_controls: Arc<Mutex<HashMap<String, oneshot::Sender<ControlResponseBody>>>>,
-    /// Per-handle live runtime config — model / thinking-tokens budget /
+    /// Per-handle live runtime config — model / native effort level /
     /// permission mode currently applied to the child process. Mutated only
-    /// after a successful `set_*` control_request, so `apply_runtime_overrides`
+    /// after a successful control_request, so `apply_runtime_overrides`
     /// can diff and skip no-op writes (avoids burning a request RTT per turn
     /// when nothing changes).
     runtime_state: Arc<Mutex<RuntimeState>>,
@@ -179,7 +179,7 @@ struct InitSlot {
 #[derive(Debug, Default)]
 struct RuntimeState {
     model: Option<String>,
-    thinking_tokens: Option<u32>,
+    effort_level: Option<String>,
     permission_mode: Option<String>,
 }
 
@@ -342,12 +342,11 @@ impl ClaudeProcessHandle {
             Arc::new(Mutex::new(HashMap::new()));
         // Seed runtime_state with whatever was passed at spawn — claude reads
         // `--model <m>` directly so we know that value is live without ever
-        // sending set_model. Thinking tokens / permission mode have no
-        // corresponding spawn flags in our wrapper, so they stay None until
+        // sending set_model. Effort / permission mode stay None until
         // the first apply_runtime_overrides call sets them.
         let runtime_state = Arc::new(Mutex::new(RuntimeState {
             model: model.clone(),
-            thinking_tokens: None,
+            effort_level: None,
             permission_mode: None,
         }));
 
@@ -485,7 +484,7 @@ impl ClaudeProcessHandle {
     ///   envelope could be written.
     ///
     /// Used by `turn/interrupt`, `thread/rollback`, and the runtime config
-    /// setters (`set_model`, `set_permission_mode`, `set_max_thinking_tokens`).
+    /// setters (`set_model`, `set_permission_mode`, `apply_flag_settings`).
     pub async fn request_control(
         &self,
         request: ControlRequestBody,
@@ -543,7 +542,7 @@ impl ClaudeProcessHandle {
     pub async fn apply_runtime_overrides(
         &self,
         model: Option<&str>,
-        thinking_tokens: Option<u32>,
+        effort_level: Option<&str>,
         permission_mode: Option<&str>,
         deadline: Duration,
     ) -> Result<(), ClaudeProcessError> {
@@ -564,19 +563,21 @@ impl ClaudeProcessHandle {
                 guard.model = Some(want.to_string());
             }
         }
-        if let Some(want) = thinking_tokens {
+        if let Some(want) = effort_level {
             let need_dispatch = {
                 let guard = self.runtime_state.lock().await;
-                guard.thinking_tokens != Some(want)
+                guard.effort_level.as_deref() != Some(want)
             };
             if need_dispatch {
                 self.request_control(
-                    ControlRequestBody::SetMaxThinkingTokens { tokens: want },
+                    ControlRequestBody::ApplyFlagSettings {
+                        settings: serde_json::json!({"effortLevel": want}),
+                    },
                     deadline,
                 )
                 .await?;
                 let mut guard = self.runtime_state.lock().await;
-                guard.thinking_tokens = Some(want);
+                guard.effort_level = Some(want.to_string());
             }
         }
         if let Some(want) = permission_mode {
@@ -601,11 +602,11 @@ impl ClaudeProcessHandle {
 
     /// Snapshot the runtime cache. Cheap clone of three small Options. Useful
     /// for diagnostics and tests.
-    pub async fn runtime_snapshot(&self) -> (Option<String>, Option<u32>, Option<String>) {
+    pub async fn runtime_snapshot(&self) -> (Option<String>, Option<String>, Option<String>) {
         let guard = self.runtime_state.lock().await;
         (
             guard.model.clone(),
-            guard.thinking_tokens,
+            guard.effort_level.clone(),
             guard.permission_mode.clone(),
         )
     }
@@ -960,6 +961,45 @@ mod tests {
             .await
             .expect_err("writer closed");
         assert!(matches!(err, ClaudeProcessError::WriterClosed(_)));
+    }
+
+    #[tokio::test]
+    async fn runtime_override_applies_native_effort_and_skips_duplicate() {
+        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events_tx,
+            PathBuf::from("/tmp"),
+        ));
+        let pending = handle.pending_controls_handle();
+        let h2 = Arc::clone(&handle);
+        let task = tokio::spawn(async move {
+            h2.apply_runtime_overrides(None, Some("xhigh"), None, Duration::from_secs(2))
+                .await
+        });
+
+        let line = writer_rx.recv().await.expect("writer line");
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("json");
+        assert_eq!(parsed["request"]["subtype"], "apply_flag_settings");
+        assert_eq!(parsed["request"]["settings"]["effortLevel"], "xhigh");
+
+        let request_id = parsed["request_id"].as_str().unwrap().to_string();
+        let waiter = pending.lock().await.remove(&request_id).unwrap();
+        waiter
+            .send(ControlResponseBody::Success { response: None })
+            .unwrap();
+        task.await.expect("join").expect("override");
+
+        assert_eq!(
+            handle.runtime_snapshot().await,
+            (None, Some("xhigh".into()), None)
+        );
+        handle
+            .apply_runtime_overrides(None, Some("xhigh"), None, Duration::from_millis(50))
+            .await
+            .expect("duplicate is a no-op");
+        assert!(writer_rx.try_recv().is_err());
     }
 
     #[tokio::test]

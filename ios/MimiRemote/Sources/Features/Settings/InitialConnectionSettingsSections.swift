@@ -59,29 +59,24 @@ struct InitialConnectionSettingsSections: View {
                 }
 #endif
                 if !appStore.isConfigured && !appStore.localAgentDetected {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label(L10n.text("ui.start_mimi_assistant_on_mac_first"), systemImage: "desktopcomputer")
-                            .font(themeStore.uiFont(.body, weight: .semibold))
-                        Text("agentd up")
-                            .font(.system(.callout, design: .monospaced, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                    MacInstallationSetupView(
+                        isScanDisabled: isSavingConnection,
+                        onScan: beginScanningMac
+                    )
+                } else {
+                    Button {
+                        beginScanningMac()
+                    } label: {
+                        Label(primaryScanButtonTitle, systemImage: "qrcode.viewfinder")
+                            .frame(maxWidth: .infinity)
                     }
-                    .padding(.vertical, 2)
+                    .buttonStyle(.borderedProminent)
+                    .tint(tokens.primaryAction)
+                    .controlSize(.large)
+                    .disabled(isSavingConnection)
                 }
 
-                Button {
-                    beginScanningMac()
-                } label: {
-                    Label(primaryScanButtonTitle, systemImage: "qrcode.viewfinder")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(tokens.primaryAction)
-                .controlSize(.large)
-                .disabled(isSavingConnection)
-
-                DisclosureGroup(L10n.text("ui.mac_preparation")) {
+                DisclosureGroup {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(L10n.text("ui.first_time_installation"))
                             .font(themeStore.uiFont(.caption, weight: .semibold))
@@ -100,6 +95,11 @@ struct InitialConnectionSettingsSections: View {
                             .foregroundStyle(.secondary)
                     }
                     .padding(.vertical, 6)
+                } label: {
+                    Label(
+                        L10n.text("ui.command_line_installation_advanced"),
+                        systemImage: "terminal"
+                    )
                 }
 
                 DisclosureGroup(isExpanded: manualConnectionExpandedBinding) {
@@ -142,9 +142,9 @@ struct InitialConnectionSettingsSections: View {
                     Label(manualConnectionTitle, systemImage: "keyboard")
                 }
             } header: {
-                Text(appStore.isConfigured ? L10n.text("ui.add_mac") : L10n.text("ui.connect_to_mac"))
+                Text(appStore.isConfigured ? L10n.text("ui.add_mac") : L10n.text("ui.start_setup"))
             } footer: {
-                Text(L10n.text("ui.it_is_recommended_to_scan_the_qr_code"))
+                Text(connectionSectionFooter)
             }
             // Form 会把透明 Group 展开成多个 Section。所有弹窗必须挂在这个始终存在的
             // 具体 Section 上，确保已连接时新增的“已保存/状态”Section 不会生成多个 presenter。
@@ -288,6 +288,13 @@ struct InitialConnectionSettingsSections: View {
 
     private var primaryScanButtonTitle: String {
         appStore.isConfigured ? L10n.text("ui.scan_qr_code_to_add_mac") : L10n.text("ui.scan_the_qr_code_to_connect")
+    }
+
+    private var connectionSectionFooter: String {
+        if !appStore.isConfigured && !appStore.localAgentDetected {
+            return L10n.text("ui.pairing_information_only_transmitted_between_your_devices")
+        }
+        return L10n.text("ui.it_is_recommended_to_scan_the_qr_code")
     }
 
     private var localAgentPairingHint: String {

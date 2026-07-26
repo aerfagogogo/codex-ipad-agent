@@ -47,6 +47,7 @@ pub async fn handle_model_list(
             "Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
             false,
             p::ReasoningEffort::High,
+            true,
         ),
         build_model(
             OPUS_MODEL,
@@ -54,20 +55,23 @@ pub async fn handle_model_list(
             "Anthropic's most capable model. Best for hard reasoning, deep refactors, multi-step planning.",
             true,
             p::ReasoningEffort::High,
+            true,
         ),
         build_model(
             SONNET_MODEL,
             "Claude Sonnet 4.6",
             "Balanced model for everyday coding work — fast, capable, lower cost than Opus.",
             false,
-            p::ReasoningEffort::Medium,
+            p::ReasoningEffort::High,
+            true,
         ),
         build_model(
             HAIKU_MODEL,
             "Claude Haiku 4.5",
             "Lightest, fastest model. Best for quick edits, small tasks, low-latency interactions.",
             false,
-            p::ReasoningEffort::Minimal,
+            p::ReasoningEffort::None,
+            false,
         ),
         // Short aliases the `claude` CLI accepts directly.
         build_model(
@@ -76,20 +80,23 @@ pub async fn handle_model_list(
             "Alias resolved by the claude CLI to the latest Opus revision.",
             false,
             p::ReasoningEffort::High,
+            true,
         ),
         build_model(
             "sonnet",
             "Claude Sonnet (alias)",
             "Alias resolved by the claude CLI to the latest Sonnet revision.",
             false,
-            p::ReasoningEffort::Medium,
+            p::ReasoningEffort::High,
+            true,
         ),
         build_model(
             "haiku",
             "Claude Haiku (alias)",
             "Alias resolved by the claude CLI to the latest Haiku revision.",
             false,
-            p::ReasoningEffort::Minimal,
+            p::ReasoningEffort::None,
+            false,
         ),
     ];
     p::ModelListResponse {
@@ -104,6 +111,7 @@ fn build_model(
     description: &str,
     is_default: bool,
     default_effort: p::ReasoningEffort,
+    supports_native_effort: bool,
 ) -> p::Model {
     p::Model {
         id: model_id.to_string(),
@@ -114,7 +122,11 @@ fn build_model(
         display_name: display_name.to_string(),
         description: description.to_string(),
         hidden: false,
-        supported_reasoning_efforts: reasoning_options(),
+        supported_reasoning_efforts: if supports_native_effort {
+            reasoning_options()
+        } else {
+            Vec::new()
+        },
         default_reasoning_effort: default_effort,
         input_modalities: vec![json!("text"), json!("image")],
         supports_personality: false,
@@ -135,20 +147,20 @@ fn standard_service_tiers() -> Vec<p::ModelServiceTier> {
 fn reasoning_options() -> Vec<p::ReasoningEffortOption> {
     vec![
         p::ReasoningEffortOption {
-            reasoning_effort: p::ReasoningEffort::Minimal,
-            description: "Lowest latency, no extended thinking".to_string(),
-        },
-        p::ReasoningEffortOption {
-            reasoning_effort: p::ReasoningEffort::Low,
-            description: "Brief reasoning".to_string(),
-        },
-        p::ReasoningEffortOption {
             reasoning_effort: p::ReasoningEffort::Medium,
-            description: "Default depth of reasoning".to_string(),
+            description: "Balanced native Claude effort".to_string(),
         },
         p::ReasoningEffortOption {
             reasoning_effort: p::ReasoningEffort::High,
-            description: "Maximum reasoning effort".to_string(),
+            description: "High native Claude effort (default)".to_string(),
+        },
+        p::ReasoningEffortOption {
+            reasoning_effort: p::ReasoningEffort::XHigh,
+            description: "Extended native Claude effort".to_string(),
+        },
+        p::ReasoningEffortOption {
+            reasoning_effort: p::ReasoningEffort::Max,
+            description: "Maximum native Claude effort".to_string(),
         },
     ]
 }
@@ -236,6 +248,26 @@ mod tests {
             p::ReasoningEffort::High
         ));
         assert_eq!(opus.supported_reasoning_efforts.len(), 4);
+        assert_eq!(
+            opus.supported_reasoning_efforts
+                .iter()
+                .map(|option| option.reasoning_effort)
+                .collect::<Vec<_>>(),
+            vec![
+                p::ReasoningEffort::Medium,
+                p::ReasoningEffort::High,
+                p::ReasoningEffort::XHigh,
+                p::ReasoningEffort::Max,
+            ]
+        );
+        assert!(
+            by_id[HAIKU_MODEL].supported_reasoning_efforts.is_empty(),
+            "Haiku 4.5 不支持 Claude 原生 effort"
+        );
+        assert!(matches!(
+            by_id[HAIKU_MODEL].default_reasoning_effort,
+            p::ReasoningEffort::None
+        ));
 
         // The other concrete models are no longer the default.
         assert!(!by_id[SONNET_MODEL].is_default);
