@@ -4,6 +4,8 @@ Mimi Remote is a native developer-tool client for a computer owned by, or explic
 
 The iOS app does not execute downloaded code, provide arbitrary shell access, provide AI models or subscriptions, operate a VPN, relay traffic, or host project data. Code execution occurs only on the configured host. The developer does not operate a service that receives prompts, source code, credentials, or model-provider traffic.
 
+The GitHub link on the Connection screen points to this project's public Release page and a free, signed and notarized macOS companion app. The iOS app only opens or shares the URL. It does not download, install, or execute the macOS binary on iOS, and no purchase or subscription is offered. App Review can use the manual Endpoint below without installing the macOS companion app.
+
 ## Resolution of the previous China mainland issue
 
 - Public App Store metadata and screenshots contain no ChatGPT or OpenAI names, logos, or claims of affiliation.
