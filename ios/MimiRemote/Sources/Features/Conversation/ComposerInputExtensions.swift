@@ -372,7 +372,7 @@ extension ComposerView {
                     request: request,
                     runtimePresentation: runtimePresentation,
                     isSubmitting: sessionStore.isUserInputResponsePending(request),
-                    draft: $pendingUserInputFormState.draft,
+                    draft: pendingUserInputDraftBinding,
                     onSubmit: { answers in
                         sessionStore.respondToUserInput(request, answers: answers)
                     }
@@ -392,13 +392,34 @@ extension ComposerView {
         )
     }
 
+    var pendingUserInputDraftBinding: Binding<PendingUserInputDraft> {
+        Binding(
+            get: { pendingUserInputFormState.draft },
+            set: { draft in
+                pendingUserInputFormState.draft = draft
+                persistPendingUserInputFormState()
+            }
+        )
+    }
+
+    func restorePendingUserInputFormStateFromCache() {
+        pendingUserInputFormState = sessionStore.pendingUserInputFormStateCache
+    }
+
+    func persistPendingUserInputFormState() {
+        sessionStore.pendingUserInputFormStateCache = pendingUserInputFormState
+    }
+
     func synchronizePendingUserInputPresentation(
         previous: PendingUserInputSelectionIdentity?,
         current: PendingUserInputSelectionIdentity
     ) {
-        if previous?.sessionID != current.sessionID {
+        if pendingUserInputFormState.resetIfSessionChanged(
+            from: previous?.sessionID,
+            to: current.sessionID
+        ) {
             // 会话切换意味着表单语境已经变化，旧选择不能带入另一条 thread。
-            pendingUserInputFormState.resetForSessionChange()
+            persistPendingUserInputFormState()
             presentedPendingUserInput = nil
         }
 
@@ -422,6 +443,7 @@ extension ComposerView {
             return
         }
         pendingUserInputFormState.activate(presentation.id)
+        persistPendingUserInputFormState()
         if isPhoneComposer {
             presentedPendingUserInput = presentation
         }
@@ -436,6 +458,7 @@ extension ComposerView {
             runtimePresentation: SessionRuntimePresentation(session: session)
         )
         pendingUserInputFormState.activate(presentation.id)
+        persistPendingUserInputFormState()
         presentedPendingUserInput = presentation
     }
 

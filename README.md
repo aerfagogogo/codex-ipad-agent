@@ -100,8 +100,8 @@ flowchart TD
     A["Mimi Remote\niPhone / iPad"] -->|"Tailscale / local network · Bearer token\nREST + WebSocket"| B["agentd\nGo control plane / safety gateway"]
     B -->|"allowlist · cwd scope\nJSON-RPC policy"| C["Codex app-server"]
     C --> D["Codex CLI credentials\nand local projects"]
-    B -->|"runtime=claude\none process per connection"| E["alleycat-claude-bridge"]
-    E -->|"stdio JSONL"| F["Claude Code headless"]
+    B -->|"runtime=claude\nstable session + cursor"| E["resident alleycat-claude-bridge"]
+    E -->|"one stdio JSONL process per thread"| F["Claude Code headless"]
 ```
 
 The iOS app stores only the outer `agentd` token in Keychain. The loopback app-server capability token stays on the Mac. `agentd` limits access to configured projects, `browse_roots`, and managed Worktrees; remote commands are limited to configured actions with confirmation, timeout, and output limits.
@@ -114,9 +114,8 @@ Requirements:
 
 - A Mac running macOS 26 or later, with Codex CLI installed and signed in.
 - The Mac and iPhone/iPad connected to the same private network. Tailscale is recommended for access across different networks but is optional for same-LAN use.
-- Xcode 26 or later, including an iOS 26 SDK.
 
-For the normal setup path, download [`Mimi-Remote-Mac.dmg`](https://github.com/gaixianggeng/mimi-remote/releases/latest/download/Mimi-Remote-Mac.dmg), open it, drag **Mimi Remote Mac** to Applications, then finish the first-run setup in the Mac app. It includes `agentd`; Homebrew is not required.
+For the normal setup path, download [`Mimi-Remote-Mac.dmg`](https://github.com/gaixianggeng/mimi-remote/releases/latest/download/Mimi-Remote-Mac.dmg) and its SHA-256 file, verify the checksum, open the DMG, drag **Mimi Remote Mac** to Applications, then finish first-run setup from the menu bar. The app includes `agentd` and the compatible Claude bridge; Homebrew, Go, Rust, and Xcode are not required for the Mac host.
 
 For command-line installation, server use, or recovery:
 
@@ -213,9 +212,9 @@ macOS does not provide one background-requestable permission for the entire user
 
 ## Claude Code bridge (experimental)
 
-The Claude bridge is disabled by default. It runs one `alleycat-claude-bridge` child process for each Claude WebSocket connection and translates the iOS app-server JSON-RPC surface to Claude Code headless JSONL.
+The Claude runtime is disabled by default. When enabled, `agentd` supervises one resident `alleycat-claude-bridge` and attaches mobile WebSocket sessions to it by a stable session key. Each Claude thread owns a headless stdio JSONL process; reconnects replay missed events or reload authoritative history instead of resubmitting `turn/start`.
 
-Install the bridge from this repository:
+The Mac DMG already includes a signed, compatible bridge next to `agentd`; do not install a second copy with Cargo for that setup. Install the bridge from source only for Homebrew, Linux, or standalone development:
 
 ```bash
 cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
@@ -230,7 +229,7 @@ Enable it explicitly in the user configuration:
 {
   "claude": {
     "enabled": true,
-    "bridge_bin": "/opt/homebrew/bin/alleycat-claude-bridge",
+    "bridge_bin": "",
     "args": [],
     "max_concurrent_bridges": 3,
     "env": { "TERM": "xterm-256color" }
@@ -238,7 +237,11 @@ Enable it explicitly in the user configuration:
 }
 ```
 
-This is an experimental channel: a network interruption, device lock, or WebSocket close terminates the bridge and can interrupt the current turn. Goal, archive, and fork are not available for Claude sessions. Read the [Claude bridge architecture (Chinese)](docs/claude-bridge-architecture.md) before enabling it.
+An empty `bridge_bin` selects the bridge bundled with Mimi Remote Mac. Homebrew and Linux installations must instead set the absolute path returned by `command -v alleycat-claude-bridge`. The configuration file contains long-lived credentials: back it up privately, update only the `claude` fields with a JSON-aware tool, preserve mode `0600`, and never print the complete file into logs or chats.
+
+After changing the configuration, restart from the current service owner: use **Restart Service** in the Mimi Remote Mac menu, `agentd restart --no-pair` for Homebrew, or the user-systemd service on Linux. Run Doctor and confirm that the mobile runtime picker exposes Claude without disrupting Codex.
+
+This remains an experimental channel. Goal, archive, and fork are not available for Claude sessions; there is no APNs background push or cloud synchronization. A bounded replay ring covers normal disconnects, while bridge/Mac restarts fall back to local Claude history and can still lose a very small unflushed window. Read the [Claude bridge architecture (Chinese)](docs/claude-bridge-architecture.md) before enabling it.
 
 ## Current limitations
 

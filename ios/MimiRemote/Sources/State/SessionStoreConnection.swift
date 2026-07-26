@@ -696,9 +696,6 @@ extension SessionStore {
                 clearRuntimeActivity(sessionID: id)
             }
             contextStore.updateStatus(sessionID: id, status: status)
-            if status == SessionStatus.completed.rawValue {
-                completeActiveThreadGoalIfNeeded(sessionID: id)
-            }
         }
         for mutation in output.activeTurnMutations {
             applyActiveTurnMutation(mutation)
@@ -1752,22 +1749,6 @@ extension SessionStore {
         var next = incoming
         next.goal = normalizedThreadGoalForApply(goal, sessionID: incoming.id, respectsLocalCompletion: true)
         return next
-    }
-
-    func completeActiveThreadGoalIfNeeded(sessionID: SessionID) {
-        // 目标消息仍在下一轮队列中时，本次完成属于前一个 turn，不能提前结束目标。
-        guard !hasQueuedGoalTurn(sessionID: sessionID) else {
-            return
-        }
-        guard let session = sessionsByID[sessionID],
-              let goal = Self.matchingThreadGoal(for: session, context: contextStore.context(for: session.id)),
-              goal.status == .active
-        else {
-            return
-        }
-        // turn/completed 是本地实时链路看到的权威完成信号；目标元数据刷新可能稍晚，
-        // 先把 UI 收敛到完成态，避免任务结束后 composer 仍显示“运行中”。
-        applyThreadGoal(completedGoal(from: goal), fallbackSessionID: sessionID, respectsLocalCompletion: false)
     }
 
     func normalizedThreadGoalForApply(

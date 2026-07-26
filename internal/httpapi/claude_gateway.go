@@ -137,10 +137,6 @@ func (r *Router) refreshClaudeBridgeProbeIfStale() {
 	}
 }
 
-// bundledClaudeBridgeName is the Claude bridge shipped next to agentd inside
-// the Mac app bundle.
-const bundledClaudeBridgeName = "alleycat-claude-bridge"
-
 // resolveClaudeBridgePath finds the bridge to run, preferring what the config
 // names and falling back to the copy shipped alongside agentd.
 //
@@ -149,46 +145,13 @@ const bundledClaudeBridgeName = "alleycat-claude-bridge"
 // set it up first would otherwise point at a binary that isn't there. Anyone
 // who does name a working bridge still gets exactly that one.
 func resolveClaudeBridgePath(command string) (string, bool) {
-	if path, ok := resolveCommandPath(command); ok {
-		return path, true
-	}
-	if sibling, ok := resolveCommandPath(bundledClaudeBridgeSiblingPath()); ok {
-		return sibling, true
-	}
-	// Report the configured value so diagnostics name what the user asked for.
-	return strings.TrimSpace(command), false
+	return claudebridge.ResolveBinary(command)
 }
 
 // bundledClaudeBridgeSiblingPath is the bridge next to the running agentd, or
 // "" when the executable path cannot be determined.
 func bundledClaudeBridgeSiblingPath() string {
-	executable, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
-		executable = resolved
-	}
-	return filepath.Join(filepath.Dir(executable), bundledClaudeBridgeName)
-}
-
-func resolveCommandPath(command string) (string, bool) {
-	command = strings.TrimSpace(command)
-	if command == "" {
-		return "", false
-	}
-	if filepath.IsAbs(command) || strings.ContainsAny(command, `/\`) {
-		info, err := os.Stat(command)
-		if err != nil || info.IsDir() || info.Mode().Perm()&0o111 == 0 {
-			return command, false
-		}
-		return command, true
-	}
-	path, err := exec.LookPath(command)
-	if err != nil {
-		return command, false
-	}
-	return path, true
+	return claudebridge.BundledSiblingPath()
 }
 
 func probeClaudeBridgeVersion(path string, args []string, env map[string]string) string {

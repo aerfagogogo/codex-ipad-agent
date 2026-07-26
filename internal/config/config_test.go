@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 )
 
 func TestLoadWithEnvOverrides(t *testing.T) {
@@ -86,7 +88,7 @@ func bundledSiblingPathForTest(t *testing.T) string {
 	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
 		executable = resolved
 	}
-	return filepath.Join(filepath.Dir(executable), bundledClaudeBridgeName)
+	return filepath.Join(filepath.Dir(executable), claudebridge.BinaryName)
 }
 
 func TestPlatformDefaultPathIgnoresAgentdConfig(t *testing.T) {

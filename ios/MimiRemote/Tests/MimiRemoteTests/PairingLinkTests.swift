@@ -4,6 +4,19 @@ import Security
 
 @MainActor
 final class PairingLinkTests: XCTestCase {
+    func testQRCodeScanIntentKeepsPresentationAndSubmissionModeTogether() {
+        XCTAssertTrue(ConnectionQRCodeScanIntent.initialConnection.isValid(activeProfileID: nil))
+        XCTAssertFalse(ConnectionQRCodeScanIntent.initialConnection.isValid(activeProfileID: "current"))
+
+        XCTAssertTrue(ConnectionQRCodeScanIntent.addConnectionProfile.addsConnectionProfile)
+        XCTAssertTrue(ConnectionQRCodeScanIntent.addConnectionProfile.isValid(activeProfileID: "current"))
+
+        let repair = ConnectionQRCodeScanIntent.repairCurrentProfile(expectedProfileID: "expected")
+        XCTAssertFalse(repair.addsConnectionProfile)
+        XCTAssertTrue(repair.isValid(activeProfileID: "expected"))
+        XCTAssertFalse(repair.isValid(activeProfileID: "changed"))
+    }
+
     func testQRCodeScannerPermissionFailuresOfferSettingsAndManualRecovery() {
         for failure in [QRCodeScannerFailure.permissionDenied, .permissionRestricted] {
             XCTAssertEqual(failure.recoveryActions, [.openSettings, .manualConnection])

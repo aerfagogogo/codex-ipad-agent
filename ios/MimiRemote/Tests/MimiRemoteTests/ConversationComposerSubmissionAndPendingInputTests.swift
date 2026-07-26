@@ -135,6 +135,16 @@ extension ConversationDataFlowTests {
         state.activate("thread-a:request-1")
         XCTAssertEqual(state.draft, savedDraft, "关闭并重新打开同一请求时必须保留答案")
 
+        var recreatedState = state
+        XCTAssertFalse(
+            recreatedState.resetIfSessionChanged(from: nil, to: "thread-a"),
+            "横竖屏重建时没有 previous session，不能把它误判成会话切换"
+        )
+        XCTAssertEqual(recreatedState.draft, savedDraft, "View 重建后应从 SessionStore 内存缓存恢复答案")
+
+        XCTAssertTrue(recreatedState.resetIfSessionChanged(from: "thread-a", to: "thread-b"))
+        XCTAssertEqual(recreatedState.draft, PendingUserInputDraft(), "真正切换会话时必须清理旧答案")
+
         state.activate("thread-b:request-1")
         XCTAssertEqual(state.draft, PendingUserInputDraft(), "相同 request ID 出现在另一 thread 时不能继承旧答案")
         XCTAssertEqual(state.activePresentationID, "thread-b:request-1")

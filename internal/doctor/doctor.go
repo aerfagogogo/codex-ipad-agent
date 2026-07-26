@@ -338,11 +338,12 @@ func (c *Checker) claudeBridgeCheck(ctx context.Context) Check {
 	if !c.cfg.Claude.Enabled {
 		return Check{Name: "claude-bridge", OK: true, Message: "Claude Code experimental 通道未启用"}
 	}
-	bin := strings.TrimSpace(c.cfg.Claude.BridgeBin)
-	if bin == "" {
-		return Check{Name: "claude-bridge", OK: false, Message: "Claude bridge 未配置", Fix: "设置 claude.bridge_bin 或 AGENTD_CLAUDE_BRIDGE_BIN"}
-	}
-	if !commandExists(bin) {
+	configuredBin := strings.TrimSpace(c.cfg.Claude.BridgeBin)
+	bin, ok := claudebridge.ResolveBinary(configuredBin)
+	if !ok {
+		if configuredBin == "" {
+			return Check{Name: "claude-bridge", OK: false, Message: "Claude bridge 未配置", Fix: "安装 alleycat-claude-bridge，或使用内置 bridge 的 Mimi Remote Mac"}
+		}
 		return Check{Name: "claude-bridge", OK: false, Message: "未找到 Claude bridge", Fix: "安装 alleycat-claude-bridge，并把 claude.bridge_bin 配成绝对路径"}
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)

@@ -111,8 +111,8 @@ flowchart TD
     A["Mimi Remote<br/>iPhone / iPad"] -->|"Tailscale / 同一局域网 · Bearer Token<br/>REST + WebSocket"| B["agentd<br/>Go control plane / 安全网关"]
     B -->|"allowlist · cwd scope<br/>JSON-RPC policy"| C["Codex app-server"]
     C --> D["Codex CLI 凭证与本机项目"]
-    B -->|"runtime=claude<br/>每条连接一个子进程"| E["alleycat-claude-bridge"]
-    E -->|"stdio JSONL"| F["Claude Code headless"]
+    B -->|"runtime=claude<br/>稳定 session + cursor"| E["常驻 alleycat-claude-bridge"]
+    E -->|"每个 thread 一个 stdio JSONL 进程"| F["Claude Code headless"]
 ```
 
 安全边界：
@@ -125,21 +125,27 @@ flowchart TD
 
 ### Claude Code 为什么需要单独 bridge
 
-Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `agentd` 共用版本、CI 和发布入口。`agentd` 为每条 Claude WebSocket 启动一个 `alleycat-claude-bridge` 子进程，把 iOS 使用的 app-server JSON-RPC 转成 Claude Code headless 的 stdio JSONL。
+Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `agentd` 共用版本、CI 和发布入口。`agentd` 监督一个常驻 bridge，通过稳定 session key 把多次移动端 WebSocket 连接附着到同一运行时；每个 Claude thread 对应一个 Claude Code headless stdio JSONL 进程。
 
-该通道默认关闭并标记为实验功能：断网、锁屏或 WebSocket 结束会终止对应 bridge，正在执行的 turn 可能中断；`goal`、`archive` 和 `fork` 尚未开放。详细生命周期、权限和失败模式见 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
+该通道默认关闭并标记为实验功能。普通断线不会重新提交 `turn/start`，重连优先回放缺失事件，超出窗口时读取本机 Claude 历史；bridge 或 Mac 重启前尚未落盘的极短窗口仍可能丢失。`goal`、`archive` 和 `fork` 尚未开放，详细生命周期、权限和失败模式见 [Claude bridge 架构](docs/claude-bridge-architecture.md)。
 
 ## 快速开始
 
-> 新的菜单栏宿主 App 正在本地 Beta 阶段：它把 `agentd`、配对、状态、Doctor 和 Homebrew 迁移集中到一个原生界面，开发构建说明见 [Mimi Remote Mac](macos/MimiRemoteMac/README.md)。公开安装仍以本节的 Homebrew 方式为准。
+推荐使用已经 Developer ID 签名并经过 Apple 公证的菜单栏宿主 App。它把 `agentd`、配对、状态、Doctor 和 Homebrew 迁移集中到一个原生界面；Homebrew 保留给命令行、服务器、自动化和故障恢复。
 
 ### 1. Mac 安装
 
 要求：
 
+- macOS 26 或更高版本；
 - 已安装并登录 Codex CLI；
-- Mac 与 iPhone / iPad 位于同一私有网络；跨网络使用时建议加入同一个 Tailscale 网络；
-- macOS 已安装 Homebrew。
+- Mac 与 iPhone / iPad 位于同一私有网络；跨网络使用时建议加入同一个 Tailscale 网络。
+
+普通用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和对应 SHA-256 文件，校验后打开 DMG，把 **Mimi Remote Mac** 拖到“应用程序”，再从菜单栏完成首次设置。App 已内置 `agentd` 和兼容的 Claude bridge，不要求 Homebrew、Go、Rust 或 Xcode。
+
+已有 Homebrew 服务时，让 Mac App 执行接管；迁移过程会先跑 Doctor，失败时尝试恢复旧服务，并保留现有配置、Token 和配对关系。
+
+命令行、服务器或恢复场景才使用 Homebrew：
 
 ```bash
 brew update
@@ -152,7 +158,7 @@ agentd up
 
 `agentd up` 会生成用户私有配置和两层独立 Token，启动后台服务，等待真实 app-server WebSocket 就绪，然后在终端显示短期配对二维码。检测到 Tailscale 时优先使用 Tailscale；否则自动启用局域网，并把当前私有局域网地址写入配对信息。
 
-常用命令：
+Homebrew / CLI 常用命令：
 
 ```bash
 agentd status
@@ -192,11 +198,13 @@ open ios/MimiRemote/MimiRemote.xcodeproj
 
 在 Xcode 中选择 `MimiRemote` scheme、开发者 Team 和目标 iPhone / iPad 后运行。工程要求 iOS / iPadOS 26 或更高版本。
 
-首次启动时扫描 `agentd up` 或 `agentd pair` 显示的二维码。二维码使用短期、单次兑换票据，不直接包含长期 Token；扫码不可用时可以展开高级手动连接。
+Mac App 用户从菜单栏选择“配对设备…”，CLI 用户扫描 `agentd up` 或 `agentd pair` 显示的二维码。二维码使用短期、单次兑换票据，不直接包含长期 Token；扫码不可用时可以展开高级手动连接。
 
 ## Claude Code 实验通道
 
-当前要求 `alleycat-claude-bridge >= 0.2.1`。bridge 已并入当前仓库，可以直接从同一个 GitHub 地址安装：
+Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Mac DMG 已经内置经过签名的兼容 bridge，不要为该安装方式重复执行 `cargo install`。
+
+只有 Homebrew、Linux 或独立开发环境需要从源码安装外置 bridge：
 
 ```bash
 cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
@@ -211,7 +219,7 @@ command -v alleycat-claude-bridge
 {
   "claude": {
     "enabled": true,
-    "bridge_bin": "/opt/homebrew/bin/alleycat-claude-bridge",
+    "bridge_bin": "",
     "args": [],
     "max_concurrent_bridges": 3,
     "env": {
@@ -221,12 +229,11 @@ command -v alleycat-claude-bridge
 }
 ```
 
+空 `bridge_bin` 表示使用 Mimi Remote Mac 随包 bridge；Homebrew 和 Linux 必须改成 `command -v alleycat-claude-bridge` 返回的绝对路径。配置文件含长期 Token，修改前必须创建用户私有备份，只用 JSON 解析器修改 `claude` 字段，保持 `0600`，不要把完整文件打印到日志或聊天中。
+
 然后验证：
 
 ```bash
-agentd restart
-agentd doctor
-
 go run ./scripts/ipad-ws-probe.go \
   -endpoint http://127.0.0.1:8787 \
   -token "$AGENTD_TOKEN" \
@@ -234,6 +241,10 @@ go run ./scripts/ipad-ws-probe.go \
   -runtime claude \
   -models-only
 ```
+
+修改配置后必须从当前 service owner 重启：Mimi Remote Mac 使用菜单栏“重新启动服务”，Homebrew 使用 `agentd restart --no-pair`，Linux 使用 user-systemd。随后运行 Doctor，并在移动端确认 Runtime 选择器出现 Claude，且 Codex 主通道仍可用。上面的源码探针只用于开发仓库中的本机调试，不要把 Token 写进聊天或持久日志。
+
+Claude 通道仍是实验能力：不支持 `goal`、`archive`、`fork`、APNs 后台推送和跨设备云同步。普通断线通过事件 replay 或 `thread/read` 恢复，不自动重试写操作；bridge/Mac 重启后的极短未落盘窗口仍可能无法恢复。
 
 ## 从源码开发
 

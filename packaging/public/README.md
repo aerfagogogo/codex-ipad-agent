@@ -31,7 +31,7 @@ iPhone / iPad App
 
 ### macOS App（推荐）
 
-从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg`，打开后把 **Mimi Remote Mac** 拖到 Applications。安装包同时支持 Apple Silicon 和 Intel，App 内已经包含 `agentd`，不要求用户安装 Go 或 Xcode。
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg`，打开后把 **Mimi Remote Mac** 拖到 Applications。安装包同时支持 Apple Silicon 和 Intel，App 内已经包含 `agentd` 和兼容的 `alleycat-claude-bridge`，不要求用户安装 Go、Rust 或 Xcode。
 
 首次打开 App 后，在菜单栏完成设置或接管已有 Homebrew 服务；检测到 Tailscale 时优先使用，否则自动启用同一局域网连接。现有配置、Token 和配对关系会保留。安装包使用 Developer ID 签名并经过 Apple Notarization，仍建议下载后核对同一 Release 中的 `Mimi-Remote-Mac.dmg.sha256`。
 
@@ -122,7 +122,9 @@ macOS 上的 `agentd restart` 使用 launchd 单次原子重启，可以从当�
 
 ### Claude Code 可选通道
 
-Claude 通道需要 `alleycat-claude-bridge >= 0.2.1`。bridge 与完整 Mimi Remote 源码同仓维护：
+Claude 通道默认关闭，需要 `alleycat-claude-bridge >= 0.2.1`。Mimi Remote Mac 已内置经过签名的兼容 bridge，不要为 DMG 安装重复执行 `cargo install`；只需在私有备份后显式设置 `claude.enabled=true`，保留或清空 `bridge_bin` 以使用随包 sibling。
+
+Homebrew、Linux 或独立开发环境才需要从完整源码仓库安装外置 bridge：
 
 ```bash
 cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
@@ -137,6 +139,10 @@ command -v alleycat-claude-bridge
 agentd restart
 agentd doctor
 ```
+
+Mimi Remote Mac 使用随包 bridge 时，从菜单栏选择“重新启动服务”并运行 App 内 Doctor，不使用 Homebrew 的 `agentd restart` 路径。
+
+`agentd` 监督一个 resident bridge，每个 Claude thread 对应一个 headless 进程；移动端重连使用事件 replay 或本机权威历史，不重新提交写操作。Claude 仍不支持 `goal`、`archive`、`fork`、APNs 后台 push 和跨设备云同步。
 
 核心入口：
 

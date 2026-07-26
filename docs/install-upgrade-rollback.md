@@ -18,7 +18,9 @@
 
 前置条件：macOS 26 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
 
-从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg`，打开后将 **Mimi Remote Mac** 拖入“应用程序”，再在 Mac App 内选择代码目录并完成首次设置。安装包内已包含 `agentd`。
+从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”，再从菜单栏选择代码目录并完成首次设置。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
+
+检测到旧 `homebrew.mxcl.mimi-remote` 时，不要先手工停服。让 Mac App 执行接管：它会先跑 Doctor，停止 Homebrew service，注册内嵌 LaunchAgent 并等待就绪；失败时尝试恢复旧 Homebrew 服务。迁移保留 Application Support 中的配置、Token 和配对关系。
 
 ### macOS 命令行安装（高级）
 
@@ -45,7 +47,15 @@ agentd up --no-pair --json
 
 JSON 安全模式只返回 `version`、`service_ok` 和可选的安全 warning，不包含带 Token 的完整 setup `result`。需要配对时由用户在不会进入远程任务日志的本机终端执行 `agentd pair --qr-only`。
 
-### macOS 升级
+### macOS App 升级与回滚
+
+首个 DMG 不带自动更新。升级时下载目标正式版本的 DMG 和 SHA-256 文件，校验后用新 App 覆盖“应用程序”中的现有版本；不要先删除旧 App，也不要删除 `~/Library/Application Support/mimi-remote`。打开新版本后确认 service owner 仍是 `Mimi Remote Mac`，版本、Doctor、Codex 和已启用的 Claude channel 均正常。
+
+需要回滚时安装上一个仍可从正式 Release 获取、经过 Developer ID 签名和 Apple 公证的 DMG。优先只回滚 App 和内嵌二进制；除非确认新版本写入了旧版本无法读取的配置，否则继续复用现有配置。snapshot、ad-hoc 或未公证构建不能作为稳定回滚版本。
+
+移动或删除 App 前，先在菜单栏执行“退出并停止服务”。如果要回到 Homebrew，在设置中执行“停止 App 服务并恢复 Homebrew”，确认旧服务重新就绪后再移除 App，避免系统保留指向不存在 bundle 的 LaunchAgent 注册。
+
+### macOS Homebrew 升级
 
 先做本地备份。备份目录含 Token，不能上传到 Issue、PR 或网盘公开链接。
 
@@ -139,6 +149,10 @@ agentd logs
 
 后台服务由系统服务管理器负责，不额外维护容易失真的 PID 文件：
 
+- Mimi Remote Mac owner：从菜单栏选择“退出并停止服务”。
+- Homebrew owner：执行 `agentd stop`。
+- Linux owner：执行 `"$HOME/.local/bin/agentd" stop`。
+
 ```bash
 agentd stop
 ```
@@ -155,7 +169,7 @@ systemctl --user stop mimi-remote.service
 
 收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再停止会话和托管 Codex app-server；排空超时会强制关闭连接。托管 Codex app-server 意外退出时，`agentd` 会同步关闭 HTTP 并以非零状态退出，Homebrew `keep_alive` 或 systemd `Restart=on-failure` 会接管恢复。这样不会保留“`/healthz` 端口还在，但 Codex upstream 已经死亡”的半健康服务。
 
-### macOS 应急回滚
+### macOS Homebrew 应急回滚
 
 先查看 Homebrew Cellar 是否还保留旧版本：
 

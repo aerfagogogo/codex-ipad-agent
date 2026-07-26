@@ -985,7 +985,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "修复 iPad 目标入口")
     }
 
-    func testQueuedGoalDoesNotCompleteWithPreviousTurn() async throws {
+    func testQueuedGoalRemainsActiveAfterItsTurnCompletes() async throws {
         let project = makeProject(id: "proj_goal_queued")
         let running = makeSession(
             id: "sess_goal_queued",
@@ -1060,10 +1060,15 @@ extension ConversationDataFlowTests {
             revision: nil,
             createdAt: nil
         )))
-        try await waitForSelectedThreadGoalStatus(.complete, store: store)
+        try await waitForSelectedSessionStatus(SessionStatus.completed.rawValue, store: store)
+        XCTAssertEqual(
+            store.selectedThreadGoal?.status,
+            .active,
+            "turn/completed 只能结束当前轮次，不能代替明确的 goal 状态更新"
+        )
     }
 
-    func testTurnCompletionFinishesActiveGoalAndIgnoresStaleActiveGoalRefresh() async throws {
+    func testTurnCompletionKeepsActiveGoalUntilExplicitCompletionAndIgnoresStaleRefresh() async throws {
         let project = makeProject(id: "proj_goal_complete")
         let goal = ThreadGoal(
             threadID: "thread_goal_complete",
@@ -1134,14 +1139,38 @@ extension ConversationDataFlowTests {
             createdAt: nil
         )))
 
-        try await waitForSelectedThreadGoalStatus(.complete, store: store)
         try await waitForSelectedSessionStatus(SessionStatus.completed.rawValue, store: store)
         try await waitForSelectedActiveTurnID(nil, store: store)
         XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
         XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(
+            store.selectedThreadGoal?.status,
+            .active,
+            "目标生命周期必须由 goal 事件或用户操作驱动，不能从普通 turn 完成推断"
+        )
+
+        let completedGoal = ThreadGoal(
+            threadID: goal.threadID,
+            objective: goal.objective,
+            status: .complete,
+            tokenBudget: goal.tokenBudget,
+            tokensUsed: goal.tokensUsed,
+            timeUsedSeconds: goal.timeUsedSeconds
+        )
+        sockets[0].emitEvent(.goalUpdated(completedGoal, AgentEventMetadata(
+            seq: 2,
+            sessionID: running.id,
+            turnID: nil,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSelectedThreadGoalStatus(.complete, store: store)
 
         sockets[0].emitEvent(.goalUpdated(goal, AgentEventMetadata(
-            seq: 2,
+            seq: 3,
             sessionID: running.id,
             turnID: nil,
             itemID: nil,

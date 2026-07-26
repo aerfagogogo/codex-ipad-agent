@@ -299,9 +299,7 @@ private struct VoiceInputProviderRow: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(isSelected ? tokens.selectionFill : tokens.elevatedSurface)
-                    Image(systemName: provider.systemImage)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
+                    providerIcon
                 }
                 .frame(width: 42, height: 42)
 
@@ -333,6 +331,24 @@ private struct VoiceInputProviderRow: View {
         .accessibilityValue(isSelected ? L10n.text("ui.selected") : L10n.text("ui.not_selected"))
         .accessibilityHint(provider.subtitle)
         .accessibilityIdentifier("settings.voiceInputProvider.\(provider.rawValue)")
+    }
+
+    @ViewBuilder
+    private var providerIcon: some View {
+        switch provider.icon {
+        case .asset(let name):
+            Image(name)
+                .resizable()
+                .renderingMode(.original)
+                .scaledToFit()
+                .frame(width: 30, height: 30)
+                .accessibilityHidden(true)
+        case .system(let name):
+            Image(systemName: name)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
+                .accessibilityHidden(true)
+        }
     }
 }
 

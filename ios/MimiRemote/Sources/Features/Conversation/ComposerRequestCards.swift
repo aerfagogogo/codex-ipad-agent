@@ -501,6 +501,16 @@ struct PendingUserInputFormState: Equatable {
     private(set) var activePresentationID: String?
     var draft = PendingUserInputDraft()
 
+    @discardableResult
+    mutating func resetIfSessionChanged(from previousSessionID: SessionID?, to currentSessionID: SessionID?) -> Bool {
+        // previous 为 nil 也可能只是横竖屏导致 View 重建，不能据此清空刚从内存缓存恢复的答案。
+        guard let previousSessionID, previousSessionID != currentSessionID else {
+            return false
+        }
+        resetForSessionChange()
+        return true
+    }
+
     mutating func activate(_ presentationID: String) {
         guard activePresentationID != presentationID else {
             return
@@ -524,6 +534,7 @@ struct PendingUserInputSelectionIdentity: Equatable {
 struct PendingUserInputActionCard: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @FocusState private var focusedQuestionID: String?
     let request: AgentUserInputRequest
     let runtimePresentation: SessionRuntimePresentation
     let isSubmitting: Bool
@@ -544,12 +555,14 @@ struct PendingUserInputActionCard: View {
                 request: request,
                 isSubmitting: isSubmitting,
                 usesFullWidthOptions: false,
-                draft: $draft
+                draft: $draft,
+                focusedQuestionID: $focusedQuestionID
             )
             PendingUserInputActionBar(
                 request: request,
                 isSubmitting: isSubmitting,
                 draft: $draft,
+                onPrepareAction: { focusedQuestionID = nil },
                 onSubmit: onSubmit
             )
         }
@@ -561,6 +574,19 @@ struct PendingUserInputActionCard: View {
                 borderColor: tokens.accent.opacity(colorScheme == .dark ? 0.38 : 0.28)
             )
         )
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button(L10n.text("ui.complete")) {
+                    focusedQuestionID = nil
+                }
+                Button(L10n.text("ui.submit")) {
+                    focusedQuestionID = nil
+                    _ = onSubmit(draft.answerPayload(for: request))
+                }
+                .disabled(isSubmitting || !draft.canSubmit(request))
+            }
+        }
     }
 }
 
@@ -619,6 +645,7 @@ struct PendingUserInputSheet: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var focusedQuestionID: String?
     let presentation: PendingUserInputPresentation
     let isSubmitting: Bool
     @Binding var draft: PendingUserInputDraft
@@ -639,7 +666,8 @@ struct PendingUserInputSheet: View {
                         request: presentation.request,
                         isSubmitting: isSubmitting,
                         usesFullWidthOptions: true,
-                        draft: $draft
+                        draft: $draft,
+                        focusedQuestionID: $focusedQuestionID
                     )
                 }
                 .padding(.horizontal, 18)
@@ -652,13 +680,8 @@ struct PendingUserInputSheet: View {
                     request: presentation.request,
                     isSubmitting: isSubmitting,
                     draft: $draft,
-                    onSubmit: { answers in
-                        let accepted = onSubmit(answers)
-                        if accepted {
-                            dismiss()
-                        }
-                        return accepted
-                    }
+                    onPrepareAction: { focusedQuestionID = nil },
+                    onSubmit: submitAndDismiss
                 )
                 .padding(.horizontal, 18)
                 .padding(.vertical, 12)
@@ -678,12 +701,40 @@ struct PendingUserInputSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(L10n.text("ui.close")) { dismiss() }
+                    Button(L10n.text("ui.close")) {
+                        focusedQuestionID = nil
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L10n.text("ui.submit")) {
+                        _ = submitAndDismiss(draft.answerPayload(for: presentation.request))
+                    }
+                    .disabled(isSubmitting || !draft.canSubmit(presentation.request))
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button(L10n.text("ui.complete")) {
+                        focusedQuestionID = nil
+                    }
+                    Button(L10n.text("ui.submit")) {
+                        _ = submitAndDismiss(draft.answerPayload(for: presentation.request))
+                    }
+                    .disabled(isSubmitting || !draft.canSubmit(presentation.request))
                 }
             }
         }
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+    }
+
+    private func submitAndDismiss(_ answers: [String: [String]]) -> Bool {
+        focusedQuestionID = nil
+        let accepted = onSubmit(answers)
+        if accepted {
+            dismiss()
+        }
+        return accepted
     }
 }
 
@@ -732,6 +783,7 @@ private struct PendingUserInputQuestions: View {
     let isSubmitting: Bool
     let usesFullWidthOptions: Bool
     @Binding var draft: PendingUserInputDraft
+    let focusedQuestionID: FocusState<String?>.Binding?
 
     var body: some View {
         VStack(alignment: .leading, spacing: usesFullWidthOptions ? 14 : 12) {
@@ -785,6 +837,7 @@ private struct PendingUserInputQuestions: View {
             ForEach(question.options) { option in
                 let isSelected = draft.isSelected(option.label, for: question.id)
                 Button {
+                    focusedQuestionID?.wrappedValue = nil
                     draft.toggleOption(option.label, for: question)
                 } label: {
                     HStack(alignment: .top, spacing: 8) {
@@ -827,11 +880,27 @@ private struct PendingUserInputQuestions: View {
         if question.isSecret {
             SecureField(L10n.text("ui.other"), text: binding(for: question.id))
                 .textFieldStyle(.roundedBorder)
+                .submitLabel(.done)
+                .onSubmit { focusedQuestionID?.wrappedValue = nil }
+                .modifier(
+                    PendingUserInputQuestionFocusModifier(
+                        questionID: question.id,
+                        focusedQuestionID: focusedQuestionID
+                    )
+                )
                 .disabled(isSubmitting)
         } else {
             TextField(L10n.text("ui.other"), text: binding(for: question.id), axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...4)
+                .submitLabel(.done)
+                .onSubmit { focusedQuestionID?.wrappedValue = nil }
+                .modifier(
+                    PendingUserInputQuestionFocusModifier(
+                        questionID: question.id,
+                        focusedQuestionID: focusedQuestionID
+                    )
+                )
                 .disabled(isSubmitting)
         }
     }
@@ -844,18 +913,34 @@ private struct PendingUserInputQuestions: View {
     }
 }
 
+private struct PendingUserInputQuestionFocusModifier: ViewModifier {
+    let questionID: String
+    let focusedQuestionID: FocusState<String?>.Binding?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let focusedQuestionID {
+            content.focused(focusedQuestionID, equals: questionID)
+        } else {
+            content
+        }
+    }
+}
+
 private struct PendingUserInputActionBar: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     let request: AgentUserInputRequest
     let isSubmitting: Bool
     @Binding var draft: PendingUserInputDraft
+    let onPrepareAction: () -> Void
     let onSubmit: ([String: [String]]) -> Bool
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         HStack(spacing: 10) {
             Button(L10n.text("ui.skip")) {
+                onPrepareAction()
                 _ = onSubmit([:])
             }
             .buttonStyle(.bordered)
@@ -865,6 +950,7 @@ private struct PendingUserInputActionBar: View {
             .disabled(isSubmitting)
 
             Button {
+                onPrepareAction()
                 _ = onSubmit(draft.answerPayload(for: request))
             } label: {
                 if isSubmitting {

@@ -310,6 +310,39 @@ func TestClaudeBridgeCheckRequiresCompatibleVersion(t *testing.T) {
 	}
 }
 
+func TestClaudeBridgeCheckFallsBackToBundledCopy(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Skip("拿不到测试可执行文件路径")
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+		executable = resolved
+	}
+	sibling := filepath.Join(filepath.Dir(executable), "alleycat-claude-bridge")
+	if _, err := os.Stat(sibling); err == nil {
+		t.Skip("测试二进制旁已存在同名文件，跳过以免干扰")
+	}
+	if err := os.WriteFile(
+		sibling,
+		[]byte("#!/bin/sh\nprintf 'alleycat-claude-bridge 0.2.6\\n'\n"),
+		0o755,
+	); err != nil {
+		t.Skip("无法在测试二进制旁写入：" + err.Error())
+	}
+	t.Cleanup(func() { _ = os.Remove(sibling) })
+
+	checker := newTestChecker(t, config.Config{
+		Claude: config.ClaudeConfig{
+			Enabled:   true,
+			BridgeBin: filepath.Join(t.TempDir(), "stale-bridge-path"),
+		},
+	})
+	check := checker.claudeBridgeCheck(context.Background())
+	if !check.OK || !strings.Contains(check.Message, "0.2.6 可用") {
+		t.Fatalf("Doctor 应回退检查 Mac App 随包 bridge：%+v", check)
+	}
+}
+
 func TestCheckerCheckPortIncludesManagedAppServerPort(t *testing.T) {
 	binDir := t.TempDir()
 	codexPath := filepath.Join(binDir, "codex")

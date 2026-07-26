@@ -1,5 +1,10 @@
 import Foundation
 
+enum VoiceInputProviderIcon: Equatable {
+    case asset(String)
+    case system(String)
+}
+
 /// 语音提供方是设备级偏好。Apple 负责设备端实时转写，
 /// Codex 通过用户配置的主机复用现有登录态完成录音转写。
 enum VoiceInputProvider: String, CaseIterable, Identifiable {
@@ -30,12 +35,12 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    var systemImage: String {
+    var icon: VoiceInputProviderIcon {
         switch self {
         case .codex:
-            return "waveform"
+            return .asset("ChatGPT")
         case .apple:
-            return "waveform.badge.mic"
+            return .system("waveform.badge.mic")
         }
     }
 

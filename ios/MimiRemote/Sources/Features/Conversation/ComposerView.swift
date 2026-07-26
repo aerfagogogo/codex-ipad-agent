@@ -38,7 +38,6 @@ struct ComposerView: View {
     @State var presentedPendingUserInput: PendingUserInputPresentation?
     @State var pendingUserInputFormState = PendingUserInputFormState()
     @State var isGoalStatusExpanded = false
-    @State var hiddenCompletedGoalIDs: Set<SessionID> = []
     @State var attachmentErrorMessage: String?
     @State var isVoicePressActive = false
     @State var isVoiceTranscribing = false
@@ -69,7 +68,6 @@ struct ComposerView: View {
     }
 
     static let minimumUsableVoiceDuration: TimeInterval = 0.35
-    static let completedGoalAutoHideDelayNanoseconds: UInt64 = 3_500_000_000
     static let maximumImageAttachmentCount = 8
 
     var composerMotionAnimation: Animation {
@@ -122,7 +120,7 @@ struct ComposerView: View {
             PendingUserInputSheet(
                 presentation: presentation,
                 isSubmitting: sessionStore.isUserInputResponsePending(presentation.request),
-                draft: $pendingUserInputFormState.draft,
+                draft: pendingUserInputDraftBinding,
                 onSubmit: { answers in
                     sessionStore.respondToUserInput(presentation.request, answers: answers)
                 }
@@ -209,13 +207,14 @@ struct ComposerView: View {
             guidedFollowUpEnabled = false
         }
         .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in
-            syncGoalStatusBarVisibility(from: previousGoal, to: goal)
+            syncGoalStatusBarExpansion(from: previousGoal, to: goal)
         }
         .task(id: voiceInput.errorMessage) {
             await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
         }
         .onAppear {
             switchComposerDraftScope(to: currentComposerDraftScope)
+            restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
             clampModelSelectionToSelectedSessionRuntime()
             clampPermissionSelectionToSelectedSessionRuntime()
@@ -675,11 +674,6 @@ struct ComposerView: View {
             )
             .environmentObject(themeStore)
             .transition(.move(edge: .top).combined(with: .opacity))
-            .task(id: visibleGoal.map { completedGoalAutoHideTaskID(for: $0) } ?? "no-goal") {
-                if let visibleGoal {
-                    await autoHideCompletedGoalIfNeeded(visibleGoal)
-                }
-            }
         }
     }
 
@@ -695,10 +689,9 @@ struct ComposerView: View {
     }
 
     var selectedVisibleThreadGoal: ThreadGoal? {
-        guard let goal = sessionStore.selectedThreadGoal, shouldShowGoalStatusBar(goal) else {
-            return nil
-        }
-        return goal
+        // Goal 是 thread 级状态，不是单个 turn 的瞬时提示。即使已经完成也保留状态条，
+        // 直到用户明确清除目标或切换 thread，避免一次回复结束后 UI 无故消失。
+        sessionStore.selectedThreadGoal
     }
 
     // 输入框上方只保留瞬时状态和必要控制。模型、权限、seq/usage 已有其他入口，
@@ -740,49 +733,13 @@ struct ComposerView: View {
             sessionStore.webSocketStatus == .connected
     }
 
-    func shouldShowGoalStatusBar(_ goal: ThreadGoal) -> Bool {
-        goal.status != .complete || !hiddenCompletedGoalIDs.contains(goal.threadID)
-    }
-
-    func completedGoalAutoHideTaskID(for goal: ThreadGoal) -> String {
-        [
-            goal.threadID,
-            goal.status.rawValue,
-            goal.updatedAt.map { String($0.timeIntervalSince1970) } ?? "no-update"
-        ].joined(separator: "#")
-    }
-
-    func syncGoalStatusBarVisibility(from previousGoal: ThreadGoal?, to goal: ThreadGoal?) {
+    func syncGoalStatusBarExpansion(from previousGoal: ThreadGoal?, to goal: ThreadGoal?) {
         guard let goal else {
             isGoalStatusExpanded = false
             return
         }
         if previousGoal?.threadID != goal.threadID {
             isGoalStatusExpanded = false
-        }
-        // 目标重新进入非完成态时，恢复 composer 上方的常驻状态条。
-        if goal.status != .complete {
-            hiddenCompletedGoalIDs.remove(goal.threadID)
-        }
-    }
-
-    func autoHideCompletedGoalIfNeeded(_ goal: ThreadGoal) async {
-        guard goal.status == .complete else {
-            return
-        }
-        try? await Task.sleep(nanoseconds: Self.completedGoalAutoHideDelayNanoseconds)
-        guard !Task.isCancelled else {
-            return
-        }
-        await MainActor.run {
-            guard sessionStore.selectedThreadGoal?.threadID == goal.threadID,
-                  sessionStore.selectedThreadGoal?.status == .complete else {
-                return
-            }
-            withAnimation(.easeInOut(duration: 0.18)) {
-                hiddenCompletedGoalIDs.insert(goal.threadID)
-                isGoalStatusExpanded = false
-            }
         }
     }
 

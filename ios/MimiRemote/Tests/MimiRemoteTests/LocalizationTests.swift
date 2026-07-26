@@ -66,4 +66,20 @@ final class LocalizationTests: XCTestCase {
         defaults.set("future-provider", forKey: VoiceInputProvider.storageKey)
         XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
     }
+
+    func testVoiceInputProvidersExposeDistinctBrandAndSystemIcons() {
+        XCTAssertEqual(VoiceInputProvider.codex.icon, .asset("ChatGPT"))
+        XCTAssertEqual(VoiceInputProvider.apple.icon, .system("waveform.badge.mic"))
+    }
+
+    func testCodexVoiceInputDescriptionExplainsPostRecordingTranscription() {
+        XCTAssertEqual(
+            L10n.text("ui.codex_voice_input_description", language: .simplifiedChinese),
+            "使用 Codex 内置语音能力 · 录音结束后转写"
+        )
+        XCTAssertEqual(
+            L10n.text("ui.codex_voice_input_description", language: .english),
+            "Uses Codex built-in voice capability · Transcribes after recording"
+        )
+    }
 }

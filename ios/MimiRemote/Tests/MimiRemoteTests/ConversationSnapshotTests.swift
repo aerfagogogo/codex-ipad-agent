@@ -8,6 +8,9 @@ import SnapshotTesting
 final class ConversationSnapshotTests: XCTestCase {
     // 快照只验证布局和样式，消息时间固定，避免每次运行因当前分钟变化产生视觉误报。
     private let snapshotMessageDate = Date(timeIntervalSince1970: 1_782_879_660)
+    private var hadStoredAppLanguage = false
+    private var previousAppLanguageRawValue: String?
+    private var didOverrideAppLanguage = false
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -17,6 +20,24 @@ final class ConversationSnapshotTests: XCTestCase {
             UIDevice.current.userInterfaceIdiom == .pad,
             "Snapshot 基线按 iPad 设备录制，iPhone 目标跳过这组视觉基线。"
         )
+        let defaults = UserDefaults.standard
+        hadStoredAppLanguage = defaults.object(forKey: AppLanguage.preferenceKey) != nil
+        previousAppLanguageRawValue = defaults.string(forKey: AppLanguage.preferenceKey)
+        defaults.set(AppLanguage.simplifiedChinese.rawValue, forKey: AppLanguage.preferenceKey)
+        didOverrideAppLanguage = true
+    }
+
+    override func tearDownWithError() throws {
+        if didOverrideAppLanguage {
+            let defaults = UserDefaults.standard
+            if hadStoredAppLanguage {
+                defaults.set(previousAppLanguageRawValue, forKey: AppLanguage.preferenceKey)
+            } else {
+                defaults.removeObject(forKey: AppLanguage.preferenceKey)
+            }
+            didOverrideAppLanguage = false
+        }
+        try super.tearDownWithError()
     }
 
     func testWorkspaceOpenCurrentDirectoryButton() {
@@ -767,14 +788,145 @@ final class ConversationSnapshotTests: XCTestCase {
         )
     }
 
-    private func makeComposerStatusTrayCrowdedView(width: CGFloat, height: CGFloat, goalExpanded: Bool = false) async -> some View {
+    func testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes() async {
+        let view = await makeComposerStatusTrayCrowdedView(
+            width: 744,
+            height: 768,
+            goalStatus: .complete,
+            sessionStatus: SessionStatus.completed.rawValue
+        )
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 744, height: 768))
+        )
+    }
+
+    func testComposerSendModeLabelsUseConsistentModeSuffix() {
+        XCTAssertEqual(L10n.text("ui.planning_mode"), "计划模式")
+        XCTAssertEqual(L10n.text("ui.target_task"), "目标模式")
+        XCTAssertEqual(L10n.text("ui.turn_off_planning_mode"), "关闭计划模式")
+        XCTAssertEqual(L10n.text("ui.close_target_task"), "关闭目标模式")
+    }
+
+    func testGoalTraySurfaceStyleUsesStrongerHierarchyWhenExpanded() {
+        let collapsed = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .dark,
+            reduceTransparency: false
+        )
+        let expanded = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: true,
+            scheme: .dark,
+            reduceTransparency: false
+        )
+
+        XCTAssertEqual(collapsed.materialStrength, .thin)
+        XCTAssertEqual(expanded.materialStrength, .regular)
+        XCTAssertTrue((0.70...0.85).contains(collapsed.surfaceTintOpacity))
+        XCTAssertTrue((0.70...0.85).contains(expanded.surfaceTintOpacity))
+        XCTAssertGreaterThan(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
+
+        XCTAssertGreaterThan(expanded.innerSurfaceOpacity, expanded.surfaceTintOpacity)
+        XCTAssertGreaterThan(expanded.controlSurfaceOpacity, expanded.innerSurfaceOpacity)
+        XCTAssertGreaterThan(expanded.borderOpacity, collapsed.borderOpacity)
+        XCTAssertGreaterThan(expanded.accentBorderOpacity, collapsed.accentBorderOpacity)
+        XCTAssertGreaterThan(expanded.shadowOpacity, collapsed.shadowOpacity)
+        XCTAssertGreaterThan(expanded.shadowRadius, collapsed.shadowRadius)
+    }
+
+    func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .dark,
+                reduceTransparency: true
+            )
+
+            XCTAssertEqual(style.materialStrength, .opaque)
+            XCTAssertEqual(style.surfaceTintOpacity, 1)
+            XCTAssertEqual(style.innerSurfaceOpacity, 1)
+            XCTAssertEqual(style.controlSurfaceOpacity, 1)
+        }
+    }
+
+    func testExpandedGoalTrayDarkMaterialSeparatesBackdropContent() {
+        let themeStore = makeThemeStore()
+        let goal = ThreadGoal(
+            threadID: "thread-dark-material",
+            objective: "更新 Apple Design skill，并验证目标浮层不会和后方卡片内容发生视觉冲突。",
+            status: .active,
+            tokenBudget: 2_000_000,
+            tokensUsed: 820_000,
+            timeUsedSeconds: 1_420,
+            createdAt: snapshotMessageDate,
+            updatedAt: snapshotMessageDate
+        )
+        let tray = ComposerStatusTray(
+            sessionControlNotice: nil,
+            quotaNotice: nil,
+            usage: nil,
+            goal: goal,
+            isGoalExpanded: true,
+            isGoalUpdating: false,
+            goalErrorMessage: nil,
+            isRefreshDisabled: false,
+            onTakeOver: {},
+            onRefreshUsage: {},
+            onEditGoal: {},
+            onTogglePauseGoal: {},
+            onCompleteGoal: {},
+            onClearGoal: {},
+            onToggleGoalExpanded: {}
+        )
+
+        let view = ZStack(alignment: .bottom) {
+            Color(red: 0.063, green: 0.067, blue: 0.078)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("$apple-design")
+                    .font(.title2.bold())
+                Text("Use this skill to review typography, spacing, interaction states, and platform conventions.")
+                    .font(.body)
+                Text("⌘  Update skill")
+                    .font(.callout.monospaced())
+            }
+            .foregroundStyle(.white)
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Color(red: 0.141, green: 0.153, blue: 0.180),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+            .padding(28)
+
+            tray
+                .padding(20)
+        }
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .environment(\.locale, Locale(identifier: "zh-Hans"))
+        .frame(width: 760, height: 360)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 760, height: 360))
+        )
+    }
+
+    private func makeComposerStatusTrayCrowdedView(
+        width: CGFloat,
+        height: CGFloat,
+        goalExpanded: Bool = false,
+        goalStatus: ThreadGoalStatus = .active,
+        sessionStatus: String = "running"
+    ) async -> some View {
         let project = AgentProject(id: "tray-project", name: "tray-project", path: "/Users/me/code/tray-project")
         let sessionID = "crowded"
         let threadID = "thread-\(sessionID)"
         let goal = ThreadGoal(
             threadID: threadID,
             objective: "你是 Mimi Remote 的多 Agent 产品研发团队主控，需要把目标、接管和额度状态压缩到输入框上方。",
-            status: .active,
+            status: goalStatus,
             tokenBudget: 12_000_000,
             tokensUsed: 10_200_000,
             timeUsedSeconds: 25_740,
@@ -785,9 +937,9 @@ final class ConversationSnapshotTests: XCTestCase {
             id: sessionID,
             project: project,
             title: "Composer 状态托盘",
-            status: "running",
+            status: sessionStatus,
             preview: "验证接管、额度和目标同时出现时的底部 composer 布局。",
-            activeTurnID: "turn-crowded",
+            activeTurnID: SessionStore.isRunningStatus(sessionStatus) ? "turn-crowded" : nil,
             rateLimit: RateLimitSummary(limitName: "Codex", primaryUsedPercent: 85, primaryResetsAt: 1_782_883_260),
             goal: goal
         )
@@ -839,6 +991,8 @@ final class ConversationSnapshotTests: XCTestCase {
             .environmentObject(themeStore)
             // 快照固定为浅色，避免运行测试前手动切过模拟器外观就整组误报。
             .environment(\.colorScheme, .light)
+            // 同时固定语言，避免开发机或 Simulator 语言变化把纯视觉回归误录成文案变更。
+            .environment(\.locale, Locale(identifier: "zh-Hans"))
             .defaultAppStorage(composerDefaults)
             .frame(width: width, height: height)
     }

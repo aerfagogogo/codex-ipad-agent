@@ -4201,13 +4201,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Close Goal"
+            "value" : "Turn off goal mode"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "关闭目标"
+            "value" : "关闭目标模式"
           }
         }
       }
@@ -4384,18 +4384,18 @@
       }
     },
     "ui.codex_voice_input_description" : {
-      "comment" : "Short settings-row description of Codex voice input's main benefit.",
+      "comment" : "Settings-row explanation that Codex uses its built-in voice capability and transcribes only after recording ends.",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Higher accuracy · Transcribes after recording"
+            "value" : "Uses Codex built-in voice capability · Transcribes after recording"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "准确性更高 · 录音结束后转写"
+            "value" : "使用 Codex 内置语音能力 · 录音结束后转写"
           }
         }
       }
@@ -23809,13 +23809,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Goal"
+            "value" : "Goal mode"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "目标"
+            "value" : "目标模式"
           }
         }
       }
