@@ -60,6 +60,24 @@ struct ComposerToolbarControlLabel: View {
 
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
+    // 宽屏设备直接平铺发送上下文。横向滚动只为大字号与极窄分屏兜底，
+    // 不改变“无需先点开开关即可操作”的默认形态。
+    var composerContextControlsRow: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                skillPickerButton
+                permissionMenu
+                // GPT-5.6 的底部模型入口已经同时负责模型和推理强度；
+                // 只有其它模型仍保留独立强度入口，避免去重时丢失低频配置能力。
+                if showsStandaloneReasoningEffortControl {
+                    reasoningEffortMenu
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     var selectedVoiceInputProvider: VoiceInputProvider {
         VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex
     }

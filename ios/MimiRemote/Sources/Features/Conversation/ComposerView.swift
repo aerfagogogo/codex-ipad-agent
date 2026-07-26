@@ -55,8 +55,6 @@ struct ComposerView: View {
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
     @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
-    // 快捷行默认收起：展开与否是用户的全局偏好，不再被宽度变化反向改写。
-    @AppStorage("composer.shortcuts.expanded") var prefersExpandedShortcutBar = false
     @State var guidedFollowUpEnabled = false
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
@@ -880,8 +878,10 @@ struct ComposerView: View {
     func composerCard(tokens: ThemeTokens) -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
         return VStack(alignment: .leading, spacing: composerCardSpacing) {
-            if !usesCompactComposerMetrics || prefersExpandedShortcutBar {
-                composerShortcutRow
+            // iPad、iPad mini 与 Catalyst 有稳定的横向空间，直接展示发送上下文；
+            // iPhone 则统一收进底部「+」，不再保留需要二次展开的“快捷”状态。
+            if !isPhoneComposer {
+                composerContextControlsRow
             }
             composerTextArea(tokens: tokens)
             skillAutocompletePanel
@@ -1078,51 +1078,6 @@ struct ComposerView: View {
         return voiceInput.isRecording ? 1.25 : 0.75
     }
 
-    // 快捷行固定在输入区上方：开关在行首，选项从它右侧展开；主操作行只保留发送链路，
-    // 上下两行不再有重复入口。展开与否只跟随用户偏好，与宽度无关，横竖屏表现一致。
-    var composerShortcutRow: some View {
-        HStack(spacing: 8) {
-            shortcutBarToggle
-            if prefersExpandedShortcutBar {
-                // 固定宽度的快捷按钮放入横向滚动容器，内容再长也不能反向撑大 Composer。
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        skillPickerButton
-                        modelPickerControl
-                        permissionMenu
-                        // GPT-5.6 的九宫格已经同时负责模型和推理强度，模型按钮也会显示当前强度；
-                        // 只有其它模型仍保留独立入口，避免为了去重而丢失低频配置能力。
-                        if showsStandaloneReasoningEffortControl {
-                            reasoningEffortMenu
-                        }
-                    }
-                }
-                .scrollIndicators(.hidden)
-                .transition(.move(edge: .leading).combined(with: .opacity))
-            }
-
-            if canCollapsePhoneComposer {
-                Spacer(minLength: 0)
-                collapsePhoneComposerButton
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // 快捷选项只在这一行内动画；模型、权限等值变更不触发整张输入卡重排动画。
-        .animation(composerMotionAnimation, value: prefersExpandedShortcutBar)
-    }
-
-    var collapsePhoneComposerButton: some View {
-        Button(action: collapsePhoneComposer) {
-            composerToolbarControlLabel(
-                title: nil,
-                systemImage: "chevron.down",
-                accessibilityLabel: L10n.text("ui.collapse_input_box")
-            )
-        }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.collapse_input_box"))
-    }
-
     @ViewBuilder
     var primaryComposerToolbar: some View {
         if usesCompactComposerMetrics {
@@ -1134,6 +1089,7 @@ struct ComposerView: View {
         } else {
             HStack(spacing: 10) {
                 addContentButton
+                modelPickerControl
                 followUpDeliveryMenu
                 Spacer(minLength: 0)
                 composerOptionsMenu
@@ -1159,14 +1115,13 @@ struct ComposerView: View {
     func compactLeadingComposerControls(showsModelTitle: Bool) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
-        // 「添加」和它影响的发送上下文属于同一操作组，用一条连续胶囊表达关系；
-        // 两个子按钮仍保留各自 44pt 命中区和独立的 VoiceOver 动作。
+        // 「添加」、模型和运行中追加方式都直接影响下一次发送，用一条连续胶囊表达关系；
+        // 每个子按钮仍保留各自 44pt 命中区和独立的 VoiceOver 动作。
         HStack(spacing: 0) {
             addContentButton
+            modelPickerControl(showsTitle: showsModelTitle)
             if canChooseRunningFollowUpDelivery {
                 followUpDeliveryMenu
-            } else {
-                modelPickerControl(showsTitle: showsModelTitle)
             }
         }
         .background {
@@ -1177,28 +1132,9 @@ struct ComposerView: View {
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    var shortcutBarToggle: some View {
-        Button {
-            prefersExpandedShortcutBar.toggle()
-            if !prefersExpandedShortcutBar {
-                showsSkillPicker = false
-                showsModelGridPicker = false
-            }
-        } label: {
-            composerToolbarControlLabel(
-                title: L10n.text("ui.quick"),
-                systemImage: prefersExpandedShortcutBar ? "chevron.left" : "chevron.right",
-                isSelected: prefersExpandedShortcutBar,
-                accessibilityLabel: prefersExpandedShortcutBar ? L10n.text("ui.close_shortcut_button") : L10n.text("ui.expand_shortcut_button")
-            )
-        }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(prefersExpandedShortcutBar ? L10n.text("ui.close_shortcut_button") : L10n.text("ui.expand_shortcut_button"))
-    }
-
     var composerOptionsMenu: some View {
-        // 模型、权限、推理强度已由输入区上方的快捷行承担，这里不再重复入口，
-        // 只保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
+        // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
+        // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
         Menu {
             runSettingsMenu
 
@@ -1216,19 +1152,10 @@ struct ComposerView: View {
                 Label(composerState.isGoalModeSelected ? L10n.text("ui.close_target_task") : L10n.text("ui.target_task"), systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
             }
 
-            if usesCompactComposerMetrics {
+            if canCollapsePhoneComposer {
                 Divider()
-
-                Button {
-                    prefersExpandedShortcutBar.toggle()
-                } label: {
-                    Label(L10n.text("ui.quick"), systemImage: prefersExpandedShortcutBar ? "checkmark" : "slider.horizontal.3")
-                }
-
-                if canCollapsePhoneComposer {
-                    Button(action: collapsePhoneComposer) {
-                        Label(L10n.text("ui.collapse_input_box"), systemImage: "chevron.down")
-                    }
+                Button(action: collapsePhoneComposer) {
+                    Label(L10n.text("ui.collapse_input_box"), systemImage: "chevron.down")
                 }
             }
         } label: {
@@ -1327,6 +1254,9 @@ struct ComposerView: View {
                 pluginShortcuts: installedPluginShortcuts,
                 capabilityErrorMessage: sessionStore.capabilityErrorMessage,
                 isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
+                showsPermissionSettings: isPhoneComposer,
+                permissionModes: availablePermissionModes,
+                selectedPermissionMode: composerState.permissionMode,
                 onPickPhotos: {
                     presentPhotoLibraryPicker()
                 },
@@ -1341,6 +1271,9 @@ struct ComposerView: View {
                 },
                 onRefreshCapabilities: {
                     Task { await sessionStore.refreshCapabilities(forceReload: true) }
+                },
+                onPermissionMode: { mode in
+                    setPermissionMode(mode)
                 },
                 onShortcut: { shortcut in
                     composerState.insertShortcut(shortcut)
