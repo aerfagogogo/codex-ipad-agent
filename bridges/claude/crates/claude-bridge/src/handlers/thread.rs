@@ -206,12 +206,7 @@ pub async fn handle_thread_resume(
 
     let mut thread = thread_from_entry(&entry);
     if !params.exclude_turns {
-        let live = state.thread_log(&params.thread_id);
-        thread.turns = if !live.is_empty() {
-            live
-        } else {
-            transcript_turns(state, &entry.metadata.claude_session_path).await?
-        };
+        thread.turns = cached_thread_turns(state, &entry).await?;
     }
 
     let response_model = match model {
@@ -670,18 +665,7 @@ pub async fn handle_thread_read(
         .ok_or_else(|| ThreadError::NotFound(params.thread_id.clone()))?;
     let mut thread = thread_from_entry(&entry);
     if params.include_turns {
-        // Prefer the in-memory log (canonical, captured live from the event
-        // pump) over the on-disk JSONL parse — claude's process flushes
-        // its session file with a small lag, so a fast `thread/read` after
-        // `turn/completed` can otherwise miss the just-completed assistant
-        // message. The JSONL parse remains the cold-start fallback for
-        // threads the bridge hasn't observed on this connection.
-        let live = state.thread_log(&params.thread_id);
-        thread.turns = if !live.is_empty() {
-            live
-        } else {
-            transcript_turns(state, &entry.metadata.claude_session_path).await?
-        };
+        thread.turns = cached_thread_turns(state, &entry).await?;
     }
     Ok(p::ThreadReadResponse { thread })
 }
@@ -702,12 +686,7 @@ pub async fn handle_thread_turns_list(
         .lookup(&params.thread_id)
         .await
         .ok_or_else(|| ThreadError::NotFound(params.thread_id.clone()))?;
-    let live = state.thread_log(&params.thread_id);
-    let mut turns = if !live.is_empty() {
-        live
-    } else {
-        transcript_turns(state, &entry.metadata.claude_session_path).await?
-    };
+    let mut turns = cached_thread_turns(state, &entry).await?;
     if matches!(
         params.sort_direction.unwrap_or(p::SortDirection::Desc),
         p::SortDirection::Desc
@@ -790,6 +769,22 @@ async fn transcript_turns(
         return Ok(messages_text_to_turns(&text));
     }
     messages_to_turns(path).await.map_err(ThreadError::from)
+}
+
+/// Claude JSONL 是跨 App/bridge 重启的权威历史，内存日志负责补上当前进程
+/// 尚未 flush 的实时事件。首次读取先完整播种，后续 turn 只在其后追加，避免
+/// “发送一条新消息后旧历史全部消失”的局部日志问题。
+pub(super) async fn cached_thread_turns(
+    state: &Arc<ConnectionState>,
+    entry: &IndexEntry,
+) -> Result<Vec<p::Turn>, ThreadError> {
+    let live = state.thread_log(&entry.thread_id);
+    if !live.is_empty() {
+        return Ok(live);
+    }
+    let persisted = transcript_turns(state, &entry.metadata.claude_session_path).await?;
+    state.seed_thread_log_if_empty(&entry.thread_id, persisted);
+    Ok(state.thread_log(&entry.thread_id))
 }
 
 async fn transcript_user_message_ids(

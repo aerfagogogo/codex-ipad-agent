@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -71,18 +72,19 @@ func (r *Router) refreshClaudeBridgeProbe(_ bool) appServerBridgeProbe {
 		r.setClaudeBridgeProbe(probe)
 		return probe
 	}
+	// An unset bridge_bin is no longer fatal: an installed app ships its own
+	// bridge next to agentd, so the common case needs no configuration at all.
 	bin := strings.TrimSpace(r.cfg.Claude.BridgeBin)
-	if bin == "" {
-		probe.Status = "invalid"
-		probe.Error = "claude.bridge_bin 未配置"
-		r.setClaudeBridgeProbe(probe)
-		return probe
-	}
-	path, ok := resolveCommandPath(bin)
+	path, ok := resolveClaudeBridgePath(bin)
 	if !ok {
-		probe.Status = "missing_command"
 		probe.Path = bin
-		probe.Error = "找不到 Claude bridge，可配置绝对路径"
+		if bin == "" {
+			probe.Status = "invalid"
+			probe.Error = "未随安装包提供 Claude bridge，且 claude.bridge_bin 未配置"
+		} else {
+			probe.Status = "missing_command"
+			probe.Error = "找不到 Claude bridge，可配置绝对路径"
+		}
 		r.setClaudeBridgeProbe(probe)
 		return probe
 	}
@@ -132,6 +134,41 @@ func (r *Router) refreshClaudeBridgeProbeIfStale() {
 	if checkedAt.IsZero() || time.Since(checkedAt) >= claudeBridgeProbeCacheTTL {
 		r.refreshClaudeBridgeProbe(false)
 	}
+}
+
+// bundledClaudeBridgeName is the Claude bridge shipped next to agentd inside
+// the Mac app bundle.
+const bundledClaudeBridgeName = "alleycat-claude-bridge"
+
+// resolveClaudeBridgePath finds the bridge to run, preferring what the config
+// names and falling back to the copy shipped alongside agentd.
+//
+// The fallback is what makes an installed app self-contained: a fresh machine
+// has no `~/.cargo/bin`, and a config carrying an absolute path from whoever
+// set it up first would otherwise point at a binary that isn't there. Anyone
+// who does name a working bridge still gets exactly that one.
+func resolveClaudeBridgePath(command string) (string, bool) {
+	if path, ok := resolveCommandPath(command); ok {
+		return path, true
+	}
+	if sibling, ok := resolveCommandPath(bundledClaudeBridgeSiblingPath()); ok {
+		return sibling, true
+	}
+	// Report the configured value so diagnostics name what the user asked for.
+	return strings.TrimSpace(command), false
+}
+
+// bundledClaudeBridgeSiblingPath is the bridge next to the running agentd, or
+// "" when the executable path cannot be determined.
+func bundledClaudeBridgeSiblingPath() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
+	}
+	return filepath.Join(filepath.Dir(executable), bundledClaudeBridgeName)
 }
 
 func resolveCommandPath(command string) (string, bool) {
@@ -230,7 +267,15 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	reader := bufio.NewReaderSize(upstream, 64*1024)
 	var upstreamWriteMu sync.Mutex
 	if sessionKey != "" {
-		if err := r.attachClaudeBridgeSession(reader, upstream, &upstreamWriteMu, sessionKey); err != nil {
+		clientCursor, hasClientCursor := claudeGatewayLastSeen(req)
+		if err := r.attachClaudeBridgeSession(
+			reader,
+			upstream,
+			&upstreamWriteMu,
+			sessionKey,
+			clientCursor,
+			hasClientCursor,
+		); err != nil {
 			log.Printf("claude bridge attach failed session=%s err=%v", sanitizeGatewayDiagnostic(sessionKey), err)
 			writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_UNAVAILABLE", "连接 Claude bridge 会话失败")
 			return
@@ -286,6 +331,20 @@ func claudeGatewaySessionKey(req *http.Request) string {
 	return sanitizedClaudeSessionKey(strings.TrimSpace(query.Get("thread_id")))
 }
 
+// claudeGatewayLastSeen 是 iOS 已完成本地投影的 turn 边界，不是 Go
+// `WriteMessage` 成功的高水位。只有客户端确认过的 cursor 才能安全跳过帧。
+func claudeGatewayLastSeen(req *http.Request) (uint64, bool) {
+	raw := strings.TrimSpace(req.URL.Query().Get("last_seen"))
+	if raw == "" {
+		return 0, false
+	}
+	seq, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return seq, true
+}
+
 // sanitizedClaudeSessionKey drops anything that is not a short, plain
 // identifier. The key is client-chosen and travels into the bridge's session
 // registry and back out into logs, so it must carry no framing or control
@@ -308,11 +367,29 @@ func sanitizedClaudeSessionKey(key string) string {
 }
 
 // attachClaudeBridgeSession performs the socket handshake that binds this
-// connection to a named bridge session, resuming from the last sequence number
-// we managed to deliver to a client.
-func (r *Router) attachClaudeBridgeSession(reader *bufio.Reader, upstream io.Writer, mu *sync.Mutex, sessionKey string) error {
+// connection to a named bridge session. A client-confirmed cursor is preferred;
+// Go's write high-water mark is only an instance/upper-bound check.
+func (r *Router) attachClaudeBridgeSession(
+	reader *bufio.Reader,
+	upstream io.Writer,
+	mu *sync.Mutex,
+	sessionKey string,
+	clientCursor uint64,
+	hasClientCursor bool,
+) error {
 	params := map[string]any{"sessionKey": sessionKey}
-	cursor, hadCursor := r.claudeBridge.resumeCursor(sessionKey)
+	serverCursor, bridgeInstanceKnown := r.claudeBridge.resumeCursor(sessionKey)
+	cursor, hadCursor := uint64(0), false
+	switch {
+	case bridgeInstanceKnown && hasClientCursor && clientCursor <= serverCursor:
+		// 客户端确认优先。serverCursor 只用来证明该序号属于当前 bridge
+		// 实例，不能替代客户端确认。
+		cursor, hadCursor = clientCursor, true
+	case bridgeInstanceKnown:
+		// 没有可信客户端确认时从 ring 起点请求。可能因窗口溢出得到
+		// driftReload，但不会静默跳过 App 尚未处理的最后一帧。
+		cursor, hadCursor = 0, true
+	}
 	if hadCursor {
 		params["lastSeen"] = cursor
 	}

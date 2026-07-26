@@ -148,14 +148,19 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let response = try decoder.decode(CodexAppServerMessage.self, from: Data(#"{"id":1,"result":{"ok":true}}"#.utf8))
         XCTAssertEqual(response, .response(CodexAppServerResponse(id: .int(1), result: .object(["ok": .bool(true)]), error: nil)))
 
-        let notification = try decoder.decode(CodexAppServerMessage.self, from: Data(#"{"method":"turn/started","params":{"threadId":"t1"}}"#.utf8))
-        XCTAssertEqual(notification, .notification(CodexAppServerNotification(method: "turn/started", params: .object(["threadId": .string("t1")]))))
+        let notification = try decoder.decode(CodexAppServerMessage.self, from: Data(#"{"method":"turn/started","params":{"threadId":"t1"},"_alleycat_seq":17}"#.utf8))
+        XCTAssertEqual(notification, .notification(CodexAppServerNotification(
+            method: "turn/started",
+            params: .object(["threadId": .string("t1")]),
+            replaySequence: 17
+        )))
 
-        let serverRequest = try decoder.decode(CodexAppServerMessage.self, from: Data(#"{"id":"approval-1","method":"item/commandExecution/requestApproval","params":{"threadId":"t1"}}"#.utf8))
+        let serverRequest = try decoder.decode(CodexAppServerMessage.self, from: Data(#"{"id":"approval-1","method":"item/commandExecution/requestApproval","params":{"threadId":"t1"},"_alleycat_seq":18}"#.utf8))
         XCTAssertEqual(serverRequest, .serverRequest(CodexAppServerServerRequest(
             id: .string("approval-1"),
             method: "item/commandExecution/requestApproval",
-            params: .object(["threadId": .string("t1")])
+            params: .object(["threadId": .string("t1")]),
+            replaySequence: 18
         )))
     }
 
@@ -459,6 +464,35 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let codex = try CodexAppServerSessionRuntime.gatewayURL(
             endpoint: "http://127.0.0.1:8787", sessionID: "")
         XCTAssertNotEqual(try sessionKey(codex), key)
+    }
+
+    func testClaudeGatewayURLCarriesClientProcessedCursor() throws {
+        let suiteName = "CodexAppServerProtocolTests.gatewayCursor.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        CodexAppServerSessionRuntime.storeGatewayLastSeenSequence(
+            37,
+            runtimeProvider: "claude",
+            defaults: defaults
+        )
+        let url = try CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787",
+            sessionID: "",
+            runtimeProvider: "claude",
+            defaults: defaults
+        )
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(query.first(where: { $0.name == "last_seen" })?.value, "37")
+
+        let codex = try CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8787",
+            sessionID: "",
+            runtimeProvider: "codex",
+            defaults: defaults
+        )
+        let codexQuery = URLComponents(url: codex, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertNil(codexQuery.first(where: { $0.name == "last_seen" }))
     }
 
     func testRequestBuilderAllowsFullAccessSandboxWithApproval() throws {

@@ -87,28 +87,35 @@ struct CodexAppServerRequest: Codable, Hashable {
 struct CodexAppServerNotification: Codable, Hashable {
     let method: String
     let params: CodexAppServerJSONValue?
+    /// Claude resident bridge 给可回放帧附加的单调序号。Codex 原生通知
+    /// 没有该字段，保持 nil 即可。
+    let replaySequence: UInt64?
 
     enum CodingKeys: String, CodingKey {
         case jsonrpc
         case method
         case params
+        case replaySequence = "_alleycat_seq"
     }
 
-    init(method: String, params: CodexAppServerJSONValue? = nil) {
+    init(method: String, params: CodexAppServerJSONValue? = nil, replaySequence: UInt64? = nil) {
         self.method = method
         self.params = params
+        self.replaySequence = replaySequence
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.method = try container.decode(String.self, forKey: .method)
         self.params = try container.decodeIfPresent(CodexAppServerJSONValue.self, forKey: .params)
+        self.replaySequence = try container.decodeIfPresent(UInt64.self, forKey: .replaySequence)
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(method, forKey: .method)
         try container.encodeIfPresent(params, forKey: .params)
+        try container.encodeIfPresent(replaySequence, forKey: .replaySequence)
     }
 }
 
@@ -116,11 +123,42 @@ struct CodexAppServerServerRequest: Codable, Hashable {
     let id: CodexAppServerRequestID
     let method: String
     let params: CodexAppServerJSONValue?
+    let replaySequence: UInt64?
 
-    init(id: CodexAppServerRequestID, method: String, params: CodexAppServerJSONValue? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case jsonrpc
+        case id
+        case method
+        case params
+        case replaySequence = "_alleycat_seq"
+    }
+
+    init(
+        id: CodexAppServerRequestID,
+        method: String,
+        params: CodexAppServerJSONValue? = nil,
+        replaySequence: UInt64? = nil
+    ) {
         self.id = id
         self.method = method
         self.params = params
+        self.replaySequence = replaySequence
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(CodexAppServerRequestID.self, forKey: .id)
+        self.method = try container.decode(String.self, forKey: .method)
+        self.params = try container.decodeIfPresent(CodexAppServerJSONValue.self, forKey: .params)
+        self.replaySequence = try container.decodeIfPresent(UInt64.self, forKey: .replaySequence)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(method, forKey: .method)
+        try container.encodeIfPresent(params, forKey: .params)
+        try container.encodeIfPresent(replaySequence, forKey: .replaySequence)
     }
 }
 

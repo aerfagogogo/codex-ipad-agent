@@ -45,10 +45,10 @@ type claudeBridgeSupervisor struct {
 	exited  bool
 	stopped bool
 
-	// cursors records, per session key, the highest sequence number we
-	// finished relaying, so a reconnecting client resumes from there rather
-	// than from what the bridge merely wrote to the socket. Bounded because
-	// the keys come from clients.
+	// cursors records, per session key, the highest sequence number this
+	// supervisor instance finished relaying. It proves a client-supplied cursor
+	// belongs to the current resident bridge and provides an upper bound; it is
+	// not itself a client acknowledgement.
 	cursorMu   sync.Mutex
 	cursors    map[string]uint64
 	cursorFIFO []string
@@ -63,8 +63,8 @@ func newClaudeBridgeSupervisor() *claudeBridgeSupervisor {
 	return &claudeBridgeSupervisor{cursors: map[string]uint64{}}
 }
 
-// noteDelivered advances the resume cursor for a session. Sequence numbers
-// only move forward; a replayed frame must not rewind it.
+// noteDelivered advances the relay high-water mark for a session. Sequence
+// numbers only move forward; a replayed frame must not rewind it.
 func (s *claudeBridgeSupervisor) noteDelivered(sessionKey string, seq uint64) {
 	s.cursorMu.Lock()
 	defer s.cursorMu.Unlock()

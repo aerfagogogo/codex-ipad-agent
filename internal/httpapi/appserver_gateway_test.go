@@ -429,6 +429,41 @@ while IFS= read -r line; do :; done
 
 // Shutting the supervisor down is what reaps the bridge, and it must take the
 // whole process group so Claude Code children do not outlive agentd.
+// An installed app ships its own bridge next to agentd. A fresh machine has
+// no ~/.cargo/bin, and a config carrying someone else's absolute path would
+// otherwise leave Claude unavailable on a complete install.
+func TestResolveClaudeBridgeFallsBackToTheBundledCopy(t *testing.T) {
+	sibling := bundledClaudeBridgeSiblingPath()
+	if sibling == "" {
+		t.Skip("拿不到可执行文件路径")
+	}
+	if _, err := os.Stat(sibling); err == nil {
+		t.Skip("测试二进制旁已存在同名文件，跳过以免干扰")
+	}
+	if err := os.WriteFile(sibling, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Skip("无法在测试二进制旁写入：" + err.Error())
+	}
+	t.Cleanup(func() { _ = os.Remove(sibling) })
+
+	missing := filepath.Join(t.TempDir(), "not-installed")
+	got, ok := resolveClaudeBridgePath(missing)
+	if !ok || got != sibling {
+		t.Fatalf("配置路径不存在时应回退到随包 bridge：got=%q ok=%v want=%q", got, ok, sibling)
+	}
+	if got, ok := resolveClaudeBridgePath(""); !ok || got != sibling {
+		t.Fatalf("未配置时应使用随包 bridge：got=%q ok=%v", got, ok)
+	}
+
+	// 显式配置了一个能用的 bridge 时必须原样使用它，不能被随包的顶掉。
+	configured := filepath.Join(t.TempDir(), "my-bridge")
+	if err := os.WriteFile(configured, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := resolveClaudeBridgePath(configured); !ok || got != configured {
+		t.Fatalf("显式配置应优先：got=%q ok=%v want=%q", got, ok, configured)
+	}
+}
+
 // A bridge that starts but never binds its socket must fail the start and
 // leave the supervisor usable. ensure() holds the supervisor lock across
 // start(), so anything in there that waits on the reaper — which takes the
@@ -505,10 +540,8 @@ func claudeBridgePID(t *testing.T, router *Router) int {
 	return router.claudeBridge.cmd.Process.Pid
 }
 
-// A client that names its session gets bound to a bridge session that survives
-// the WebSocket, and a reconnect asks to resume from the last sequence number
-// agentd actually relayed.
-func TestClaudeGatewayAttachesNamedSessionAndResumesFromCursor(t *testing.T) {
+// A client-confirmed cursor wins over Go's higher WebSocket-write watermark.
+func TestClaudeGatewayAttachesNamedSessionAndResumesFromClientCursor(t *testing.T) {
 	attachPath := filepath.Join(t.TempDir(), "attach.jsonl")
 	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
 IFS= read -r line
@@ -540,11 +573,17 @@ while IFS= read -r line; do :; done
 	}
 	_ = conn.Close()
 
-	second := dialAuthedGatewaySession(t, server.URL, "claude", "dev-1")
+	target := wsURL(server.URL, appServerGatewayPath) + "?runtime=claude&session=dev-1&last_seen=3"
+	second, _, err := websocket.DefaultDialer.Dial(target, http.Header{
+		"Authorization": []string{"Bearer " + testToken},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer second.Close()
 	resumed := readTestFileLineEventually(t, attachPath, "lastSeen")
-	if !bytes.Contains(resumed, []byte(`"lastSeen":7`)) {
-		t.Fatalf("重连应从最后转发的序号续传：%s", resumed)
+	if !bytes.Contains(resumed, []byte(`"lastSeen":3`)) {
+		t.Fatalf("重连应从客户端确认的序号续传，而不是 Go 写成功的 7：%s", resumed)
 	}
 }
 
@@ -605,18 +644,19 @@ while IFS= read -r line; do :; done
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	// First connection banks a cursor at seq 7.
+	// First connection records a relay watermark at seq 7.
 	conn := dialAuthedGatewaySession(t, server.URL, "claude", "dev-2")
 	readGatewayRaw(t, conn)
 	_ = conn.Close()
 
-	// Second connection proves the cursor was live, and is told the session
-	// was minted fresh — so the cursor must not survive it.
+	// Without a client confirmation the second connection starts from ring
+	// floor instead of skipping to Go's write watermark. The bridge then says
+	// the session was minted fresh, so the watermark must not survive it.
 	second := dialAuthedGatewaySession(t, server.URL, "claude", "dev-2")
 	defer second.Close()
 	resumed := readTestFileLineEventually(t, attachPath, "lastSeen")
-	if !bytes.Contains(resumed, []byte(`"lastSeen":7`)) {
-		t.Fatalf("第二次 attach 应带上已投递的序号：%s", resumed)
+	if !bytes.Contains(resumed, []byte(`"lastSeen":0`)) {
+		t.Fatalf("无客户端确认时第二次 attach 应从 ring 起点恢复：%s", resumed)
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
@@ -689,6 +729,27 @@ func TestClaudeGatewaySessionKeySelection(t *testing.T) {
 				t.Fatalf("claudeGatewaySessionKey(%q) = %q，期望 %q", tc.query, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestClaudeGatewayLastSeenParsing(t *testing.T) {
+	cases := []struct {
+		query string
+		want  uint64
+		ok    bool
+	}{
+		{"last_seen=42", 42, true},
+		{"last_seen=0", 0, true},
+		{"last_seen=", 0, false},
+		{"last_seen=-1", 0, false},
+		{"last_seen=not-a-number", 0, false},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/api/app-server/ws?"+tc.query, nil)
+		got, ok := claudeGatewayLastSeen(req)
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("claudeGatewayLastSeen(%q) = (%d,%v)，期望 (%d,%v)", tc.query, got, ok, tc.want, tc.ok)
+		}
 	}
 }
 
