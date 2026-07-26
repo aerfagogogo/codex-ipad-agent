@@ -192,6 +192,38 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
         )
     }
 
+    func testSkillInvocationCardLightAppearance() throws {
+        let defaults = UserDefaults(suiteName: "SkillModelPickerSnapshotTests.\(UUID().uuidString)")!
+        let themeStore = ThemeStore(defaults: defaults)
+        themeStore.mode = .light
+        let tokens = themeStore.tokens(for: .light)
+        let skill = SkillCapability(
+            name: "submit-ios-testflight-internal",
+            description: "检查未提交修改，确认后自动提交并发布内部测试版本",
+            scope: "user",
+            path: "/Users/demo/.codex/skills/submit-ios-testflight-internal/SKILL.md",
+            enabled: true,
+            displayName: "发布 iOS 内部 TestFlight",
+            shortDescription: "检查未提交修改，确认后自动提交并发布内部测试版本",
+            brandColor: "#6C176D"
+        )
+
+        let view = SkillInvocationCard(
+            metadata: SkillVisualMetadata(capability: skill),
+            sendStatus: .confirmed
+        )
+        .padding(16)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .frame(width: 560, height: 112)
+        .background(tokens.userBubble)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 560, height: 112))
+        )
+    }
+
     func testComposerModelTriggerFastIndicator() throws {
         try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .pad)
         let defaults = UserDefaults(suiteName: "SkillModelPickerSnapshotTests.\(UUID().uuidString)")!

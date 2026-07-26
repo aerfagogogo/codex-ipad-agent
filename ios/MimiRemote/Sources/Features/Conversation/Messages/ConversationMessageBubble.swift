@@ -293,7 +293,9 @@ struct ConversationMessageContent: View {
                 SkillInvocationCard(
                     metadata: SkillVisualMetadata(name: name, path: path, capability: capability),
                     sendStatus: message.sendStatus,
-                    usesUserBubbleContrast: true
+                    // 浅色用户气泡是中性浅底，必须使用主题深色文字；
+                    // 只有深色主题继续使用原有的高对比白字样式。
+                    usesUserBubbleContrast: themeStore.tokens(for: colorScheme).resolvedScheme == .dark
                 )
                 .environmentObject(themeStore)
             }

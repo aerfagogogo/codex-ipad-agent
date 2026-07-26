@@ -792,19 +792,26 @@ private struct ConversationReturnToTailButton: View {
                 .background {
                     if reduceTransparency {
                         Circle().fill(tokens.elevatedSurface)
-                    } else {
-                        Circle()
-                            .fill(.thinMaterial)
-                            .overlay {
-                                Circle().fill(tokens.elevatedSurface.opacity(0.42))
-                            }
                     }
                 }
+                // 回到最新是漂浮在内容之上的瞬时控件，使用更通透的原生 Liquid Glass；
+                // 开启“降低透明度”时关闭玻璃并保留上面的实色主题表面。
+                .glassEffect(
+                    reduceTransparency ? .identity : .clear.interactive(),
+                    in: .circle
+                )
                 .overlay {
                     Circle()
-                        .stroke(tokens.border.opacity(0.72), lineWidth: 0.75)
+                        .stroke(
+                            tokens.border.opacity(reduceTransparency ? 0.72 : 0.42),
+                            lineWidth: 0.75
+                        )
                 }
-                .shadow(color: Color.black.opacity(0.14), radius: 7, y: 3)
+                .shadow(
+                    color: Color.black.opacity(reduceTransparency ? 0.14 : 0.10),
+                    radius: 7,
+                    y: 3
+                )
         }
         .buttonStyle(.plain)
         .contentShape(Circle())
