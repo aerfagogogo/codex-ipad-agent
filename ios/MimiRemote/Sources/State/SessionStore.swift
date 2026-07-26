@@ -203,8 +203,6 @@ final class SessionStore: ObservableObject {
     var hiddenSessionCountByProjectID: [String: Int] = [:]
     @Published var sessionVisibleLimitByProjectID: [String: Int] = [:]
     var sessionListSnapshotsByProjectID: [String: ProjectSessionListSnapshot] = [:]
-    var frozenAllSessionOrder: [SessionID] = []
-    var frozenSessionOrderByProjectID: [String: [SessionID]] = [:]
     var sessionPageCursorByProjectID: [String: String] = [:]
     var sessionHasMoreByProjectID: [String: Bool] = [:]
     /// 工作区详情独立于侧栏展开状态记录已经加载过旧页的项目，供下拉刷新保留分页窗口。

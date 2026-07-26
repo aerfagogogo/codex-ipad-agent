@@ -1604,43 +1604,15 @@ extension SessionStore {
         // SwiftUI 列表渲染时只读取缓存，避免每个项目行反复 filter + sort。
         let listableSessions = sessions.filter(isListableSession)
         let sorted = sortedSessionsForList(listableSessions)
-        if sessions.contains(where: \.isRunning) {
-            let previousOrder = frozenAllSessionOrder.isEmpty ? Self.sessionIDs(sortedAllSessions) : frozenAllSessionOrder
-            let frozen = Self.applyFrozenOrder(to: sorted, previousOrder: previousOrder)
-            sortedAllSessions = frozen
-            frozenAllSessionOrder = Self.sessionIDs(frozen)
-        } else {
-            sortedAllSessions = sorted
-            frozenAllSessionOrder = []
-        }
+        // Codex 与 Claude 的分页结果可能分批写入；全局和工作区列表都必须重新按同一活动时间排序。
+        // recencyAt 已隔离 Agent 后台输出噪声，因此不再因任一运行态冻结整张列表。
+        sortedAllSessions = sorted
 
-        var naturalGrouped: [String: [AgentSession]] = [:]
-        naturalGrouped.reserveCapacity(sidebarProjects.count)
-        for session in sorted {
-            naturalGrouped[session.projectID, default: []].append(session)
-        }
-
-        var runningProjectIDs: Set<String> = []
-        runningProjectIDs.reserveCapacity(naturalGrouped.count)
-        for session in listableSessions where session.isRunning {
-            runningProjectIDs.insert(session.projectID)
-        }
         var grouped: [String: [AgentSession]] = [:]
-        grouped.reserveCapacity(naturalGrouped.count)
-        for (projectID, projectSessions) in naturalGrouped {
-            guard runningProjectIDs.contains(projectID) else {
-                grouped[projectID] = projectSessions
-                frozenSessionOrderByProjectID.removeValue(forKey: projectID)
-                continue
-            }
-            let previousOrder = frozenSessionOrderByProjectID[projectID]
-                ?? sortedSessionsByProjectID[projectID].map(Self.sessionIDs)
-                ?? Self.sessionIDs(projectSessions)
-            let frozen = Self.applyFrozenOrder(to: projectSessions, previousOrder: previousOrder)
-            grouped[projectID] = frozen
-            frozenSessionOrderByProjectID[projectID] = Self.sessionIDs(frozen)
+        grouped.reserveCapacity(sidebarProjects.count)
+        for session in sorted {
+            grouped[session.projectID, default: []].append(session)
         }
-        frozenSessionOrderByProjectID = frozenSessionOrderByProjectID.filter { runningProjectIDs.contains($0.key) }
         sortedSessionsByProjectID = grouped
 
         var previews: [String: [AgentSession]] = [:]
@@ -2005,40 +1977,6 @@ extension SessionStore {
             }
             return (indexByID[lhs.id] ?? 0) < (indexByID[rhs.id] ?? 0)
         }
-    }
-
-    static func applyFrozenOrder(to items: [AgentSession], previousOrder: [SessionID]) -> [AgentSession] {
-        guard !items.isEmpty, !previousOrder.isEmpty else {
-            return items
-        }
-        let previousIDs = Set(previousOrder)
-        var byID: [SessionID: AgentSession] = [:]
-        byID.reserveCapacity(items.count)
-        for item in items {
-            byID[item.id] = item
-        }
-        var result: [AgentSession] = []
-        result.reserveCapacity(items.count)
-
-        // 新会话仍按当前排序排在前面；已有会话沿用冻结顺序，避免 running 输出刷新 updatedAt 时侧栏上下跳。
-        for item in items where !previousIDs.contains(item.id) {
-            result.append(item)
-        }
-        for id in previousOrder {
-            if let item = byID[id] {
-                result.append(item)
-            }
-        }
-        return result
-    }
-
-    static func sessionIDs(_ items: [AgentSession]) -> [SessionID] {
-        var ids: [SessionID] = []
-        ids.reserveCapacity(items.count)
-        for item in items {
-            ids.append(item.id)
-        }
-        return ids
     }
 
     static func projectIDs(_ items: [AgentProject]) -> Set<String> {
