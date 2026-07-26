@@ -473,8 +473,12 @@ func TestClaudeBridgeStartTimeoutDoesNotWedgeSupervisor(t *testing.T) {
 	claudeBridgeStartTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { claudeBridgeStartTimeout = previous })
 
-	// Ignores --socket entirely: alive, but nothing ever listens.
-	silent := writeTestBridge(t, "#!/bin/sh\nsleep 30\n")
+	// 这里不能使用 writeTestBridge：它会通过 fakebridge helper 主动监听 socket，
+	// 在较快的 CI runner 上反而让 ensure 成功，掩盖真正要验证的启动超时路径。
+	silent := filepath.Join(t.TempDir(), "silent-bridge")
+	if err := os.WriteFile(silent, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	supervisor := newClaudeBridgeSupervisor()
 	t.Cleanup(supervisor.shutdown)
 
