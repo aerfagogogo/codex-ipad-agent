@@ -727,6 +727,7 @@ func claudeCurrentModelList() []map[string]any {
 			"Anthropic's most capable generally available model for the hardest, longest-running agentic work.",
 			false,
 			"high",
+			true,
 		),
 		claudeModelOption(
 			"opus",
@@ -734,6 +735,7 @@ func claudeCurrentModelList() []map[string]any {
 			"Alias resolved by the Claude CLI to the latest available Opus model; best for complex agentic coding and deep reasoning.",
 			true,
 			"high",
+			true,
 		),
 		claudeModelOption(
 			"sonnet",
@@ -741,25 +743,32 @@ func claudeCurrentModelList() []map[string]any {
 			"Alias resolved by the Claude CLI to the latest available Sonnet model; default balanced model for everyday coding work.",
 			false,
 			"high",
+			true,
 		),
 		claudeModelOption(
 			"haiku",
 			"Claude Haiku 4.5",
 			"Alias resolved by the Claude CLI to the latest available Haiku model; fastest choice for quick edits and small tasks.",
 			false,
-			"minimal",
+			"none",
+			false,
 		),
 	}
 }
 
-func claudeModelOption(modelID string, displayName string, description string, isDefault bool, defaultEffort string) map[string]any {
+func claudeModelOption(modelID string, displayName string, description string, isDefault bool, defaultEffort string, supportsNativeEffort bool) map[string]any {
+	supportedEfforts := []map[string]string{}
+	if supportsNativeEffort {
+		// 与 Claude bridge 的原生 effort 档位保持一致；iPad 只会启用这里声明的格子。
+		supportedEfforts = claudeReasoningEffortOptions()
+	}
 	return map[string]any{
 		"id":                        modelID,
 		"model":                     modelID,
 		"displayName":               displayName,
 		"description":               description,
 		"hidden":                    false,
-		"supportedReasoningEfforts": claudeReasoningEffortOptions(),
+		"supportedReasoningEfforts": supportedEfforts,
 		"defaultReasoningEffort":    defaultEffort,
 		"inputModalities":           []string{"text", "image"},
 		"supportsPersonality":       false,
@@ -771,10 +780,10 @@ func claudeModelOption(modelID string, displayName string, description string, i
 
 func claudeReasoningEffortOptions() []map[string]string {
 	return []map[string]string{
-		{"reasoningEffort": "minimal", "description": "Lowest latency, no extended thinking"},
-		{"reasoningEffort": "low", "description": "Brief reasoning"},
-		{"reasoningEffort": "medium", "description": "Default depth of reasoning"},
-		{"reasoningEffort": "high", "description": "Maximum reasoning effort"},
+		{"reasoningEffort": "medium", "description": "Balanced native Claude effort"},
+		{"reasoningEffort": "high", "description": "High native Claude effort (default)"},
+		{"reasoningEffort": "xhigh", "description": "Extended native Claude effort"},
+		{"reasoningEffort": "max", "description": "Maximum native Claude effort"},
 	}
 }
 

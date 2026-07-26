@@ -158,11 +158,87 @@ extension SessionStore {
             let status = try await clientFactory().gitStatus(path: targetPath)
             // Git 状态是只读辅助信息，按路径缓存；用户切换会话后，旧请求只会更新旧路径缓存。
             gitStatusByPath[targetPath] = status
+            cacheWorkspaceGitSummary(status, path: targetPath)
             gitStatusErrorByPath.removeValue(forKey: targetPath)
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
             gitStatusErrorByPath[targetPath] = error.localizedDescription
         }
+    }
+
+    func refreshWorkspaceGitSummaries(for projects: [AgentProject], force: Bool = false) async {
+        var seenPaths: Set<String> = []
+        let paths = projects.compactMap { project -> String? in
+            let path = project.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty, seenPaths.insert(path).inserted else {
+                return nil
+            }
+            return path
+        }
+
+        // 每个摘要都会执行少量本地 Git 命令；分批并发既缩短 Tailscale 往返，
+        // 又避免最近工作区较多时一次启动过多 git 子进程。
+        for start in stride(from: 0, to: paths.count, by: Self.workspaceGitSummaryConcurrencyLimit) {
+            guard !Task.isCancelled else { return }
+            let end = min(start + Self.workspaceGitSummaryConcurrencyLimit, paths.count)
+            let batch = paths[start..<end]
+            await withTaskGroup(of: Void.self) { group in
+                for path in batch {
+                    group.addTask { @MainActor [weak self] in
+                        await self?.refreshWorkspaceGitSummary(path: path, force: force)
+                    }
+                }
+            }
+        }
+    }
+
+    func refreshWorkspaceGitSummary(path: String, force: Bool = false, now: Date = Date()) async {
+        let targetPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetPath.isEmpty,
+              !refreshingWorkspaceGitSummaryPaths.contains(targetPath)
+        else {
+            return
+        }
+        if !force,
+           let updatedAt = workspaceGitSummaryUpdatedAtByPath[targetPath],
+           now.timeIntervalSince(updatedAt) < Self.workspaceGitSummaryTTL {
+            return
+        }
+
+        let generation = appStore.connectionGeneration
+        refreshingWorkspaceGitSummaryPaths.insert(targetPath)
+        defer { refreshingWorkspaceGitSummaryPaths.remove(targetPath) }
+        do {
+            let status = try await clientFactory().gitStatusSummary(path: targetPath)
+            guard generation == appStore.connectionGeneration, !Task.isCancelled else {
+                return
+            }
+            workspaceGitSummaryByPath[targetPath] = status
+            workspaceGitSummaryUpdatedAtByPath[targetPath] = now
+        } catch {
+            // 卡片摘要是渐进增强：失败时保留旧缓存，不把局部 Git 问题提升成页面错误。
+        }
+    }
+
+    func cacheWorkspaceGitSummary(_ status: GitStatusResponse, path: String, now: Date = Date()) {
+        let previous = workspaceGitSummaryByPath[path]
+        workspaceGitSummaryByPath[path] = GitStatusResponse(
+            path: status.path,
+            isRepository: status.isRepository,
+            branch: status.branch,
+            head: status.head,
+            ahead: status.ahead ?? previous?.ahead,
+            behind: status.behind ?? previous?.behind,
+            upstream: status.upstream ?? previous?.upstream,
+            statusText: nil,
+            diffStat: nil,
+            unstagedDiff: nil,
+            stagedDiff: nil,
+            files: status.files,
+            truncated: status.truncated,
+            truncatedNote: status.truncatedNote
+        )
+        workspaceGitSummaryUpdatedAtByPath[path] = now
     }
 
     func performSelectedGitAction(_ action: GitActionKind, files: [String]) async {
@@ -189,6 +265,7 @@ extension SessionStore {
             let status = try await clientFactory().gitAction(path: targetPath, action: action, files: targetFiles)
             // 写动作成功后直接采用服务端返回的新状态，避免前端本地推断 Git index。
             gitStatusByPath[targetPath] = status
+            cacheWorkspaceGitSummary(status, path: targetPath)
             gitStatusErrorByPath.removeValue(forKey: targetPath)
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
@@ -218,6 +295,7 @@ extension SessionStore {
             let status = try await clientFactory().gitPatchAction(path: targetPath, action: action, patch: targetPatch)
             // hunk 操作同样以服务端返回为准，避免本地解析 patch 后再二次推断状态。
             gitStatusByPath[targetPath] = status
+            cacheWorkspaceGitSummary(status, path: targetPath)
             gitStatusErrorByPath.removeValue(forKey: targetPath)
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
@@ -247,6 +325,7 @@ extension SessionStore {
             let status = try await clientFactory().gitCommit(path: targetPath, message: commitMessage)
             // commit 只提交已暂存内容；成功后用服务端状态清理 staged diff 和文件列表。
             gitStatusByPath[targetPath] = status
+            cacheWorkspaceGitSummary(status, path: targetPath)
             gitStatusErrorByPath.removeValue(forKey: targetPath)
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
@@ -275,6 +354,7 @@ extension SessionStore {
         do {
             let response = try await clientFactory().gitPush(path: targetPath, remote: targetRemote?.isEmpty == true ? nil : targetRemote)
             gitStatusByPath[targetPath] = response.status
+            cacheWorkspaceGitSummary(response.status, path: targetPath)
             gitStatusErrorByPath.removeValue(forKey: targetPath)
             gitActionErrorByPath.removeValue(forKey: targetPath)
         } catch {
@@ -312,6 +392,7 @@ extension SessionStore {
             )
             gitQuickPublishResultByPath[targetPath] = response
             gitStatusByPath[targetPath] = response.status
+            cacheWorkspaceGitSummary(response.status, path: targetPath)
             gitStatusErrorByPath.removeValue(forKey: targetPath)
             gitActionErrorByPath.removeValue(forKey: targetPath)
             await refreshGitTestFlightStatus(path: targetPath)
@@ -469,6 +550,9 @@ extension SessionStore {
     func forgetWorkspace(_ project: AgentProject) {
         let next = recentWorkspaceStore.forget(id: project.id, endpoint: appStore.endpoint)
         setRecentWorkspacesIfChanged(next)
+        workspaceGitSummaryByPath.removeValue(forKey: project.path)
+        workspaceGitSummaryUpdatedAtByPath.removeValue(forKey: project.path)
+        refreshingWorkspaceGitSummaryPaths.remove(project.path)
         removeExpandedProjectID(project.id)
         removeShowingAllSessionProjectID(project.id)
         sessionPageCursorByProjectID.removeValue(forKey: project.id)

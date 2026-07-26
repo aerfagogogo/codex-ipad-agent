@@ -669,11 +669,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
             ])
         ]))
 
-        XCTAssertEqual(parsed.first?.model, "gpt-5.1-codex")
+        XCTAssertEqual(parsed.first?.model, "gpt-5-codex")
         XCTAssertEqual(Set(parsed.map(\.id)), ["gpt-5.1-codex@openai", "gpt-5", "gpt-5@azure", "gpt-5-codex"])
-        XCTAssertEqual(parsed.first?.title, "GPT-5.1 Codex")
-        XCTAssertEqual(parsed.first?.provider, "openai")
-        XCTAssertEqual(parsed.first?.isDefault, true)
+        let defaultOption = try XCTUnwrap(parsed.first(where: \.isDefault))
+        XCTAssertEqual(defaultOption.title, "GPT-5.1 Codex")
+        XCTAssertEqual(defaultOption.provider, "openai")
     }
 
     func testSkillsListBuilderAndRichMetadataParser() throws {
@@ -788,14 +788,13 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertFalse(option.hidden)
         XCTAssertEqual(
             ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: parsed).rows.map(\.model),
-            ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+            ["gpt-5.6-sol"]
         )
     }
 
-    func testClaudeModelGridUsesConcreteFamiliesAndBridgeReasoningMetadata() {
+    func testClaudeModelGridPreservesBridgeOrderAndNativeReasoningMetadata() {
         let efforts = ["medium", "high", "xhigh", "max"]
         let options = [
-            CodexAppServerModelOption(id: "fable", runtimeProvider: "claude"),
             CodexAppServerModelOption(
                 id: "claude-fable-5",
                 title: "Claude Fable 5",
@@ -803,24 +802,21 @@ final class CodexAppServerProtocolTests: XCTestCase {
                 supportedReasoningEfforts: efforts,
                 defaultReasoningEffort: "high"
             ),
-            CodexAppServerModelOption(id: "sonnet", runtimeProvider: "claude"),
             CodexAppServerModelOption(
-                id: "claude-sonnet-4-6",
-                title: "Claude Sonnet 4.6",
+                id: "claude-opus-5",
+                title: "Claude Opus 5",
                 runtimeProvider: "claude",
                 isDefault: true,
                 supportedReasoningEfforts: efforts,
                 defaultReasoningEffort: "high"
             ),
-            CodexAppServerModelOption(id: "opus", runtimeProvider: "claude"),
             CodexAppServerModelOption(
-                id: "claude-opus-5",
-                title: "Claude Opus 5",
+                id: "claude-sonnet-4-6",
+                title: "Claude Sonnet 4.6",
                 runtimeProvider: "claude",
                 supportedReasoningEfforts: efforts,
                 defaultReasoningEffort: "high"
             ),
-            CodexAppServerModelOption(id: "haiku", runtimeProvider: "claude"),
             CodexAppServerModelOption(
                 id: "claude-haiku-4-5-20251001",
                 title: "Claude Haiku 4.5",
@@ -833,27 +829,23 @@ final class CodexAppServerProtocolTests: XCTestCase {
 
         XCTAssertEqual(
             layout.rows.map(\.model),
-            ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-5", "claude-fable-5"]
+            ["claude-fable-5", "claude-opus-5", "claude-sonnet-4-6"]
         )
         XCTAssertEqual(
             layout.rows.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
-            ["Haiku 4.5", "Sonnet 4.6", "Opus 5", "Fable 5"]
+            ["Claude Fable 5", "Claude Opus 5", "Claude Sonnet 4.6"]
         )
-        XCTAssertEqual(layout.efforts, [.medium, .high, .xhigh, .max])
-        XCTAssertTrue(layout.contains(modelID: "fable"), "Claude Fable alias 应映射到同一模型家族")
-        XCTAssertTrue(layout.contains(modelID: "sonnet"), "Claude alias 应映射到同一模型家族")
-        XCTAssertFalse(
-            ModelReasoningGridCatalog.supports(.medium, option: layout.rows[0]),
-            "Haiku 4.5 不应伪装成支持原生 effort"
-        )
+        XCTAssertEqual(layout.efforts, [.high, .xhigh, .max])
+        XCTAssertFalse(layout.contains(modelID: "fable"), "未返回的 alias 不应再被本地映射成具体模型")
+        XCTAssertFalse(layout.contains(modelID: "claude-haiku-4-5-20251001"), "网格只展示运行时返回的前三个模型")
         XCTAssertFalse(layout.showsFastMode)
         XCTAssertEqual(
-            ModelReasoningGridCatalog.triggerTitle(for: "fable", effort: .high, layout: layout),
-            "Fable 5 · \(ModelReasoningGridCatalog.effortTitle(.high))"
+            ModelReasoningGridCatalog.triggerTitle(for: "claude-fable-5", effort: .max, layout: layout),
+            "Claude Fable 5 · max"
         )
         XCTAssertEqual(
-            ModelReasoningGridCatalog.triggerTitle(for: "sonnet", effort: .medium, layout: layout),
-            "Sonnet 4.6 · \(ModelReasoningGridCatalog.effortTitle(.medium))"
+            ModelReasoningGridCatalog.triggerTitle(for: "claude-sonnet-4-6", effort: .high, layout: layout),
+            "Claude Sonnet 4.6 · high"
         )
     }
 
@@ -871,7 +863,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: [sonnet, opus])
 
-        XCTAssertEqual(layout.efforts, [.medium, .high, .xhigh, .max])
+        XCTAssertEqual(layout.efforts, [.high, .xhigh, .max])
         XCTAssertFalse(ModelReasoningGridCatalog.supports(.xhigh, option: sonnet, layout: layout))
         XCTAssertTrue(ModelReasoningGridCatalog.supports(.xhigh, option: opus, layout: layout))
         XCTAssertNil(
@@ -891,7 +883,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.supportedEfforts(for: sonnet, layout: layout),
-            [.medium, .high]
+            [.high]
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.supportedEfforts(for: opus, layout: layout),
@@ -932,10 +924,10 @@ final class CodexAppServerProtocolTests: XCTestCase {
             ])
         ]))
 
-        XCTAssertEqual(parsed.first?.model, "gpt-snake-default")
-        XCTAssertEqual(parsed.first?.title, "Snake Default")
-        XCTAssertEqual(parsed.first?.provider, "openai")
-        XCTAssertEqual(parsed.first?.isDefault, true)
+        let defaultOption = try XCTUnwrap(parsed.first(where: \.isDefault))
+        XCTAssertEqual(defaultOption.model, "gpt-snake-default")
+        XCTAssertEqual(defaultOption.title, "Snake Default")
+        XCTAssertEqual(defaultOption.provider, "openai")
         XCTAssertEqual(Set(parsed.map(\.model)), ["gpt-snake-default", "gpt-side"])
     }
 

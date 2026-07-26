@@ -26,6 +26,11 @@ targets:
       - macCatalyst
     sources:
       - path: Sources
+        # 本机 Agent 配置目录不属于 App 源码；排除后避免 XcodeGen 每次为
+        # 空 `.claude` 目录生成随机 TEMP group，造成不可复现的工程文件 diff。
+        excludes:
+          - "**/.claude"
+          - "**/.claude/**"
       - path: Resources/Assets.xcassets
         buildPhase: resources
       - path: Resources/PrivacyInfo.xcprivacy

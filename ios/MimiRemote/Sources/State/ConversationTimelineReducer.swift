@@ -80,13 +80,20 @@ struct ConversationTimelineReducer {
             consumedCurrentIndices.insert(currentIndex)
         }
 
-        // 老 gateway 可能不给 client_message_id；只允许“未确认本地回显”与唯一、近时间同文历史合并。
+        // 老 Claude bridge 或 bridge 重启后的 JSONL 历史可能不给 client_message_id。
+        // 未确认回显沿用旧兼容逻辑；已确认消息只允许带本地 client ID 的 user 气泡
+        // 与唯一、近时间、且缺 client ID 的历史合并，避免误吞用户刻意发送的重复内容。
         for snapshotIndex in snapshot.indices where matchedCurrentBySnapshotIndex[snapshotIndex] == nil {
             let history = snapshot[snapshotIndex]
             let candidates = current.indices.filter { index in
                 guard !consumedCurrentIndices.contains(index) else { return false }
                 let local = current[index]
-                return local.sendStatus != .confirmed
+                let isUnconfirmedLocalEcho = local.sendStatus != .confirmed
+                let isConfirmedLegacyClaudeEcho = local.sendStatus == .confirmed
+                    && local.role == .user
+                    && local.clientMessageID != nil
+                    && history.clientMessageID == nil
+                return (isUnconfirmedLocalEcho || isConfirmedLegacyClaudeEcho)
                     && local.role == history.role
                     && local.content == history.content
                     && abs(local.createdAt.timeIntervalSince(history.createdAt)) <= 10 * 60

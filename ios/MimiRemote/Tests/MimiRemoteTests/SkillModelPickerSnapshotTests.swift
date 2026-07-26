@@ -42,11 +42,11 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
             modelID.flatMap {
                 ModelReasoningGridCatalog.triggerTitle(for: $0, effort: .xhigh, layout: layout)
             },
-            "5.6 Sol · \(ModelReasoningGridCatalog.effortTitle(.xhigh))"
+            "GPT-5.6 Sol · xhigh"
         )
     }
 
-    func testClaudeUsesSharedGridWithRuntimeSpecificRowsAndEfforts() {
+    func testClaudeUsesServerOrderedTopThreeModelsAndStrongestThreeEfforts() {
         let nonGridOptions = [CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5", isDefault: true)]
         let claudeOptions = CodexAppServerModelOption.builtInClaudeFallback
 
@@ -55,18 +55,15 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
         let nonGridModelID = ModelReasoningGridCatalog.effectiveModelID(selectedModelID: nil, options: nonGridOptions)
         let claudeModelID = ModelReasoningGridCatalog.effectiveModelID(selectedModelID: nil, options: claudeOptions)
 
-        XCTAssertFalse(codexLayout.contains(modelID: nonGridModelID))
+        XCTAssertTrue(codexLayout.contains(modelID: nonGridModelID))
         XCTAssertTrue(claudeLayout.contains(modelID: claudeModelID))
-        XCTAssertEqual(claudeLayout.rows.map(\.model), ["haiku", "sonnet", "opus", "claude-fable-5"])
+        XCTAssertEqual(claudeLayout.rows.map(\.model), ["claude-fable-5", "opus", "sonnet"])
         XCTAssertEqual(
             claudeLayout.rows.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
-            ["Haiku 4.5", "Sonnet 5", "Opus 5", "Fable 5"]
+            ["Claude Fable 5", "Claude Opus 5", "Claude Sonnet 5"]
         )
-        XCTAssertEqual(claudeLayout.efforts, [.medium, .high, .xhigh, .max])
-        XCTAssertFalse(
-            ModelReasoningGridCatalog.supports(.medium, option: claudeLayout.rows[0]),
-            "Haiku 4.5 的原生 effort 单元应禁用"
-        )
+        XCTAssertEqual(claudeLayout.efforts, [.high, .xhigh, .max])
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.max), "max")
         XCTAssertFalse(claudeLayout.showsFastMode)
     }
 
@@ -232,7 +229,7 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
 
         let view = HStack(spacing: 18) {
             ComposerToolbarControlLabel(
-                title: "5.6 Sol · 极高",
+                title: "GPT-5.6 Sol · xhigh",
                 systemImage: "cpu",
                 trailingSystemImage: nil,
                 isSelected: false,
@@ -242,7 +239,7 @@ final class SkillModelPickerSnapshotTests: XCTestCase {
             )
 
             ComposerToolbarControlLabel(
-                title: "5.6 Sol · 极高",
+                title: "GPT-5.6 Sol · xhigh",
                 systemImage: "cpu",
                 trailingSystemImage: "bolt.fill",
                 isSelected: false,

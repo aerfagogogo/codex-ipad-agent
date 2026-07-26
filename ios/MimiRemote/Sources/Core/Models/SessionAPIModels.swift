@@ -1038,21 +1038,21 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             defaultReasoningEffort: "high"
         ),
         CodexAppServerModelOption(
-            id: "sonnet",
-            title: "Claude Sonnet 5",
-            provider: "anthropic",
-            runtimeProvider: "claude",
-            description: "Claude CLI alias resolved to the latest available Sonnet model.",
-            supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
-            defaultReasoningEffort: "high"
-        ),
-        CodexAppServerModelOption(
             id: "opus",
             title: "Claude Opus 5",
             provider: "anthropic",
             runtimeProvider: "claude",
             description: "Claude CLI alias resolved to the latest available Opus model.",
             isDefault: true,
+            supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
+            defaultReasoningEffort: "high"
+        ),
+        CodexAppServerModelOption(
+            id: "sonnet",
+            title: "Claude Sonnet 5",
+            provider: "anthropic",
+            runtimeProvider: "claude",
+            description: "Claude CLI alias resolved to the latest available Sonnet model.",
             supportedReasoningEfforts: ["medium", "high", "xhigh", "max"],
             defaultReasoningEffort: "high"
         ),
@@ -1076,12 +1076,9 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             seen.insert(option.id)
             options.append(option)
         }
-        return options.sorted { lhs, rhs in
-            if lhs.isDefault != rhs.isDefault {
-                return lhs.isDefault
-            }
-            return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
-        }
+        // 数组顺序由各运行时的 model/list 定义，代表其推荐/新旧顺序；
+        // 展示层会直接截取前三项，因此这里不能再按默认项或标题二次排序。
+        return options
     }
 
     private static func modelItems(from result: CodexAppServerJSONValue?) -> [CodexAppServerJSONValue] {
@@ -1099,7 +1096,7 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
                 return items
             }
             if let keyed = object[key]?.objectValue {
-                return keyed.map { key, value in
+                return keyed.sorted(by: { $0.key < $1.key }).map { key, value in
                     if var object = value.objectValue {
                         object["id"] = object["id"] ?? .string(key)
                         return .object(object)
@@ -1108,7 +1105,7 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
                 }
             }
         }
-        return object.map { key, value in
+        return object.sorted(by: { $0.key < $1.key }).map { key, value in
             if var item = value.objectValue {
                 item["id"] = item["id"] ?? .string(key)
                 return .object(item)

@@ -396,6 +396,11 @@ actor CodexAppServerSessionRuntime {
         try await AgentAPIClient(endpoint: endpoint, token: token).gitStatus(path: path)
     }
 
+    func gitStatusSummary(path: String) async throws -> GitStatusResponse {
+        // 工作区卡片只需要轻量摘要，不能为每张卡片下载完整 diff。
+        try await AgentAPIClient(endpoint: endpoint, token: token).gitStatus(path: path, summaryOnly: true)
+    }
+
     func gitAction(path: String, action: GitActionKind, files: [String]) async throws -> GitStatusResponse {
         // Git 写动作仍由 agentd 控制面执行，方便统一做 allowlist、路径和动作白名单校验。
         try await AgentAPIClient(endpoint: endpoint, token: token).gitAction(path: path, action: action, files: files)

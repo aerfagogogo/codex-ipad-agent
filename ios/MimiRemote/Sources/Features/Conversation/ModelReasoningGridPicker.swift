@@ -19,13 +19,7 @@ struct ModelReasoningGridLayout: Equatable {
 
     func row(matching modelID: String?) -> CodexAppServerModelOption? {
         guard let modelID else { return nil }
-        switch kind {
-        case .codex:
-            return rows.first { $0.model.caseInsensitiveCompare(modelID) == .orderedSame }
-        case .claude:
-            guard let family = ModelReasoningGridCatalog.claudeFamily(for: modelID) else { return nil }
-            return rows.first { ModelReasoningGridCatalog.claudeFamily(for: $0.model) == family }
-        }
+        return rows.first { $0.model.caseInsensitiveCompare(modelID) == .orderedSame }
     }
 
     func contains(modelID: String?) -> Bool {
@@ -34,11 +28,10 @@ struct ModelReasoningGridLayout: Equatable {
 }
 
 enum ModelReasoningGridCatalog {
-    static let codexModelOrder = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
-    static let codexEfforts: [CodexAppServerReasoningEffort] = [.medium, .high, .xhigh]
-    static let claudeFamilyOrder = ["haiku", "sonnet", "opus", "fable"]
-    // Claude 原生 effort 只保留最高四档；列从左到右递增，符合现有滑杆手势方向。
-    static let claudeEfforts: [CodexAppServerReasoningEffort] = [.medium, .high, .xhigh, .max]
+    static let maximumModelCount = 3
+    static let maximumEffortCount = 3
+    static let codexFallbackEfforts: [CodexAppServerReasoningEffort] = [.medium, .high, .xhigh]
+    static let claudeFallbackEfforts: [CodexAppServerReasoningEffort] = [.high, .xhigh, .max]
 
     static func effectiveModelID(
         selectedModelID: String?,
@@ -64,30 +57,20 @@ enum ModelReasoningGridCatalog {
         let runtime = runtimeProvider?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-
-        if runtime == "claude" {
-            let source = visible.isEmpty ? CodexAppServerModelOption.builtInClaudeFallback : visible
-            let rows = claudeFamilyOrder.compactMap { family in
-                preferredClaudeOption(family: family, options: source)
-            }
-            let resolvedRows = rows.isEmpty ? Array(source.prefix(3)) : rows
-            return ModelReasoningGridLayout(
-                kind: .claude,
-                rows: resolvedRows,
-                efforts: claudeEfforts,
-                showsFastMode: false
-            )
-        }
-
-        let rows = codexModelOrder.compactMap { id in
-            visible.first { $0.model.caseInsensitiveCompare(id) == .orderedSame }
-                ?? CodexAppServerModelOption.builtInFallback.first { $0.model == id }
-        }
+        let kind: ModelReasoningGridKind = runtime == "claude" ? .claude : .codex
+        let fallbackOptions = kind == .claude
+            ? CodexAppServerModelOption.builtInClaudeFallback
+            : CodexAppServerModelOption.builtInFallback
+        let source = visible.isEmpty ? fallbackOptions : visible
+        // model/list 已按运行时推荐顺序返回；不再按本地家族表重排或替换模型，
+        // 直接取最前面的三个，才能在 CLI 升级后自动展示最新模型。
+        let rows = Array(source.prefix(maximumModelCount))
+        let fallbackEfforts = kind == .claude ? claudeFallbackEfforts : codexFallbackEfforts
         return ModelReasoningGridLayout(
-            kind: .codex,
+            kind: kind,
             rows: rows,
-            efforts: supportedEfforts(in: rows, fallback: codexEfforts),
-            showsFastMode: true
+            efforts: strongestEfforts(in: rows, fallback: fallbackEfforts),
+            showsFastMode: kind == .codex
         )
     }
 
@@ -97,71 +80,20 @@ enum ModelReasoningGridCatalog {
         layout: ModelReasoningGridLayout
     ) -> String? {
         guard let option = layout.row(matching: modelID) else { return nil }
-        let modelTitle: String
-        switch layout.kind {
-        case .codex:
-            modelTitle = "5.6 \(shortTitle(for: option, kind: .codex))"
-        case .claude:
-            modelTitle = shortTitle(for: option, kind: .claude)
-        }
-        return "\(modelTitle) · \(effortTitle(effort))"
+        return "\(shortTitle(for: option, kind: layout.kind)) · \(effortTitle(effort))"
     }
 
     static func shortTitle(
         for option: CodexAppServerModelOption,
-        kind: ModelReasoningGridKind
+        kind _: ModelReasoningGridKind
     ) -> String {
-        guard kind == .claude else {
-            return shortTitle(for: option.model, kind: kind)
-        }
-
+        // 标题同样以 model/list 为准，不再把 Codex/Claude 名称映射成本地别名。
         let title = option.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty,
-              title.caseInsensitiveCompare(option.model) != .orderedSame
-        else {
-            return shortTitle(for: option.model, kind: kind)
-        }
-
-        // Claude alias 会随 CLI 升级指向新版本，版本号必须来自服务端模型目录，
-        // 不能按 family 写死，否则旧 bridge 的具体模型会被展示成尚未使用的新版本。
-        if let prefix = title.range(of: "Claude ", options: [.anchored, .caseInsensitive]) {
-            let stripped = String(title[prefix.upperBound...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return stripped.isEmpty ? shortTitle(for: option.model, kind: kind) : stripped
-        }
-        return title
-    }
-
-    static func shortTitle(for modelID: String, kind: ModelReasoningGridKind) -> String {
-        switch kind {
-        case .codex:
-            switch modelID.lowercased() {
-            case "gpt-5.6-sol": return "Sol"
-            case "gpt-5.6-terra": return "Terra"
-            case "gpt-5.6-luna": return "Luna"
-            default: return modelID
-            }
-        case .claude:
-            switch claudeFamily(for: modelID) {
-            case "fable": return "Fable"
-            case "sonnet": return "Sonnet"
-            case "opus": return "Opus"
-            case "haiku": return "Haiku"
-            default: return modelID
-            }
-        }
+        return title.isEmpty ? option.model : title
     }
 
     static func effortTitle(_ effort: CodexAppServerReasoningEffort) -> String {
-        switch effort {
-        case .none: return L10n.text("ui.close")
-        case .minimal: return L10n.text("ui.lowest")
-        case .low: return L10n.text("ui.low")
-        case .medium: return L10n.text("ui.in")
-        case .high: return L10n.text("ui.high")
-        case .xhigh: return L10n.text("ui.extremely_high")
-        case .max: return L10n.text("ui.maximum")
-        }
+        effort.rawValue
     }
 
     static func supports(_ effort: CodexAppServerReasoningEffort, option: CodexAppServerModelOption) -> Bool {
@@ -213,30 +145,19 @@ enum ModelReasoningGridCatalog {
         return current
     }
 
-    static func claudeFamily(for modelID: String) -> String? {
-        let normalized = modelID.lowercased()
-        return claudeFamilyOrder.first { family in
-            normalized == family || normalized.contains("-\(family)-") || normalized.hasSuffix("-\(family)")
-        }
-    }
-
-    private static func preferredClaudeOption(
-        family: String,
-        options: [CodexAppServerModelOption]
-    ) -> CodexAppServerModelOption? {
-        let matches = options.filter { claudeFamily(for: $0.model) == family }
-        return matches.first(where: \CodexAppServerModelOption.isDefault)
-            ?? matches.first(where: { $0.model.lowercased() != family })
-            ?? matches.first
-    }
-
-    private static func supportedEfforts(
+    private static func strongestEfforts(
         in rows: [CodexAppServerModelOption],
         fallback: [CodexAppServerReasoningEffort]
     ) -> [CodexAppServerReasoningEffort] {
         let supported = Set(rows.flatMap(\.supportedReasoningEfforts))
         guard !supported.isEmpty else { return fallback }
-        return CodexAppServerReasoningEffort.allCases.filter { supported.contains($0.rawValue) }
+        // 服务端可能为不同运行时声明不同数量的档位。按协议强度排序后只保留
+        // 最强三档，同时维持网格从左到右逐渐增强的手势语义。
+        return Array(
+            CodexAppServerReasoningEffort.allCases
+                .filter { supported.contains($0.rawValue) }
+                .suffix(maximumEffortCount)
+        )
     }
 }
 
@@ -267,9 +188,7 @@ struct ModelReasoningGridPicker: View {
     private let pickerWidth: CGFloat = 352
     private let dragCancellationMargin: CGFloat = 12
 
-    private var rowLabelWidth: CGFloat {
-        layout.kind == .claude ? 68 : 52
-    }
+    private let rowLabelWidth: CGFloat = 104
 
     private var gridHeight: CGFloat {
         CGFloat(max(layout.rows.count, 1)) * 54
@@ -404,7 +323,7 @@ struct ModelReasoningGridPicker: View {
                     .font(themeStore.uiFont(.subheadline, weight: .semibold))
                     .foregroundStyle(activeSelection.modelID == option.model ? tokens.accent : tokens.primaryText)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                    .minimumScaleFactor(0.72)
                     .frame(width: rowLabelWidth, alignment: .trailing)
                     .frame(maxHeight: .infinity, alignment: .trailing)
             }

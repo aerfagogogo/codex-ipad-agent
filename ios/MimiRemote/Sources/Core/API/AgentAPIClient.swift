@@ -381,8 +381,8 @@ struct AgentAPIClient {
         return try await request(path: "/api/actions/run", method: "POST", body: body)
     }
 
-    func gitStatus(path: String) async throws -> GitStatusResponse {
-        let body = try JSONEncoder().encode(GitStatusRequest(path: path))
+    func gitStatus(path: String, summaryOnly: Bool = false) async throws -> GitStatusResponse {
+        let body = try JSONEncoder().encode(GitStatusRequest(path: path, summaryOnly: summaryOnly))
         return try await request(path: "/api/git/status", method: "POST", body: body)
     }
 

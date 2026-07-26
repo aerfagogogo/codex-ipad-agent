@@ -1219,6 +1219,9 @@ extension SessionStore {
         forgetWorkspaceAfterWorktreeDeletion(workspace)
         gitStatusByPath.removeValue(forKey: workspace.path)
         gitStatusErrorByPath.removeValue(forKey: workspace.path)
+        workspaceGitSummaryByPath.removeValue(forKey: workspace.path)
+        workspaceGitSummaryUpdatedAtByPath.removeValue(forKey: workspace.path)
+        refreshingWorkspaceGitSummaryPaths.remove(workspace.path)
         gitActionErrorByPath.removeValue(forKey: workspace.path)
         commandActionsByPath.removeValue(forKey: workspace.path)
         commandActionErrorByPath.removeValue(forKey: workspace.path)
@@ -1590,6 +1593,9 @@ extension SessionStore {
         setProjectsIfChanged([])
         setRecentWorkspacesIfChanged([])
         setSidebarProjectsIfChanged([])
+        workspaceGitSummaryByPath = [:]
+        workspaceGitSummaryUpdatedAtByPath = [:]
+        refreshingWorkspaceGitSummaryPaths = []
         unavailableWorkspaceIDs = []
         sessions = []
         setExpandedProjectIDs([])

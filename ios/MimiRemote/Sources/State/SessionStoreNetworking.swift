@@ -113,6 +113,7 @@ protocol SessionStoreAPIClient {
     func commandActions(path: String) async throws -> [AgentCommandAction]
     func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse
     func gitStatus(path: String) async throws -> GitStatusResponse
+    func gitStatusSummary(path: String) async throws -> GitStatusResponse
     func gitAction(path: String, action: GitActionKind, files: [String]) async throws -> GitStatusResponse
     func gitPatchAction(path: String, action: GitActionKind, patch: String) async throws -> GitStatusResponse
     func gitCommit(path: String, message: String) async throws -> GitStatusResponse
@@ -289,6 +290,11 @@ extension SessionStoreAPIClient {
     func gitStatus(path: String) async throws -> GitStatusResponse {
         // 默认实现只服务于不直连 agentd 的测试替身；真实 client 会覆写并请求 /api/git/status。
         throw AgentAPIError.invalidResponse
+    }
+
+    func gitStatusSummary(path: String) async throws -> GitStatusResponse {
+        // 测试替身未关心摘要时复用完整状态；生产 client 会发送 summary_only=true。
+        try await gitStatus(path: path)
     }
 
     func gitAction(path: String, action: GitActionKind, files: [String]) async throws -> GitStatusResponse {

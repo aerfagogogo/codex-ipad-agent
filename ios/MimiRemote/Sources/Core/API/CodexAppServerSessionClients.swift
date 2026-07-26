@@ -80,6 +80,10 @@ final class CodexAppServerSessionAPIClient: SessionStoreAPIClient {
         try await runtime.gitStatus(path: path)
     }
 
+    func gitStatusSummary(path: String) async throws -> GitStatusResponse {
+        try await runtime.gitStatusSummary(path: path)
+    }
+
     func gitAction(path: String, action: GitActionKind, files: [String]) async throws -> GitStatusResponse {
         try await runtime.gitAction(path: path, action: action, files: files)
     }
@@ -354,6 +358,7 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     func commandActions(path: String) async throws -> [AgentCommandAction] { try await codexClient.commandActions(path: path) }
     func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse { try await codexClient.runCommandAction(path: path, id: id, confirmed: confirmed) }
     func gitStatus(path: String) async throws -> GitStatusResponse { try await codexClient.gitStatus(path: path) }
+    func gitStatusSummary(path: String) async throws -> GitStatusResponse { try await codexClient.gitStatusSummary(path: path) }
     func gitAction(path: String, action: GitActionKind, files: [String]) async throws -> GitStatusResponse { try await codexClient.gitAction(path: path, action: action, files: files) }
     func gitPatchAction(path: String, action: GitActionKind, patch: String) async throws -> GitStatusResponse { try await codexClient.gitPatchAction(path: path, action: action, patch: patch) }
     func gitCommit(path: String, message: String) async throws -> GitStatusResponse { try await codexClient.gitCommit(path: path, message: message) }

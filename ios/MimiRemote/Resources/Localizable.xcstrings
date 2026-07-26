@@ -20851,6 +20851,23 @@
         }
       }
     },
+    "ui.select_text" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select Text"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择文本"
+          }
+        }
+      }
+    },
     "ui.select_the_agent_responsible_for_performing_the_task" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -30385,6 +30402,261 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "工作目录不在远程 allowlist 中：%@"
+          }
+        }
+      }
+    },
+    "ui.active_just_now" : {
+      "comment" : "Relative activity shown on a workspace card.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Active now"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刚刚活跃"
+          }
+        }
+      }
+    },
+    "ui.apply" : {
+      "comment" : "Applies a custom workspace Emoji.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apply"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应用"
+          }
+        }
+      }
+    },
+    "ui.change_workspace_icon_value" : {
+      "comment" : "Accessibility label for changing a workspace icon. First value is workspace name; second is current Emoji.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Change icon for %@, current icon %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更换 %@ 的图标，当前图标 %@"
+          }
+        }
+      }
+    },
+    "ui.custom_emoji" : {
+      "comment" : "Title for entering a custom workspace Emoji.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Custom Emoji"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自定义 Emoji"
+          }
+        }
+      }
+    },
+    "ui.days_ago_value" : {
+      "comment" : "Relative workspace activity in days.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ d ago"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 天前"
+          }
+        }
+      }
+    },
+    "ui.enter_one_emoji" : {
+      "comment" : "Placeholder for the custom workspace Emoji field.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter one Emoji"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入一个 Emoji"
+          }
+        }
+      }
+    },
+    "ui.enter_one_valid_emoji" : {
+      "comment" : "Validation message for the custom workspace Emoji field.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter one valid Emoji."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入一个有效的 Emoji"
+          }
+        }
+      }
+    },
+    "ui.git_branch_diverged" : {
+      "comment" : "Compact Git status for a branch that is both ahead and behind its upstream.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diverged"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已分叉"
+          }
+        }
+      }
+    },
+    "ui.git_changes_count_value" : {
+      "comment" : "Compact count of changed files on a workspace card.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ changes"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 个改动"
+          }
+        }
+      }
+    },
+    "ui.git_synced" : {
+      "comment" : "Compact Git status when a clean branch matches its upstream.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synced"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已同步"
+          }
+        }
+      }
+    },
+    "ui.hours_ago_value" : {
+      "comment" : "Relative workspace activity in hours.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ hr ago"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 小时前"
+          }
+        }
+      }
+    },
+    "ui.minutes_ago_value" : {
+      "comment" : "Relative workspace activity in minutes.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ min ago"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 分钟前"
+          }
+        }
+      }
+    },
+    "ui.not_a_git_repository" : {
+      "comment" : "Compact workspace-card status for a folder outside Git.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not a Git repository"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "非 Git 项目"
+          }
+        }
+      }
+    },
+    "ui.workspace_card_summary" : {
+      "comment" : "Accessibility summary for a workspace card: path, branch, Git state, and activity.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@, %@, %@, %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@，%@，%@，%@"
+          }
+        }
+      }
+    },
+    "ui.workspace_icon" : {
+      "comment" : "Title for choosing a workspace Emoji icon.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Workspace icon"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作区图标"
           }
         }
       }

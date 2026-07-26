@@ -605,6 +605,7 @@ mod tests {
                 text: text.into(),
                 text_elements: Vec::new(),
             }],
+            client_id: None,
         }
     }
 
