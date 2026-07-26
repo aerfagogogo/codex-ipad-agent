@@ -6,6 +6,7 @@
 //! struct in a `Mutex`, so a long-running turn does not block unrelated
 //! requests.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -417,6 +418,9 @@ impl ConnectionState {
     pub fn record_turn_started(&self, thread_id: &str, turn_id: String, started_at: i64) {
         let mut logs = self.thread_logs.lock().unwrap();
         let list = logs.entry(thread_id.to_string()).or_default();
+        if list.iter().any(|turn| turn.turn_id == turn_id) {
+            return;
+        }
         list.push(RecordedTurn {
             turn_id,
             started_at,
@@ -466,29 +470,86 @@ impl ConnectionState {
         }
     }
 
-    /// 冷启动/重新 attach 后先用 Claude JSONL 权威历史填充内存日志，再追加
-    /// 实时 turn。这样 `thread/read` 不会在第一个新 turn 到来后只剩本次运行
-    /// 的局部历史。
-    pub fn seed_thread_log_if_empty(&self, thread_id: &str, turns: Vec<Turn>) {
-        if turns.is_empty() {
-            return;
-        }
+    /// 使用 Claude JSONL 权威历史修复 live cache。
+    ///
+    /// JSONL 没有可靠的失败/运行中 terminal 标记，所以只允许它补全已经成功
+    /// `Completed` 的 live turn；`InProgress` / `Failed` / `Interrupted` 必须保留
+    /// bridge 已观测到的状态，避免一次历史读取把真实失败伪装成成功。
+    pub fn reconcile_thread_log(&self, thread_id: &str, persisted: Vec<Turn>) -> ReconcileReport {
         let mut logs = self.thread_logs.lock().unwrap();
         let slot = logs.entry(thread_id.to_string()).or_default();
-        if !slot.is_empty() {
-            return;
+        if persisted.is_empty() {
+            return ReconcileReport {
+                live_turns: slot.len(),
+                ..Default::default()
+            };
         }
-        *slot = turns
-            .into_iter()
-            .map(|turn| RecordedTurn {
-                turn_id: turn.id,
-                started_at: turn.started_at.unwrap_or_default(),
-                completed_at: turn.completed_at,
-                status: turn.status,
-                error: turn.error,
-                items: turn.items,
-            })
-            .collect();
+
+        if slot.is_empty() {
+            let seeded = persisted.len();
+            *slot = persisted.into_iter().map(RecordedTurn::from).collect();
+            return ReconcileReport {
+                live_turns: 0,
+                persisted_turns: seeded,
+                seeded_turns: seeded,
+                ..Default::default()
+            };
+        }
+
+        let live_turns = slot.len();
+        let persisted_turns = persisted.len();
+        let mut matched_live = vec![false; slot.len()];
+        let mut reconciled = Vec::with_capacity(slot.len().max(persisted.len()));
+        let mut report = ReconcileReport {
+            live_turns,
+            persisted_turns,
+            ..Default::default()
+        };
+
+        for persisted_turn in persisted {
+            let matched = slot
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !matched_live[*index])
+                .filter_map(|(index, live)| {
+                    let score = turn_match_score(&persisted_turn.items, &live.items);
+                    (score > 0).then_some((index, score))
+                })
+                .min_by_key(|(index, score)| (Reverse(*score), *index))
+                .map(|(index, _)| index);
+
+            if let Some(index) = matched {
+                matched_live[index] = true;
+                let mut live = slot[index].clone();
+                if live.status == TurnStatus::Completed
+                    && persisted_has_successful_output(&persisted_turn.items)
+                    && !persisted_has_successful_output(&live.items)
+                    && persisted_turn.items != live.items
+                {
+                    // 只修补“live 只有用户输入、JSONL 已有完整输出”的明确缺口。
+                    // 两边都已有输出时，items 数量相等/更多并不能证明 persisted 是
+                    // superset；整体替换会把刚收到的 live 内容回滚成较旧快照。
+                    live.items = persisted_turn.items;
+                    report.repaired_turns += 1;
+                } else if live.status != TurnStatus::Completed {
+                    report.protected_turns += 1;
+                }
+                reconciled.push(live);
+            } else {
+                reconciled.push(RecordedTurn::from(persisted_turn));
+                report.seeded_turns += 1;
+            }
+        }
+
+        // JSONL flush 可能落后于实时事件；所有尚未在权威历史出现的 live turn
+        // 按原顺序保留在尾部，其中也包括没有用户消息锚点的自主 turn。
+        for (index, live) in slot.iter().enumerate() {
+            if !matched_live[index] {
+                reconciled.push(live.clone());
+            }
+        }
+        *slot = reconciled;
+        report
     }
 
     pub fn thread_log(&self, thread_id: &str) -> Vec<Turn> {
@@ -514,6 +575,249 @@ impl ConnectionState {
             })
             .collect()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alleycat_codex_proto::UserInput;
+
+    async fn test_state() -> Arc<ConnectionState> {
+        let dir = tempfile::tempdir().unwrap();
+        let index = alleycat_bridge_core::ThreadIndex::<crate::index::ClaudeSessionRef>::open_at(
+            dir.path().join("threads.json"),
+        )
+        .await
+        .unwrap();
+        std::mem::forget(dir);
+        ConnectionState::for_test(
+            Arc::new(crate::pool::ClaudePool::new("/dev/null")),
+            index,
+            Default::default(),
+        )
+        .0
+    }
+
+    fn user(id: &str, text: &str) -> ThreadItem {
+        ThreadItem::UserMessage {
+            id: id.into(),
+            content: vec![UserInput::Text {
+                text: text.into(),
+                text_elements: Vec::new(),
+            }],
+        }
+    }
+
+    fn persisted_turn(text: &str) -> Turn {
+        Turn {
+            id: "disk-turn".into(),
+            items: vec![
+                user("disk-user", text),
+                ThreadItem::AgentMessage {
+                    id: "disk-agent".into(),
+                    text: "权威历史中的完整回复".into(),
+                    phase: None,
+                    memory_citation: None,
+                },
+            ],
+            items_view: alleycat_codex_proto::default_items_view(),
+            status: TurnStatus::Completed,
+            error: None,
+            started_at: Some(1),
+            completed_at: Some(2),
+            duration_ms: Some(1_000),
+        }
+    }
+
+    #[tokio::test]
+    async fn persisted_success_repairs_completed_live_turn() {
+        let state = test_state().await;
+        state.record_turn_started("thread", "live-turn".into(), 1);
+        state.record_item("thread", "live-turn", user("live-user", "五分钟后回复"));
+        state.record_turn_completed("thread", "live-turn", 2, TurnStatus::Completed, None);
+
+        let report = state.reconcile_thread_log("thread", vec![persisted_turn("五分钟后回复")]);
+        assert_eq!(report.repaired_turns, 1);
+        let turns = state.thread_log("thread");
+        assert_eq!(turns[0].id, "live-turn", "live turn id must stay stable");
+        assert!(turns[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text.contains("完整回复"))));
+    }
+
+    #[tokio::test]
+    async fn persisted_success_does_not_overwrite_active_or_failed_terminal() {
+        for status in [TurnStatus::InProgress, TurnStatus::Failed] {
+            let state = test_state().await;
+            state.record_turn_started("thread", "live-turn".into(), 1);
+            state.record_item("thread", "live-turn", user("live-user", "同一问题"));
+            if status == TurnStatus::Failed {
+                state.record_turn_completed(
+                    "thread",
+                    "live-turn",
+                    2,
+                    status,
+                    Some(TurnError {
+                        message: "真实失败".into(),
+                        codex_error_info: None,
+                        additional_details: None,
+                    }),
+                );
+            }
+
+            let report = state.reconcile_thread_log("thread", vec![persisted_turn("同一问题")]);
+            assert_eq!(report.protected_turns, 1);
+            let turn = &state.thread_log("thread")[0];
+            assert_eq!(turn.status, status);
+            assert!(
+                !turn
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, ThreadItem::AgentMessage { .. }))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn autonomous_turn_reconciliation_matches_without_user_anchor_and_does_not_duplicate() {
+        let state = test_state().await;
+        state.record_turn_started("thread", "live-autonomous".into(), 10);
+        state.record_item(
+            "thread",
+            "live-autonomous",
+            ThreadItem::AgentMessage {
+                id: "live-agent".into(),
+                text: "⏰ 五分钟到了".into(),
+                phase: None,
+                memory_citation: None,
+            },
+        );
+        state.record_turn_completed("thread", "live-autonomous", 11, TurnStatus::Completed, None);
+
+        let persisted = Turn {
+            id: "disk-autonomous".into(),
+            items: vec![
+                ThreadItem::AgentMessage {
+                    id: "disk-agent-partial".into(),
+                    text: "⏰ 五分钟到了".into(),
+                    phase: None,
+                    memory_citation: None,
+                },
+                ThreadItem::AgentMessage {
+                    id: "disk-agent-final".into(),
+                    text: "当前时间 14:06:06".into(),
+                    phase: None,
+                    memory_citation: None,
+                },
+            ],
+            items_view: alleycat_codex_proto::default_items_view(),
+            status: TurnStatus::Completed,
+            error: None,
+            started_at: Some(10),
+            completed_at: Some(11),
+            duration_ms: Some(1_000),
+        };
+
+        let report = state.reconcile_thread_log("thread", vec![persisted]);
+        assert_eq!(report.repaired_turns, 0);
+        let turns = state.thread_log("thread");
+        assert_eq!(turns.len(), 1, "同一自主 turn 不应 seed 后再 append");
+        assert_eq!(turns[0].id, "live-autonomous");
+        assert!(turns[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text.contains("五分钟到了"))));
+        assert!(!turns[0]
+            .items
+            .iter()
+            .any(|item| matches!(item, ThreadItem::AgentMessage { text, .. } if text.contains("14:06:06"))));
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReconcileReport {
+    pub live_turns: usize,
+    pub persisted_turns: usize,
+    pub seeded_turns: usize,
+    pub repaired_turns: usize,
+    pub protected_turns: usize,
+}
+
+impl From<Turn> for RecordedTurn {
+    fn from(turn: Turn) -> Self {
+        Self {
+            turn_id: turn.id,
+            started_at: turn.started_at.unwrap_or_default(),
+            completed_at: turn.completed_at,
+            status: turn.status,
+            error: turn.error,
+            items: turn.items,
+        }
+    }
+}
+
+fn turn_user_key(items: &[ThreadItem]) -> Option<String> {
+    items.iter().find_map(|item| match item {
+        ThreadItem::UserMessage { content, .. } => serde_json::to_string(content).ok(),
+        _ => None,
+    })
+}
+
+// 先以用户输入锚定普通 turn；自主 turn 没有 user item，则使用不含临时 id
+// 的可见内容指纹匹配。没有任何可见内容重合时不能仅凭顺序合并，否则两个
+// 相邻但不同的自主 turn 会被误当成同一条并覆盖 live 数据。
+fn turn_match_score(persisted: &[ThreadItem], live: &[ThreadItem]) -> u8 {
+    match (turn_user_key(persisted), turn_user_key(live)) {
+        (Some(left), Some(right)) => return u8::from(left == right) * 3,
+        (Some(_), None) | (None, Some(_)) => return 0,
+        (None, None) => {}
+    }
+    let persisted_visible = turn_visible_signatures(persisted);
+    let live_visible = turn_visible_signatures(live);
+    if persisted_visible
+        .iter()
+        .any(|signature| live_visible.contains(signature))
+    {
+        2
+    } else {
+        0
+    }
+}
+
+fn turn_visible_signatures(items: &[ThreadItem]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            ThreadItem::AgentMessage { text, .. } => Some(format!("agent:{text}")),
+            ThreadItem::Plan { text, .. } => Some(format!("plan:{text}")),
+            ThreadItem::Reasoning {
+                summary, content, ..
+            } => Some(format!("reasoning:{summary:?}:{content:?}")),
+            ThreadItem::CommandExecution {
+                command,
+                aggregated_output,
+                ..
+            } => Some(format!("command:{command}:{aggregated_output:?}")),
+            ThreadItem::HookPrompt { fragments, .. } => Some(format!("hook:{fragments:?}")),
+            _ => None,
+        })
+        .collect()
+}
+
+fn persisted_has_successful_output(items: &[ThreadItem]) -> bool {
+    items.iter().any(|item| {
+        matches!(
+            item,
+            ThreadItem::AgentMessage { .. }
+                | ThreadItem::Plan { .. }
+                | ThreadItem::CommandExecution { .. }
+                | ThreadItem::FileChange { .. }
+                | ThreadItem::McpToolCall { .. }
+                | ThreadItem::DynamicToolCall { .. }
+                | ThreadItem::CollabAgentToolCall { .. }
+        )
+    })
 }
 
 #[derive(Debug, thiserror::Error)]

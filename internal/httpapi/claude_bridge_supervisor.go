@@ -49,9 +49,10 @@ type claudeBridgeSupervisor struct {
 	// supervisor instance finished relaying. It proves a client-supplied cursor
 	// belongs to the current resident bridge and provides an upper bound; it is
 	// not itself a client acknowledgement.
-	cursorMu   sync.Mutex
-	cursors    map[string]uint64
-	cursorFIFO []string
+	cursorMu    sync.Mutex
+	cursorEpoch uint64
+	cursors     map[string]uint64
+	cursorFIFO  []string
 }
 
 // claudeBridgeMaxCursors caps the resume-cursor table. Far above the handful
@@ -60,14 +61,22 @@ type claudeBridgeSupervisor struct {
 const claudeBridgeMaxCursors = 64
 
 func newClaudeBridgeSupervisor() *claudeBridgeSupervisor {
-	return &claudeBridgeSupervisor{cursors: map[string]uint64{}}
+	return &claudeBridgeSupervisor{
+		cursorEpoch: 1,
+		cursors:     map[string]uint64{},
+	}
 }
 
 // noteDelivered advances the relay high-water mark for a session. Sequence
 // numbers only move forward; a replayed frame must not rewind it.
-func (s *claudeBridgeSupervisor) noteDelivered(sessionKey string, seq uint64) {
+func (s *claudeBridgeSupervisor) noteDelivered(sessionKey string, seq uint64, epoch uint64) {
 	s.cursorMu.Lock()
 	defer s.cursorMu.Unlock()
+	if epoch != s.cursorEpoch {
+		// 旧 bridge 连接可能在进程换代后才完成一次 WebSocket 写。它的 sequence
+		// 不能重新污染刚清空的新实例 cursor namespace。
+		return
+	}
 	if current, ok := s.cursors[sessionKey]; ok {
 		if seq > current {
 			s.cursors[sessionKey] = seq
@@ -102,6 +111,21 @@ func (s *claudeBridgeSupervisor) forgetCursor(sessionKey string) {
 			s.cursorFIFO = append(s.cursorFIFO[:i], s.cursorFIFO[i+1:]...)
 			break
 		}
+	}
+}
+
+// clearCursors drops every sequence watermark when the resident bridge
+// process changes. Sequence numbers are scoped to one bridge instance; carrying
+// them into a replacement can make a fresh ring appear fully consumed.
+func (s *claudeBridgeSupervisor) clearCursors() {
+	s.cursorMu.Lock()
+	defer s.cursorMu.Unlock()
+	cleared := len(s.cursors)
+	s.cursorEpoch++
+	s.cursors = map[string]uint64{}
+	s.cursorFIFO = nil
+	if cleared > 0 {
+		log.Printf("claude bridge cursor namespace cleared count=%d", cleared)
 	}
 }
 
@@ -196,26 +220,34 @@ func (s *claudeBridgeSupervisor) reap(cmd *exec.Cmd, done chan struct{}) {
 	close(done)
 }
 
-// dial opens a connection to the resident bridge. Each WebSocket connection
-// gets its own socket connection; the bridge multiplexes them onto sessions.
-func (s *claudeBridgeSupervisor) dial() (net.Conn, error) {
+// dial opens a connection to the resident bridge and returns the cursor epoch
+// captured from the same supervisor snapshot as its socket. Each WebSocket
+// connection gets its own socket connection; the bridge multiplexes them onto
+// sessions.
+func (s *claudeBridgeSupervisor) dial() (net.Conn, uint64, error) {
 	s.mu.Lock()
 	socketPath := s.socketPath
 	alive := s.cmd != nil && !s.exited
+	s.cursorMu.Lock()
+	cursorEpoch := s.cursorEpoch
+	s.cursorMu.Unlock()
 	s.mu.Unlock()
 	if !alive || socketPath == "" {
-		return nil, errors.New("Claude bridge 未运行")
+		return nil, 0, errors.New("Claude bridge 未运行")
 	}
+	// reset() 也持有 s.mu，并在同一次临界区内推进 cursorEpoch。因此这里捕获
+	// 到的 socket 与 epoch 必定属于同一个 supervisor 代次。解锁后若发生换代，
+	// 最坏只会让新连接携带旧 epoch，其 delivered watermark 会被安全忽略。
 	// The socket node exists from bind, but listen lands a moment later, so a
 	// dial racing a just-started bridge can see ECONNREFUSED. Retry briefly.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		conn, err := net.DialTimeout("unix", socketPath, time.Second)
 		if err == nil {
-			return conn, nil
+			return conn, cursorEpoch, nil
 		}
 		if time.Now().After(deadline) {
-			return nil, err
+			return nil, 0, err
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -267,6 +299,7 @@ func (s *claudeBridgeSupervisor) reset() {
 	s.done = nil
 	s.socketPath = ""
 	s.exited = false
+	s.clearCursors()
 }
 
 // waitForClaudeBridgeSocket polls until the bridge has bound its socket, the

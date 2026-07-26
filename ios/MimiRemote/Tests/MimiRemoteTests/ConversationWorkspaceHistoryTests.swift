@@ -7,6 +7,49 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testWorkspaceSessionAgeBoundaryStartsAtFirstSessionOlderThanTwelveHours() {
+        let project = makeProject(id: "proj_workspace_age_boundary")
+        let now = Date(timeIntervalSince1970: 200_000)
+        let recent = makeSession(
+            id: "session_recent",
+            projectID: project.id,
+            title: "最近活动",
+            status: "history",
+            source: "codex",
+            recencyAt: now.addingTimeInterval(-(11 * 60 * 60))
+        )
+        let exactlyTwelveHours = makeSession(
+            id: "session_boundary",
+            projectID: project.id,
+            title: "刚好十二小时",
+            status: "history",
+            source: "codex",
+            recencyAt: now.addingTimeInterval(-WorkspaceSessionAgeBoundary.staleInterval)
+        )
+        let stale = makeSession(
+            id: "session_stale",
+            projectID: project.id,
+            title: "超过十二小时",
+            status: "history",
+            source: "codex",
+            recencyAt: now.addingTimeInterval(-WorkspaceSessionAgeBoundary.staleInterval - 1)
+        )
+        let ordered = SessionIndexStore.sortedSessions([stale, recent, exactlyTwelveHours])
+
+        XCTAssertEqual(
+            WorkspaceSessionAgeBoundary.firstStaleIndex(in: ordered, now: now),
+            2,
+            "刚好十二小时仍属于近期；只在首个严格超过十二小时的会话前插入一次边界"
+        )
+        XCTAssertNil(
+            WorkspaceSessionAgeBoundary.firstStaleIndex(in: [recent, exactlyTwelveHours], now: now)
+        )
+        XCTAssertEqual(
+            WorkspaceSessionAgeBoundary.firstStaleIndex(in: [stale], now: now),
+            0
+        )
+    }
+
     func testRecentSessionSortUsesUserRecencyInsteadOfAgentUpdatedAt() {
         let project = makeProject(id: "proj_recency_sort")
         let first = makeSession(

@@ -65,7 +65,7 @@ struct ConversationProcessGroupRow: View, Equatable {
     }
 
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             statusMarker
 
             Text(summaryText)

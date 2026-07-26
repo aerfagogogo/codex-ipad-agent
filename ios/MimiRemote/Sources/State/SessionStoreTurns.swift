@@ -122,9 +122,10 @@ extension SessionStore {
             isClaudeRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(runtimeProvider: "claude")) == true
             didRefreshRuntimeAvailability = true
             if !force,
-               !appServerModelOptions.isEmpty,
                let appServerModelOptionsLastRefresh,
                Date().timeIntervalSince(appServerModelOptionsLastRefresh) < 300 {
+                // 成功、空列表和失败都做短期负缓存。同一次 sendTurn 会经过发送入口和
+                // createSession 两层解析，失败时不能因此连续请求 model/list 两次。
                 return
             }
             let options = try await client.modelOptions()
@@ -161,12 +162,13 @@ extension SessionStore {
                 resolved.options.runtimeProvider = Self.payloadRuntimeProvider(lockedRuntimeProvider)
             }
         }
-        if let model = resolved.options.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if resolved.options.modelSelectionPolicy == .allowUnlisted,
+           let model = resolved.options.model?.trimmingCharacters(in: .whitespacesAndNewlines),
            !model.isEmpty {
+            // 开发者模式明确允许未列入 model/list 的自定义模型；普通模式才执行目录校验和回落。
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
         }
-
         if appServerModelOptions.isEmpty {
             await refreshAppServerModelOptions()
         }
@@ -183,6 +185,20 @@ extension SessionStore {
         } else {
             candidateOptions = options.isEmpty ? allOptions : options
         }
+
+        if let requestedModel = resolved.options.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requestedModel.isEmpty,
+           let matched = candidateOptions.first(where: {
+               $0.model.caseInsensitiveCompare(requestedModel) == .orderedSame
+           }) {
+            // 目录命中后使用服务端返回的 canonical id/provider，避免旧草稿或跨渠道残留
+            // 把不可识别 UUID/alias 直接送进 turn/start。
+            resolved.options.model = matched.model
+            resolved.options.modelProvider = matched.provider
+            resolved.options = resolved.options.sanitizedForRuntimePolicy()
+            return resolved
+        }
+
         guard let selected = candidateOptions.first(where: \.isDefault) ?? candidateOptions.first else {
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
@@ -989,14 +1005,8 @@ extension SessionStore {
             clientMessageID: item.clientMessageID
         )
 
-        // turn/started 可能稍后才到；先把本地状态推进为 running，避免窗口期重复派发下一项。
-        locallyCompletedSessionIDs.remove(session.id)
-        updateSession(session.id) { item in
-            item.status = SessionStatus.running.rawValue
-            item.pendingApproval = nil
-            item.pendingUserInput = nil
-        }
-        contextStore.updateStatus(sessionID: session.id, status: SessionStatus.running.rawValue)
+        // dispatching + awaitingStart 已能阻止重复派发。只有 accepted 回调或 turn/started
+        // 才能证明上游接收，派发窗口内不再乐观伪造 running。
         freshEmptyHistorySignatureBySessionID.removeValue(forKey: session.id)
         setStatusMessage(L10n.text("ui.the_queued_message_has_been_sent_waiting_for"))
     }
@@ -1128,6 +1138,18 @@ extension SessionStore {
                     clientMessageID: clientMessageID,
                     sessionID: sessionID,
                     message: message
+                )
+            }
+        }
+        socket.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
+            Task { @MainActor in
+                guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true else {
+                    return
+                }
+                self?.handleTurnSendOutcome(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID,
+                    outcome: outcome
                 )
             }
         }
@@ -1295,6 +1317,89 @@ extension SessionStore {
         queuedTurnAwaitingStartSessionIDs.remove(sessionID)
         queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
         setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
+        return true
+    }
+
+    func handleTurnSendOutcome(
+        clientMessageID: ClientMessageID?,
+        sessionID: SessionID,
+        outcome: TurnSendOutcome
+    ) {
+        guard let clientMessageID else { return }
+        switch outcome {
+        case .accepted:
+            if !handleQueuedSendAccepted(clientMessageID: clientMessageID, sessionID: sessionID) {
+                conversationStore.updateSendStatus(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID,
+                    status: .sent
+                )
+                conversationStore.compactTurnPayloadAfterSendAccepted(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID
+                )
+            }
+        case .rejected(let message):
+            if handleQueuedSendRejected(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                message: message
+            ) {
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            clearForegroundActivity(sessionID: sessionID)
+            setErrorMessage(L10n.format("ui.sending_failed_value", message))
+        case .uncertain(let message):
+            if handleQueuedSendFailure(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                message: message
+            ) {
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            clearForegroundActivity(sessionID: sessionID)
+            setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
+        }
+    }
+
+    @discardableResult
+    func handleQueuedSendRejected(
+        clientMessageID: ClientMessageID,
+        sessionID: SessionID,
+        message: String
+    ) -> Bool {
+        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
+              location.sessionID == sessionID,
+              queuedRunningTurnsBySessionID[sessionID]?[location.index].dispatchState == .dispatching else {
+            return false
+        }
+        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+        _ = mutateAndPersistQueuedTurns {
+            guard var queue = queuedRunningTurnsBySessionID[sessionID],
+                  queue.indices.contains(location.index) else { return }
+            queue.remove(at: location.index)
+            setQueuedTurns(queue, sessionID: sessionID)
+        }
+        conversationStore.updateSendStatus(
+            clientMessageID: clientMessageID,
+            sessionID: sessionID,
+            status: .failed
+        )
+        clearForegroundActivity(sessionID: sessionID)
+        clearSessionListProjection(sessionID: sessionID, clientMessageID: clientMessageID)
+        setErrorMessage(L10n.format("ui.sending_failed_value", message))
+        stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
         return true
     }
 
@@ -1579,6 +1684,7 @@ extension SessionStore {
         }
 
         let foregroundSelectionLease = currentSelectionLease()
+        let recoveryGeneration = beginRecoveryHistoryGeneration()
         let reconnectSessionID = appLifecycleSuspendedSessionID ?? networkSuspendedSessionID
         appLifecycleSuspendedSessionID = nil
         networkSuspendedSessionID = nil
@@ -1592,7 +1698,14 @@ extension SessionStore {
         }
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
-        await refreshUntilLoaded(maxWait: 10, autoAttach: true)
+        await refreshUntilLoaded(maxWait: 10, autoAttach: false)
+        var didReconcileFullHistory = false
+        if let reconnectSessionID, selectedSessionID == reconnectSessionID {
+            didReconcileFullHistory = await reconcileHistoryForRecovery(
+                sessionID: reconnectSessionID,
+                generation: recoveryGeneration
+            )
+        }
         ensureAllQueuedSessionMonitoring()
 
         guard connectionTermination == nil,
@@ -1601,16 +1714,15 @@ extension SessionStore {
               isSelectionLeaseCurrent(foregroundSelectionLease),
               let reconnectSessionID,
               selectedSessionID == reconnectSessionID,
-              let session = sessionsByID[reconnectSessionID],
-              connectedSessionID != reconnectSessionID || webSocket == nil else {
+              let session = sessionsByID[reconnectSessionID] else {
             return
         }
-        // REST 即使在短时 gateway 故障下没恢复，也用本地会话兜底重建监听；状态级回放会校准
-        // 离开期间的完成/审批事件，且不会把旧内容 backlog 再直播一遍。
+        // 完整历史已成功落地时只回放状态；若历史读取失败，必须 full replay，不能再次静默
+        // 丢掉 detached 期间的 assistant/process 内容。
         connectWebSocket(
             session,
             isReconnectAttempt: true,
-            replayBufferedEvents: false,
+            replayBufferedEvents: !didReconcileFullHistory,
             allowNonRunning: true
         )
     }

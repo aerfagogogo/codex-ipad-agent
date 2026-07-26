@@ -922,11 +922,27 @@ extension SessionStore {
 
         let reconnectSessionID = networkSuspendedSessionID
         networkSuspendedSessionID = nil
+        let recoveryGeneration = beginRecoveryHistoryGeneration()
         if let reconnectSessionID,
            selectedSessionID == reconnectSessionID,
            let session = sessionsByID[reconnectSessionID] {
-            // 恢复事件按 path generation 去重；这里只发起一次即时连接，失败后再进入 jitter 退避。
-            connectWebSocket(session, isReconnectAttempt: true, allowNonRunning: true)
+            let didReconcileFullHistory = await reconcileHistoryForRecovery(
+                sessionID: reconnectSessionID,
+                generation: recoveryGeneration
+            )
+            guard pathGeneration == networkPathGeneration,
+                  connectionGeneration == appStore.connectionGeneration,
+                  networkReachabilityStatus == .satisfied,
+                  !isAppInBackground else {
+                return
+            }
+            // 恢复事件按 path generation 去重。历史成功后只补状态；失败时完整回放内容兜底。
+            connectWebSocket(
+                sessionsByID[reconnectSessionID] ?? session,
+                isReconnectAttempt: true,
+                replayBufferedEvents: !didReconcileFullHistory,
+                allowNonRunning: true
+            )
         }
 
         await reconcilePersistedQueuedTurns()

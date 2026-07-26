@@ -439,6 +439,7 @@ struct ComposerView: View {
 
     func preparedTurnOptionsForSubmit() -> CodexAppServerTurnOptions {
         var options = developerModeEnabled ? composerState.turnOptions : composerState.turnOptions.sanitizedForStandardComposer()
+        options.modelSelectionPolicy = developerModeEnabled ? .allowUnlisted : .catalogOnly
         if let effort = options.reasoningEffort,
            !supportsReasoningEffort(effort, modelID: options.model ?? effectiveModelID) {
             // 提交边界再做一次兜底，避免模型列表刷新与点击发送之间的竞态把非法组合发给 runtime。

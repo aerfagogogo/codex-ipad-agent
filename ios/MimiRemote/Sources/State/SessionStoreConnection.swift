@@ -106,6 +106,19 @@ extension SessionStore {
                 self?.setErrorMessage(L10n.format("ui.sending_failed_value", message))
             }
         }
+        socket.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
+            Task { @MainActor in
+                guard let self,
+                      self.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) else {
+                    return
+                }
+                self.handleTurnSendOutcome(
+                    clientMessageID: clientMessageID,
+                    sessionID: session.id,
+                    outcome: outcome
+                )
+            }
+        }
         socket.onApprovalDecisionFailure = { [weak self] approvalID, message in
             Task { @MainActor in
                 guard self?.isCurrentWebSocketConnection(sessionID: session.id, generation: connectionGeneration) == true else {
@@ -500,6 +513,10 @@ extension SessionStore {
     }
 
     func applyRuntimeEvent(_ event: AgentEvent, sessionID: String) async {
+        let replayAckSocket = replayBoundarySocket(for: event, fallbackSessionID: sessionID)
+        defer {
+            replayAckSocket?.acknowledgeAppliedEvent(event)
+        }
         if let metadata = metadata(for: event) {
             recordEventWatermark(metadata, fallbackSessionID: sessionID)
         }
@@ -586,6 +603,18 @@ extension SessionStore {
             }
         }
         await scheduleRuntimeNotificationIfNeeded(runtimeNotification)
+    }
+
+    func replayBoundarySocket(
+        for event: AgentEvent,
+        fallbackSessionID: SessionID
+    ) -> (any SessionWebSocketClient)? {
+        guard metadata(for: event)?.replayBoundarySequence != nil else { return nil }
+        let sessionID = metadata(for: event)?.sessionID ?? fallbackSessionID
+        if connectedSessionID == sessionID, let webSocket {
+            return webSocket
+        }
+        return queuedSessionSockets[sessionID]
     }
 
     func shouldIgnoreStaleTurnCompletion(

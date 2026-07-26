@@ -116,11 +116,40 @@ pub enum ClaudeProcessError {
     #[error("control request `{request_id}` failed: {message}")]
     ControlError { request_id: String, message: String },
 
+    #[error("runtime override `{field}`={value:?} failed: {source}")]
+    RuntimeOverride {
+        field: &'static str,
+        value: String,
+        #[source]
+        source: Box<ClaudeProcessError>,
+    },
+
     #[error(transparent)]
     Json(#[from] serde_json::Error),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+// Claude Code versions have used both `subtype:"error"` and a nominally
+// successful control response carrying `{accepted:false}` for rejected
+// setters. Normalize the latter so callers never treat a refused model as
+// applied and cache it as live runtime state.
+fn rejected_control_response(response: Option<&serde_json::Value>) -> Option<String> {
+    let value = response?;
+    if value.get("accepted").and_then(serde_json::Value::as_bool) != Some(false) {
+        return None;
+    }
+    for key in ["error", "message", "reason"] {
+        if let Some(message) = value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|message| !message.trim().is_empty())
+        {
+            return Some(message.to_string());
+        }
+    }
+    Some("Claude runtime did not accept the control request".to_string())
 }
 
 /// Handle to a single live `claude -p` subprocess. Cloning via `Arc` shares
@@ -509,6 +538,12 @@ impl ClaudeProcessHandle {
         match timeout(deadline, rx).await {
             Ok(Ok(body)) => match body {
                 ControlResponseBody::Success { response } => {
+                    if let Some(message) = rejected_control_response(response.as_ref()) {
+                        return Err(ClaudeProcessError::ControlError {
+                            request_id,
+                            message,
+                        });
+                    }
                     Ok(ControlResponseBody::Success { response })
                 }
                 ControlResponseBody::Error { error } => Err(ClaudeProcessError::ControlError {
@@ -558,7 +593,12 @@ impl ClaudeProcessHandle {
                     },
                     deadline,
                 )
-                .await?;
+                .await
+                .map_err(|source| ClaudeProcessError::RuntimeOverride {
+                    field: "model",
+                    value: want.to_string(),
+                    source: Box::new(source),
+                })?;
                 let mut guard = self.runtime_state.lock().await;
                 guard.model = Some(want.to_string());
             }
@@ -575,7 +615,12 @@ impl ClaudeProcessHandle {
                     },
                     deadline,
                 )
-                .await?;
+                .await
+                .map_err(|source| ClaudeProcessError::RuntimeOverride {
+                    field: "effortLevel",
+                    value: want.to_string(),
+                    source: Box::new(source),
+                })?;
                 let mut guard = self.runtime_state.lock().await;
                 guard.effort_level = Some(want.to_string());
             }
@@ -592,7 +637,12 @@ impl ClaudeProcessHandle {
                     },
                     deadline,
                 )
-                .await?;
+                .await
+                .map_err(|source| ClaudeProcessError::RuntimeOverride {
+                    field: "permissionMode",
+                    value: want.to_string(),
+                    source: Box::new(source),
+                })?;
                 let mut guard = self.runtime_state.lock().await;
                 guard.permission_mode = Some(want.to_string());
             }
@@ -922,6 +972,57 @@ mod tests {
             }
             other => panic!("expected ControlError, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn accepted_false_control_response_is_an_explicit_rejection() {
+        let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<String>();
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let handle = Arc::new(ClaudeProcessHandle::__test_dangling(
+            writer_tx,
+            events_tx,
+            PathBuf::from("/tmp"),
+        ));
+        let pending = handle.pending_controls_handle();
+        let h2 = Arc::clone(&handle);
+        let task = tokio::spawn(async move {
+            h2.apply_runtime_overrides(Some("unknown-model"), None, None, Duration::from_secs(2))
+                .await
+        });
+        let line = writer_rx.recv().await.expect("writer line");
+        let parsed: serde_json::Value = serde_json::from_str(&line).expect("json");
+        let request_id = parsed["request_id"].as_str().unwrap().to_string();
+        pending
+            .lock()
+            .await
+            .remove(&request_id)
+            .unwrap()
+            .send(ControlResponseBody::Success {
+                response: Some(serde_json::json!({
+                    "accepted": false,
+                    "message": "not a recognized model id"
+                })),
+            })
+            .unwrap();
+
+        let err = task.await.expect("join").expect_err("rejection expected");
+        match err {
+            ClaudeProcessError::RuntimeOverride {
+                field,
+                value,
+                source,
+            } => {
+                assert_eq!(field, "model");
+                assert_eq!(value, "unknown-model");
+                assert!(matches!(
+                    source.as_ref(),
+                    ClaudeProcessError::ControlError { message, .. }
+                        if message == "not a recognized model id"
+                ));
+            }
+            other => panic!("expected model RuntimeOverride error, got {other:?}"),
+        }
+        assert_eq!(handle.runtime_snapshot().await.0, None);
     }
 
     #[tokio::test]

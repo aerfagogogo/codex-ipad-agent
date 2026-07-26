@@ -1441,7 +1441,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(createPayload.turnOptions.networkAccess, false)
     }
 
-    func testExplicitModelBypassesModelListResolutionBeforeCreate() async throws {
+    func testUnknownExplicitModelIsValidatedAndFallsBackBeforeCreate() async throws {
         let project = makeProject(id: "proj_explicit_model_create")
         let created = makeSession(id: "sess_explicit_model_create", projectID: project.id, title: "显式模型", status: "running", source: "codex")
         let client = MockSessionStoreClient(
@@ -1468,9 +1468,9 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(accepted)
         let createPayload = try XCTUnwrap(client.createPayloads.first)
-        XCTAssertEqual(createPayload.turnOptions.model, "gpt-user-selected")
-        XCTAssertEqual(createPayload.turnOptions.modelProvider, "custom-provider")
-        XCTAssertEqual(client.modelOptionsCallCount, 0)
+        XCTAssertEqual(createPayload.turnOptions.model, "gpt-should-not-load")
+        XCTAssertEqual(createPayload.turnOptions.modelProvider, "openai")
+        XCTAssertEqual(client.modelOptionsCallCount, 1)
     }
 
     func testCodexHistorySessionIgnoresStaleClaudeModelSelectionBeforeResume() async throws {
@@ -1588,6 +1588,57 @@ extension ConversationDataFlowTests {
         let client = MockSessionStoreClient(
             projects: [project],
             sessions: [],
+            createSessionResponse: try makeCreateSessionResponse(session: created),
+            modelOptions: [
+                CodexAppServerModelOption(
+                    id: "sonnet",
+                    title: "Claude Sonnet",
+                    provider: "anthropic",
+                    runtimeProvider: "claude",
+                    isDefault: true
+                )
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.selectedProjectID = project.id
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = "claude"
+        options.model = "SONNET"
+        options.modelProvider = "anthropic"
+        options.sandboxMode = .dangerFullAccess
+        options.networkAccess = true
+        let accepted = await store.sendTurn(CodexAppServerTurnPayload(prompt: "使用 Claude", options: options))
+
+        XCTAssertTrue(accepted)
+        let createPayload = try XCTUnwrap(client.createPayloads.first)
+        XCTAssertEqual(createPayload.turnOptions.runtimeProvider, "claude")
+        XCTAssertEqual(createPayload.turnOptions.model, "sonnet")
+        XCTAssertEqual(createPayload.turnOptions.modelProvider, "anthropic")
+        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .workspaceWrite)
+        XCTAssertEqual(createPayload.turnOptions.networkAccess, false)
+        XCTAssertEqual(client.modelOptionsCallCount, 1)
+    }
+
+    func testDeveloperModelPolicyKeepsUnlistedModelBeforeCreate() async throws {
+        let project = makeProject(id: "proj_unlisted_developer_model")
+        let created = makeSession(
+            id: "sess_unlisted_developer_model",
+            projectID: project.id,
+            title: "Developer Model",
+            status: "running",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
             createSessionResponse: try makeCreateSessionResponse(session: created)
         )
         let store = SessionStore(
@@ -1601,18 +1652,18 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         var options = CodexAppServerTurnOptions.default
         options.runtimeProvider = "claude"
-        options.model = "claude-sonnet"
+        options.model = "private-model-alias"
         options.modelProvider = "anthropic"
-        options.sandboxMode = .dangerFullAccess
-        options.networkAccess = true
-        let accepted = await store.sendTurn(CodexAppServerTurnPayload(prompt: "使用 Claude", options: options))
+        options.modelSelectionPolicy = .allowUnlisted
+        let accepted = await store.sendTurn(
+            CodexAppServerTurnPayload(prompt: "使用开发者自定义模型", options: options)
+        )
 
         XCTAssertTrue(accepted)
         let createPayload = try XCTUnwrap(client.createPayloads.first)
-        XCTAssertEqual(createPayload.turnOptions.runtimeProvider, "claude")
-        XCTAssertEqual(createPayload.turnOptions.model, "claude-sonnet")
-        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .workspaceWrite)
-        XCTAssertEqual(createPayload.turnOptions.networkAccess, false)
+        XCTAssertEqual(createPayload.turnOptions.model, "private-model-alias")
+        XCTAssertEqual(createPayload.turnOptions.modelProvider, "anthropic")
+        XCTAssertEqual(createPayload.turnOptions.modelSelectionPolicy, .allowUnlisted)
         XCTAssertEqual(client.modelOptionsCallCount, 0)
     }
 

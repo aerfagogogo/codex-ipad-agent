@@ -618,9 +618,10 @@ fn thread_to_rpc(err: handlers::thread::ThreadError) -> JsonRpcError {
 }
 
 fn turn_to_rpc(err: handlers::turn::TurnError) -> JsonRpcError {
+    let data = err.rpc_data();
     JsonRpcError {
         code: err.rpc_code(),
         message: err.to_string(),
-        data: None,
+        data,
     }
 }

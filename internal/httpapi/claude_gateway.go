@@ -31,6 +31,7 @@ const claudeBridgeProbeCacheTTL = 5 * time.Second
 // ATTACHED_METHOD in bridges/claude/crates/bridge-core/src/server.rs.
 const claudeBridgeAttachMethod = "_alleycat/attach"
 const claudeBridgeAttachedMethod = "_alleycat/attached"
+const claudeReplayCursorResetMethod = "_mimi/claudeReplayCursor/reset"
 
 // claudeBridgeSeqField is the top-level stamp the bridge puts on every
 // outbound frame so a reconnect can resume from a known point.
@@ -252,7 +253,7 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_START_FAILED", "启动 Claude bridge 失败")
 		return
 	}
-	upstream, err := r.claudeBridge.dial()
+	upstream, bridgeCursorEpoch, err := r.claudeBridge.dial()
 	if err != nil {
 		log.Printf("claude bridge dial failed err=%v", err)
 		writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_UNAVAILABLE", "连接 Claude bridge 失败")
@@ -268,17 +269,31 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 	var upstreamWriteMu sync.Mutex
 	if sessionKey != "" {
 		clientCursor, hasClientCursor := claudeGatewayLastSeen(req)
-		if err := r.attachClaudeBridgeSession(
+		attachResult, err := r.attachClaudeBridgeSession(
 			reader,
 			upstream,
 			&upstreamWriteMu,
 			sessionKey,
 			clientCursor,
 			hasClientCursor,
-		); err != nil {
+		)
+		if err != nil {
 			log.Printf("claude bridge attach failed session=%s err=%v", sanitizeGatewayDiagnostic(sessionKey), err)
 			writeGatewayRuntimeError(client, "CLAUDE_BRIDGE_UNAVAILABLE", "连接 Claude bridge 会话失败")
 			return
+		}
+		if attachResult.resetClientCursor {
+			// bridge 重启或会话重新编号后，旧 sequence 不能继续单调累计。必须先通知
+			// App 覆盖本地 cursor，再转发新 epoch 的回放帧。
+			payload, marshalErr := json.Marshal(map[string]any{
+				"jsonrpc": "2.0",
+				"method":  claudeReplayCursorResetMethod,
+				"params":  map[string]any{"sequence": 0},
+			})
+			if marshalErr != nil || client.WriteMessage(websocket.TextMessage, payload) != nil {
+				log.Printf("claude bridge cursor reset notification failed session=%s", sanitizeGatewayDiagnostic(sessionKey))
+				return
+			}
 		}
 	}
 
@@ -300,7 +315,17 @@ func (r *Router) appServerClaudeGatewayWS(w http.ResponseWriter, req *http.Reque
 		done <- copyClientFramesToClaudeBridge(client, upstream, &clientWriteMu, &upstreamWriteMu, policy, monitor)
 	}()
 	go func() {
-		done <- copyClaudeBridgeFrames(ctx, reader, client, &clientWriteMu, policy, monitor, r.claudeBridge, sessionKey)
+		done <- copyClaudeBridgeFrames(
+			ctx,
+			reader,
+			client,
+			&clientWriteMu,
+			policy,
+			monitor,
+			r.claudeBridge,
+			sessionKey,
+			bridgeCursorEpoch,
+		)
 	}()
 	go func() {
 		pingClientGateway(ctx, client, &clientWriteMu)
@@ -369,6 +394,10 @@ func sanitizedClaudeSessionKey(key string) string {
 // attachClaudeBridgeSession performs the socket handshake that binds this
 // connection to a named bridge session. A client-confirmed cursor is preferred;
 // Go's write high-water mark is only an instance/upper-bound check.
+type claudeBridgeAttachResult struct {
+	resetClientCursor bool
+}
+
 func (r *Router) attachClaudeBridgeSession(
 	reader *bufio.Reader,
 	upstream io.Writer,
@@ -376,40 +405,42 @@ func (r *Router) attachClaudeBridgeSession(
 	sessionKey string,
 	clientCursor uint64,
 	hasClientCursor bool,
-) error {
+) (claudeBridgeAttachResult, error) {
+	result := claudeBridgeAttachResult{}
 	params := map[string]any{"sessionKey": sessionKey}
 	serverCursor, bridgeInstanceKnown := r.claudeBridge.resumeCursor(sessionKey)
-	cursor, hadCursor := uint64(0), false
+	cursor, trustedClientCursor := uint64(0), false
 	switch {
 	case bridgeInstanceKnown && hasClientCursor && clientCursor <= serverCursor:
 		// 客户端确认优先。serverCursor 只用来证明该序号属于当前 bridge
 		// 实例，不能替代客户端确认。
-		cursor, hadCursor = clientCursor, true
-	case bridgeInstanceKnown:
-		// 没有可信客户端确认时从 ring 起点请求。可能因窗口溢出得到
-		// driftReload，但不会静默跳过 App 尚未处理的最后一帧。
-		cursor, hadCursor = 0, true
+		cursor, trustedClientCursor = clientCursor, true
 	}
-	if hadCursor {
-		params["lastSeen"] = cursor
-	}
+	// 命名 attach 永远明确 cursor。没有能被当前 bridge 实例证明的客户端
+	// cursor 时从 0 开始；省略 lastSeen 会被 bridge 解释成“只看未来事件”，
+	// 恰好漏掉 App 断线期间已经写入 ring 的后台结果。
+	params["lastSeen"] = cursor
+	log.Printf(
+		"claude bridge attach session=%s cursor=%d trusted_client_cursor=%t bridge_instance_known=%t",
+		sanitizeGatewayDiagnostic(sessionKey), cursor, trustedClientCursor, bridgeInstanceKnown,
+	)
 	preamble, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"method":  claudeBridgeAttachMethod,
 		"params":  params,
 	})
 	if err != nil {
-		return err
+		return result, err
 	}
 	if err := writeStdioBridgeCompactedFrame(upstream, mu, preamble); err != nil {
-		return err
+		return result, err
 	}
 	line, oversize, err := readBridgeStdoutLine(reader, int(appServerGatewayReadLimit))
 	if oversize {
-		return errors.New("Claude bridge attach 应答超出大小上限")
+		return result, errors.New("Claude bridge attach 应答超出大小上限")
 	}
 	if err != nil && len(bytes.TrimSpace(line)) == 0 {
-		return fmt.Errorf("读取 Claude bridge attach 应答失败：%w", err)
+		return result, fmt.Errorf("读取 Claude bridge attach 应答失败：%w", err)
 	}
 	var ack struct {
 		Method string `json:"method"`
@@ -420,10 +451,10 @@ func (r *Router) attachClaudeBridgeSession(
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(bytes.TrimSpace(line), &ack); err != nil {
-		return fmt.Errorf("解析 Claude bridge attach 应答失败：%w", err)
+		return result, fmt.Errorf("解析 Claude bridge attach 应答失败：%w", err)
 	}
 	if ack.Method != claudeBridgeAttachedMethod {
-		return fmt.Errorf("Claude bridge attach 应答方法异常：%s", sanitizeGatewayDiagnostic(ack.Method))
+		return result, fmt.Errorf("Claude bridge attach 应答方法异常：%s", sanitizeGatewayDiagnostic(ack.Method))
 	}
 	if ack.Params.Kind == "driftReload" {
 		// The turn ran on past what the replay ring holds. Nothing is replayed,
@@ -438,12 +469,14 @@ func (r *Router) attachClaudeBridgeSession(
 	// above its current sequence with an empty slice and no error, so the next
 	// attach would report "resumed" while silently skipping everything the new
 	// session had produced.
-	if hadCursor && (ack.Params.Kind != "resumed" || ack.Params.CurrentSeq < cursor) {
+	renumbered := ack.Params.Kind != "resumed" || ack.Params.CurrentSeq < cursor
+	result.resetClientCursor = hasClientCursor && (!trustedClientCursor || renumbered)
+	if (bridgeInstanceKnown || trustedClientCursor) && renumbered {
 		log.Printf("claude bridge session renumbered; dropping resume cursor session=%s kind=%s cursor=%d current=%d",
 			sanitizeGatewayDiagnostic(sessionKey), sanitizeGatewayDiagnostic(ack.Params.Kind), cursor, ack.Params.CurrentSeq)
 		r.claudeBridge.forgetCursor(sessionKey)
 	}
-	return nil
+	return result, nil
 }
 
 func (r *Router) acquireClaudeBridgeSlot() bool {
@@ -508,7 +541,7 @@ func copyClientFramesToClaudeBridge(client *websocket.Conn, stdin io.Writer, cli
 	}
 }
 
-func copyClaudeBridgeFrames(ctx context.Context, reader *bufio.Reader, client *websocket.Conn, clientWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, supervisor *claudeBridgeSupervisor, sessionKey string) string {
+func copyClaudeBridgeFrames(ctx context.Context, reader *bufio.Reader, client *websocket.Conn, clientWriteMu *sync.Mutex, policy *appServerGatewayPolicy, monitor *relayGatewayConnMonitor, supervisor *claudeBridgeSupervisor, sessionKey string, bridgeCursorEpoch uint64) string {
 	// bufio.Scanner 在单行超过 buffer 上限时会以 ErrTooLong 终止扫描，等于让一条超大
 	// 帧（例如一次超大文件 Read 的 base64 输出）撕掉整条 WS 连接、触发客户端重连循环。
 	// 改用有界逐行读取：超过上限的单帧只丢弃并记诊断，连接继续存活。上限沿用客户端
@@ -536,7 +569,7 @@ func copyClaudeBridgeFrames(ctx context.Context, reader *bufio.Reader, client *w
 			// them dropped again.
 			if sessionKey != "" {
 				if seq, ok := claudeBridgeFrameSeq(payload); ok {
-					supervisor.noteDelivered(sessionKey, seq)
+					supervisor.noteDelivered(sessionKey, seq, bridgeCursorEpoch)
 				}
 			}
 		}

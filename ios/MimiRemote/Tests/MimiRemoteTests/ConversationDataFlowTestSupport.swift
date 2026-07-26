@@ -51,6 +51,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
+    var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String) -> Void)?
     var onControlFailure: ((String) -> Void)?
@@ -64,6 +65,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
     private(set) var sentApprovals: [(approvalID: String, decision: String, message: String?)] = []
     private(set) var sentUserInputResponses: [(requestID: String, answers: [String: [String]])] = []
     private(set) var disconnectCallCount = 0
+    private(set) var acknowledgedEvents: [AgentEvent] = []
     var sendTurnResult = true
     var sendGuidanceResult = true
     var sendCtrlCResult = true
@@ -83,6 +85,10 @@ final class MockWebSocketClient: SessionWebSocketClient {
     func disconnect() {
         disconnectCallCount += 1
         onStatus?(.disconnected)
+    }
+
+    func acknowledgeAppliedEvent(_ event: AgentEvent) {
+        acknowledgedEvents.append(event)
     }
 
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool {

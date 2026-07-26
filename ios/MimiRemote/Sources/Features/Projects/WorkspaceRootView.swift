@@ -49,6 +49,18 @@ enum WorkspaceStripLayout {
     }
 }
 
+enum WorkspaceSessionAgeBoundary {
+    static let staleInterval: TimeInterval = 12 * 60 * 60
+
+    static func firstStaleIndex(in sessions: [AgentSession], now: Date = Date()) -> Int? {
+        // 工作区会话已经按 SessionIndexStore.orderingDate 倒序排列；
+        // 这里复用同一时间口径，避免列表顺序与 12 小时分组依据不一致。
+        sessions.firstIndex { session in
+            now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
+        }
+    }
+}
+
 /// 工作区只维护本地浏览选择。只有用户明确进入会话或新建会话时，才交给 SessionStore 改变活动上下文。
 struct WorkspaceRootView: View {
     @EnvironmentObject private var sessionStore: SessionStore
@@ -810,19 +822,23 @@ private struct WorkspaceDetailView: View {
                     .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
                 VStack(spacing: 0) {
+                    let firstStaleIndex = WorkspaceSessionAgeBoundary.firstStaleIndex(in: recentSessions)
+
                     ForEach(Array(recentSessions.enumerated()), id: \.element.id) { index, session in
+                        if index == firstStaleIndex {
+                            twelveHourBoundary(tokens: tokens)
+                        } else if index > 0 {
+                            Divider()
+                                .overlay(tokens.border.opacity(0.62))
+                                .padding(.leading, 48)
+                        }
+
                         Button {
                             onOpenSession(session)
                         } label: {
                             recentSessionRow(session, tokens: tokens)
                         }
                         .buttonStyle(.plain)
-
-                        if index < recentSessions.count - 1 {
-                            Divider()
-                                .overlay(tokens.border.opacity(0.62))
-                                .padding(.leading, 48)
-                        }
                     }
 
                     if canLoadMoreSessions || isLoadingMoreSessions {
@@ -863,6 +879,28 @@ private struct WorkspaceDetailView: View {
                 }
             }
         }
+    }
+
+    private func twelveHourBoundary(tokens: ThemeTokens) -> some View {
+        ZStack {
+            // 直接复用普通列表分隔线的位置，只在中间留出文案缺口，
+            // 避免“默认分隔线 + 分组分隔线”叠成两道横线。
+            Rectangle()
+                .fill(tokens.border.opacity(0.62))
+                .frame(height: 0.5)
+
+            Text(L10n.text("ui.twelve_hours_ago"))
+                .font(themeStore.uiFont(.caption2, weight: .medium))
+                .foregroundStyle(tokens.tertiaryText)
+                .padding(.horizontal, 8)
+                .background(tokens.surface)
+                .fixedSize()
+        }
+        .padding(.leading, 48)
+        .padding(.trailing, 14)
+        .padding(.vertical, 7)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L10n.text("ui.twelve_hours_ago"))
     }
 
     private func recentSessionPlaceholders(tokens: ThemeTokens) -> some View {

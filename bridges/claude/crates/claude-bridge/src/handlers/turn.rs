@@ -73,9 +73,18 @@ fn native_effort_level(effort: p::ReasoningEffort) -> &'static str {
     }
 }
 
-/// 将移动端三档权限映射为 Claude Code 的运行时权限模式。
-/// 沙箱只读优先级最高；只有明确的自动审批组合才启用 `auto`。
+/// 将每个 turn 的协作/权限参数映射为 Claude Code 的运行时权限模式。
+/// collaborationMode 明确为 plan 时只影响本 turn；下一次 default 会重新计算，
+/// 不读取进程上一次的 sticky 状态。只读沙箱仍然必须落到 plan。
 fn claude_permission_mode(params: &p::TurnStartParams) -> &'static str {
+    if params
+        .collaboration_mode
+        .as_ref()
+        .and_then(collaboration_mode_name)
+        == Some("plan")
+    {
+        return "plan";
+    }
     if params.sandbox_policy.as_ref().is_some_and(is_read_only) {
         return "plan";
     }
@@ -88,6 +97,14 @@ fn claude_permission_mode(params: &p::TurnStartParams) -> &'static str {
         return "auto";
     }
     "default"
+}
+
+fn collaboration_mode_name(value: &serde_json::Value) -> Option<&str> {
+    match value {
+        serde_json::Value::String(mode) => Some(mode.as_str()),
+        serde_json::Value::Object(map) => map.get("mode").and_then(serde_json::Value::as_str),
+        _ => None,
+    }
 }
 
 fn is_read_only(value: &serde_json::Value) -> bool {
@@ -146,6 +163,8 @@ pub enum TurnError {
     NoActiveTurn(String),
     #[error("input translation failed: {0}")]
     InputTranslation(String),
+    #[error("model `{model}` was rejected before turn creation: {message}")]
+    ModelRejected { model: String, message: String },
     #[error("claude rpc error: {0}")]
     ClaudeRpc(String),
     #[error("review/start is not implemented in claude-bridge v1")]
@@ -159,9 +178,24 @@ impl TurnError {
             | TurnError::TurnIdMismatch { .. }
             | TurnError::ThreadNotLoaded(_)
             | TurnError::NoActiveTurn(_)
-            | TurnError::InputTranslation(_) => p::error_codes::INVALID_PARAMS,
+            | TurnError::InputTranslation(_)
+            | TurnError::ModelRejected { .. } => p::error_codes::INVALID_PARAMS,
             TurnError::ReviewUnsupported => p::error_codes::METHOD_NOT_FOUND,
             TurnError::ClaudeRpc(_) => p::error_codes::INTERNAL_ERROR,
+        }
+    }
+
+    pub fn rpc_data(&self) -> Option<serde_json::Value> {
+        match self {
+            TurnError::ModelRejected { model, message } => Some(serde_json::json!({
+                "accepted": false,
+                "field": "model",
+                "model": model,
+                "phase": "runtime_overrides",
+                "reason": message,
+                "retryable": false,
+            })),
+            _ => None,
         }
     }
 }
@@ -235,6 +269,16 @@ pub async fn handle_turn_start(
         )
         .await
     {
+        if let Some((model, message)) = explicit_model_rejection(&err) {
+            tracing::warn!(
+                thread_id = %params.thread_id,
+                model = %model,
+                reason = %message,
+                accepted = false,
+                "claude rejected model before turn creation"
+            );
+            return Err(TurnError::ModelRejected { model, message });
+        }
         return Err(TurnError::ClaudeRpc(format!(
             "applying runtime overrides: {err}"
         )));
@@ -266,6 +310,9 @@ pub async fn handle_turn_start(
     let mut turn = turn_for_notif.clone();
     turn.started_at = None;
 
+    // 先落 live cache，再发布通知。客户端收到通知后可能立刻 thread/read；
+    // 记录顺序反过来会让这次读取短暂看不到刚开始的 turn。
+    state.record_turn_started(&params.thread_id, turn_id.clone(), started_at);
     if state.should_emit("turn/started") {
         let frame = notification_frame(p::ServerNotification::TurnStarted(
             p::TurnStartedNotification {
@@ -275,7 +322,6 @@ pub async fn handle_turn_start(
         ));
         let _ = state.send(frame);
     }
-    state.record_turn_started(&params.thread_id, turn_id.clone(), started_at);
 
     // Echo the user input back as a userMessage item lifecycle (codex
     // does this; see codex-rs app-server-protocol/src/protocol/v2.rs:5330).
@@ -284,6 +330,7 @@ pub async fn handle_turn_start(
         id: Uuid::now_v7().to_string(),
         content: params.input.clone(),
     };
+    state.record_item(&params.thread_id, &turn_id, user_message_item.clone());
     if state.should_emit("item/started") {
         let frame = notification_frame(p::ServerNotification::ItemStarted(
             p::ItemStartedNotification {
@@ -306,7 +353,6 @@ pub async fn handle_turn_start(
         ));
         let _ = state.send(frame);
     }
-    state.record_item(&params.thread_id, &turn_id, user_message_item);
 
     if let Err(e) = handle.send_serialized(&envelope) {
         let _ = driver.send(EventDriverCommand::AbortTurn {
@@ -325,6 +371,39 @@ pub async fn handle_turn_start(
     maybe_backfill_preview(state, &params.thread_id, &params.input).await;
 
     Ok(p::TurnStartResponse { turn })
+}
+
+fn explicit_model_rejection(err: &ClaudeProcessError) -> Option<(String, String)> {
+    match err {
+        ClaudeProcessError::RuntimeOverride {
+            field: "model",
+            value,
+            source,
+        } => match source.as_ref() {
+            ClaudeProcessError::ControlError { message, .. }
+                if is_explicit_invalid_model_message(message) =>
+            {
+                Some((value.clone(), message.clone()))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn is_explicit_invalid_model_message(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    [
+        "not a recognized model",
+        "unrecognized model",
+        "invalid model",
+        "unknown model",
+        "no such model",
+        "model not found",
+        "no rollout found",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
 }
 
 /// If the thread's preview is still empty, backfill it from the first line of
@@ -895,17 +974,17 @@ async fn run_event_driver(mut args: EventDriverArgs) {
 
         let notifications = turn.translator.translate(payload);
         for notif in notifications {
-            if !state_should_emit(&args.state, &notif) {
-                continue;
-            }
             // Record completed items in the per-thread log so `thread/read`
             // can answer from memory immediately after `turn/completed`,
             // without waiting for claude's process to flush its on-disk
-            // JSONL (which has a small but reliable lag and otherwise drops
-            // the assistant message in fast back-to-back reads).
+            // JSONL. Recording is independent from notification opt-out:
+            // disabling an event must not delete it from authoritative reads.
             if let p::ServerNotification::ItemCompleted(ref n) = notif {
                 args.state
                     .record_item(&args.thread_id, &turn.turn_id, n.item.clone());
+            }
+            if !state_should_emit(&args.state, &notif) {
+                continue;
             }
             let frame = notification_frame(notif);
             let _ = args.state.send(frame);
@@ -966,6 +1045,8 @@ async fn begin_autonomous_turn(
         completed_at: None,
         duration_ms: None,
     };
+    args.state
+        .record_turn_started(&args.thread_id, turn_id.clone(), started_at);
     if args.state.should_emit("turn/started") {
         let _ = args
             .state
@@ -976,8 +1057,6 @@ async fn begin_autonomous_turn(
                 },
             )));
     }
-    args.state
-        .record_turn_started(&args.thread_id, turn_id.clone(), started_at);
     tracing::info!(
         thread_id = %args.thread_id,
         turn_id = %turn_id,
@@ -1011,6 +1090,15 @@ async fn finish_driven_turn(
         completed_at: Some(completed_at),
         duration_ms: Some(duration_ms),
     };
+    // Terminal 状态先进入 live cache，保证通知一旦可见，随后所有历史读取
+    // 都能看到同一个完成边界。
+    args.state.record_turn_completed(
+        &args.thread_id,
+        &driven.turn_id,
+        completed_at,
+        status,
+        error.clone(),
+    );
     if args.state.should_emit("turn/completed") {
         let frame = notification_frame(p::ServerNotification::TurnCompleted(
             p::TurnCompletedNotification {
@@ -1020,13 +1108,6 @@ async fn finish_driven_turn(
         ));
         let _ = args.state.send(frame);
     }
-    args.state.record_turn_completed(
-        &args.thread_id,
-        &driven.turn_id,
-        completed_at,
-        status,
-        error,
-    );
     clear_active_turn_if(&args.thread_id, &driven.turn_id);
 
     // 列表的 updatedAt 也要由后台回复推进，否则用户重新打开 App 时，
@@ -1218,6 +1299,10 @@ mod tests {
         let mut params = p::TurnStartParams::default();
         assert_eq!(claude_permission_mode(&params), "default");
 
+        params.collaboration_mode = Some(serde_json::json!({"mode": "plan", "settings": {}}));
+        assert_eq!(claude_permission_mode(&params), "plan");
+
+        params.collaboration_mode = Some(serde_json::json!({"mode": "default", "settings": {}}));
         params.sandbox_policy = Some(serde_json::json!({"type": "readOnly"}));
         assert_eq!(claude_permission_mode(&params), "plan");
 
@@ -1228,6 +1313,35 @@ mod tests {
 
         params.approval_policy = Some(p::AskForApproval::Never);
         assert_eq!(claude_permission_mode(&params), "default");
+    }
+
+    #[test]
+    fn only_explicit_invalid_model_control_errors_are_permanent_rejections() {
+        let invalid = ClaudeProcessError::RuntimeOverride {
+            field: "model",
+            value: "019f9e54-bad2".into(),
+            source: Box::new(ClaudeProcessError::ControlError {
+                request_id: "set-model".into(),
+                message: "Model is not a recognized model id".into(),
+            }),
+        };
+        assert_eq!(
+            explicit_model_rejection(&invalid),
+            Some((
+                "019f9e54-bad2".into(),
+                "Model is not a recognized model id".into()
+            ))
+        );
+
+        let transient = ClaudeProcessError::RuntimeOverride {
+            field: "model",
+            value: "sonnet".into(),
+            source: Box::new(ClaudeProcessError::ControlError {
+                request_id: "set-model".into(),
+                message: "service temporarily unavailable".into(),
+            }),
+        };
+        assert_eq!(explicit_model_rejection(&transient), None);
     }
 
     #[test]
@@ -1315,6 +1429,22 @@ mod tests {
         assert_eq!(
             TurnError::ClaudeRpc("oops".into()).rpc_code(),
             p::error_codes::INTERNAL_ERROR
+        );
+        let rejected = TurnError::ModelRejected {
+            model: "unknown-model".into(),
+            message: "not recognized".into(),
+        };
+        assert_eq!(rejected.rpc_code(), p::error_codes::INVALID_PARAMS);
+        assert_eq!(
+            rejected.rpc_data(),
+            Some(serde_json::json!({
+                "accepted": false,
+                "field": "model",
+                "model": "unknown-model",
+                "phase": "runtime_overrides",
+                "reason": "not recognized",
+                "retryable": false,
+            }))
         );
     }
 }

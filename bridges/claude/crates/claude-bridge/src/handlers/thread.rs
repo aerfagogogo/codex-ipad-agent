@@ -772,18 +772,38 @@ async fn transcript_turns(
 }
 
 /// Claude JSONL 是跨 App/bridge 重启的权威历史，内存日志负责补上当前进程
-/// 尚未 flush 的实时事件。首次读取先完整播种，后续 turn 只在其后追加，避免
-/// “发送一条新消息后旧历史全部消失”的局部日志问题。
+/// 尚未 flush 的实时事件。每次 read/resume/turns-list 都尝试对账；磁盘已
+/// 落下的成功 terminal 可以修复 live cache 漏项，但不能覆盖运行中或失败状态。
 pub(super) async fn cached_thread_turns(
     state: &Arc<ConnectionState>,
     entry: &IndexEntry,
 ) -> Result<Vec<p::Turn>, ThreadError> {
     let live = state.thread_log(&entry.thread_id);
-    if !live.is_empty() {
-        return Ok(live);
+    let persisted = match transcript_turns(state, &entry.metadata.claude_session_path).await {
+        Ok(turns) => turns,
+        Err(err) if !live.is_empty() => {
+            tracing::warn!(
+                thread_id = %entry.thread_id,
+                live_turns = live.len(),
+                error = %err,
+                "claude transcript reconciliation failed; serving live cache"
+            );
+            return Ok(live);
+        }
+        Err(err) => return Err(err),
+    };
+    let report = state.reconcile_thread_log(&entry.thread_id, persisted);
+    if report.seeded_turns > 0 || report.repaired_turns > 0 || report.protected_turns > 0 {
+        tracing::info!(
+            thread_id = %entry.thread_id,
+            live_turns = report.live_turns,
+            persisted_turns = report.persisted_turns,
+            seeded_turns = report.seeded_turns,
+            repaired_turns = report.repaired_turns,
+            protected_turns = report.protected_turns,
+            "reconciled claude transcript with live thread cache"
+        );
     }
-    let persisted = transcript_turns(state, &entry.metadata.claude_session_path).await?;
-    state.seed_thread_log_if_empty(&entry.thread_id, persisted);
     Ok(state.thread_log(&entry.thread_id))
 }
 

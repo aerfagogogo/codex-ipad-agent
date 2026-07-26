@@ -474,6 +474,29 @@ func TestAppServerGatewayPreservesDefaultCollaborationMode(t *testing.T) {
 
 	authorizeGatewayThread(t, conn, received, projectDir, "thread-default-mode")
 
+	planRequest := []byte(fmt.Sprintf(
+		`{"id":9,"method":"turn/start","params":{"threadId":"thread-default-mode","cwd":%q,"input":[{"type":"text","text":"plan"}],"approvalPolicy":"on-request","approvalsReviewer":"user","collaborationMode":{"mode":"plan","settings":{"reasoning_effort":"xhigh","developer_instructions":null}},"sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
+		projectDir,
+		projectDir,
+	))
+	if err := conn.WriteMessage(websocket.TextMessage, planRequest); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-received:
+		params := decodeGatewayParamsForTest(t, got)
+		collaboration, ok := params["collaborationMode"].(map[string]any)
+		if !ok || collaboration["mode"] != "plan" {
+			t.Fatalf("第一条 turn/start 应保持 Plan Mode：%s", got)
+		}
+		settings, ok := collaboration["settings"].(map[string]any)
+		if !ok || settings["developer_instructions"] != nil {
+			t.Fatalf("Plan Mode 应继续交给 app-server 注入内置指令：%v", collaboration["settings"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake upstream 未收到 Plan Mode 帧")
+	}
+
 	request := []byte(fmt.Sprintf(
 		`{"id":10,"method":"turn/start","params":{"threadId":"thread-default-mode","cwd":%q,"input":[{"type":"text","text":"hi"}],"approvalPolicy":"on-request","approvalsReviewer":"user","collaborationMode":{"mode":"default","settings":{"reasoning_effort":"xhigh","developer_instructions":null}},"sandboxPolicy":{"type":"workspaceWrite","writableRoots":[%q],"networkAccess":false}}}`,
 		projectDir,
@@ -491,7 +514,7 @@ func TestAppServerGatewayPreservesDefaultCollaborationMode(t *testing.T) {
 			t.Fatalf("turn/start 应保留 collaborationMode.mode=default：%s", got)
 		}
 		settings, ok := collaboration["settings"].(map[string]any)
-		if !ok || settings["reasoning_effort"] != "xhigh" || settings["developer_instructions"] != nil {
+		if !ok || settings["reasoning_effort"] != "xhigh" || settings["developer_instructions"] != gatewayDefaultCollaborationInstructions {
 			t.Fatalf("default collaborationMode settings 应安全转发：%v", collaboration["settings"])
 		}
 		if _, ok := settings["model"]; ok {

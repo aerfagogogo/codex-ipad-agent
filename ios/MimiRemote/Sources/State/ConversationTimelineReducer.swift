@@ -162,7 +162,8 @@ struct ConversationTimelineReducer {
             let left = nodes[pair.0]
             let right = nodes[pair.1]
             // 两端都来自 snapshot 时由服务端顺序裁决；只保留含本地专属 Item 的首次出现约束。
-            if left.snapshotIndex == nil || right.snapshotIndex == nil {
+            if (left.snapshotIndex == nil || right.snapshotIndex == nil),
+               !currentAdjacencyConflictsWithInjectedUser(left: left, right: right) {
                 addEdge(pair.0, pair.1)
             }
         }
@@ -203,6 +204,22 @@ struct ConversationTimelineReducer {
             ambiguousAliasCount: ambiguousAliasCount,
             hadOrderingCycle: hadOrderingCycle
         )
+    }
+
+    private func currentAdjacencyConflictsWithInjectedUser(left: Node, right: Node) -> Bool {
+        guard left.snapshotIndex == nil,
+              right.snapshotIndex != nil,
+              right.message.role == .user,
+              right.message.userDelivery == .injected,
+              !left.message.isTimestampFallback,
+              !right.message.isTimestampFallback else {
+            return false
+        }
+        // 省流/部分历史可能已经确认中途 steer 用户消息，却暂时缺少其后的实时回复。
+        // 如果旧列表把这些回复留在用户消息前面，继续保留首次槽位会形成
+        // “Agent 先回答、用户后提问”。只在双方时间都可靠时放弃这条旧相邻约束，
+        // 随后的拓扑排序即可按真实发送时间把用户消息插回正确位置。
+        return right.message.createdAt < left.message.createdAt
     }
 
     private func deduplicatedSnapshot(_ snapshot: [ConversationMessage]) -> [ConversationMessage] {

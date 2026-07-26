@@ -564,8 +564,8 @@ while IFS= read -r line; do :; done
 	if !bytes.Contains(first, []byte(`"sessionKey":"dev-1"`)) {
 		t.Fatalf("首次 attach 应带上客户端会话名：%s", first)
 	}
-	if bytes.Contains(first, []byte("lastSeen")) {
-		t.Fatalf("尚无已投递序号时不应发送 lastSeen：%s", first)
+	if !bytes.Contains(first, []byte(`"lastSeen":0`)) {
+		t.Fatalf("命名 attach 尚无可信 cursor 时必须从 ring 起点恢复：%s", first)
 	}
 	// Wait until the seq-stamped frame has been relayed, so the cursor is set.
 	if raw := readGatewayRaw(t, conn); bytes.Contains(raw, []byte("_alleycat/attached")) {
@@ -581,9 +581,37 @@ while IFS= read -r line; do :; done
 		t.Fatal(err)
 	}
 	defer second.Close()
-	resumed := readTestFileLineEventually(t, attachPath, "lastSeen")
+	resumed := readTestFileLineEventually(t, attachPath, `"lastSeen":3`)
 	if !bytes.Contains(resumed, []byte(`"lastSeen":3`)) {
 		t.Fatalf("重连应从客户端确认的序号续传，而不是 Go 写成功的 7：%s", resumed)
+	}
+	reset := readGatewayRaw(t, second)
+	if !bytes.Contains(reset, []byte(`"_mimi/claudeReplayCursor/reset"`)) ||
+		!bytes.Contains(reset, []byte(`"sequence":0`)) {
+		t.Fatalf("bridge 返回 fresh 时必须先让客户端清空旧 epoch cursor：%s", reset)
+	}
+}
+
+func TestClaudeBridgeSupervisorResetClearsCursorNamespace(t *testing.T) {
+	supervisor := newClaudeBridgeSupervisor()
+	supervisor.cursorMu.Lock()
+	oldEpoch := supervisor.cursorEpoch
+	supervisor.cursorMu.Unlock()
+	supervisor.noteDelivered("dev-reset", 9, oldEpoch)
+	if _, ok := supervisor.resumeCursor("dev-reset"); !ok {
+		t.Fatal("测试前置 cursor 未写入")
+	}
+
+	supervisor.mu.Lock()
+	supervisor.reset()
+	supervisor.mu.Unlock()
+
+	if _, ok := supervisor.resumeCursor("dev-reset"); ok {
+		t.Fatal("bridge 重启后不应保留旧实例 sequence cursor")
+	}
+	supervisor.noteDelivered("dev-reset", 10, oldEpoch)
+	if _, ok := supervisor.resumeCursor("dev-reset"); ok {
+		t.Fatal("旧 bridge 连接的迟到 delivered 不能污染新实例 cursor namespace")
 	}
 }
 

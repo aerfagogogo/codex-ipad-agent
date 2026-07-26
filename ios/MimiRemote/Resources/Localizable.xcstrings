@@ -17937,6 +17937,23 @@
         }
       }
     },
+    "ui.twelve_hours_ago" : {
+      "comment" : "Label for the boundary before workspace sessions whose last activity was more than twelve hours ago.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "12 hours ago"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "12 小时前"
+          }
+        }
+      }
+    },
     "ui.recent_fluctuations" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {

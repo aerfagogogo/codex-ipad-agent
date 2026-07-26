@@ -562,6 +562,11 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         case `default`
     }
 
+    enum ModelSelectionPolicy: String, Codable, Hashable {
+        case catalogOnly
+        case allowUnlisted
+    }
+
     var runtimeProvider: String?
     var model: String?
     var modelProvider: String?
@@ -583,6 +588,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     // 只在 iPad 发起 turn/start 时消费的本地发送配置；不模拟 prompt，不影响 thread/start。
     var collaborationMode: CollaborationMode?
     var planGuidanceEnabled: Bool
+    // 仅供本地派发前校验使用，不进入 app-server 请求；随队列持久化以保留提交时的权限边界。
+    var modelSelectionPolicy: ModelSelectionPolicy
 
     enum CodingKeys: String, CodingKey {
         case runtimeProvider = "runtime_provider"
@@ -605,6 +612,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         case threadSource = "thread_source"
         case collaborationMode = "collaboration_mode"
         case planGuidanceEnabled = "plan_guidance_enabled"
+        case modelSelectionPolicy = "model_selection_policy"
     }
 
     init(
@@ -627,7 +635,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         sessionStartSource: String? = nil,
         threadSource: String? = nil,
         collaborationMode: CollaborationMode? = .default,
-        planGuidanceEnabled: Bool = false
+        planGuidanceEnabled: Bool = false,
+        modelSelectionPolicy: ModelSelectionPolicy = .catalogOnly
     ) {
         self.runtimeProvider = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
         self.model = model
@@ -649,6 +658,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         self.threadSource = threadSource
         self.collaborationMode = collaborationMode
         self.planGuidanceEnabled = planGuidanceEnabled
+        self.modelSelectionPolicy = modelSelectionPolicy
     }
 
     init(from decoder: Decoder) throws {
@@ -673,7 +683,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
             sessionStartSource: try container.decodeIfPresent(String.self, forKey: .sessionStartSource),
             threadSource: try container.decodeIfPresent(String.self, forKey: .threadSource),
             collaborationMode: try container.decodeIfPresent(CollaborationMode.self, forKey: .collaborationMode) ?? .default,
-            planGuidanceEnabled: try container.decodeIfPresent(Bool.self, forKey: .planGuidanceEnabled) ?? false
+            planGuidanceEnabled: try container.decodeIfPresent(Bool.self, forKey: .planGuidanceEnabled) ?? false,
+            modelSelectionPolicy: try container.decodeIfPresent(ModelSelectionPolicy.self, forKey: .modelSelectionPolicy) ?? .catalogOnly
         )
     }
 
@@ -697,7 +708,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         sessionStartSource: nil,
         threadSource: nil,
         collaborationMode: .default,
-        planGuidanceEnabled: false
+        planGuidanceEnabled: false,
+        modelSelectionPolicy: .catalogOnly
     )
 
     func sanitizedForStandardComposer() -> CodexAppServerTurnOptions {
@@ -716,6 +728,7 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         sanitized.threadSource = nil
         sanitized.collaborationMode = .default
         sanitized.planGuidanceEnabled = false
+        sanitized.modelSelectionPolicy = .catalogOnly
         return sanitized
     }
 
@@ -840,7 +853,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
 
     private func collaborationModePayload(mode: CollaborationMode) -> CodexAppServerJSONValue {
         // Plan/default 都带 settings：Plan 用于启用规划协作，default 用于明确退出规划协作。
-        // developer_instructions 固定 null，表示使用 Codex 内置指令，避免移动端透传危险自定义指令。
+        // 移动端固定发送 null，避免透传危险自定义指令；可信 gateway 会为 default
+        // 注入固定的退出 Plan 指令，规避部分 app-server 版本不展开 null 的问题。
         var settings: [String: CodexAppServerJSONValue] = [
             "reasoning_effort": reasoningEffort.map { .string($0.rawValue) } ?? .null,
             "developer_instructions": .null

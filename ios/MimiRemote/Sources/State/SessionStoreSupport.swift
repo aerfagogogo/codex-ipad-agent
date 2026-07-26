@@ -106,6 +106,10 @@ struct HistoryLoadJob {
     let token: Int
     let sessionSignature: HistoryLoadSignature
     let loadMode: HistoryMessagesPage.LoadMode
+    /// 恢复代次要求 bypass 时，不能加入一个更早创建的 reuseRecent job。
+    let cachePolicy: HistoryFirstPageCachePolicy
+    /// 非 nil 表示此 job 属于一次明确的前台/网络恢复代次。
+    let recoveryGeneration: UInt64?
     let allowPolicyRetry: Bool
     let task: Task<HistoryFirstPageResult, Error>
     var requiresForegroundReporting: Bool

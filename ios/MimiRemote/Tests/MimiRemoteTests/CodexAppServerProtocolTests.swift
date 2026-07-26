@@ -164,6 +164,43 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )))
     }
 
+    func testTurnSendOutcomeOnlyTreatsExplicitPreAcceptanceErrorsAsRejected() {
+        let rejectedByData = CodexAppServerConnectionError.appServer(CodexAppServerError(
+            code: -32603,
+            message: "runtime override rejected",
+            data: .object(["accepted": .bool(false)])
+        ))
+        let invalidParams = CodexAppServerConnectionError.appServer(CodexAppServerError(
+            code: -32602,
+            message: "invalid params",
+            data: nil
+        ))
+        let ambiguousInternalError = CodexAppServerConnectionError.appServer(CodexAppServerError(
+            code: -32603,
+            message: "internal error",
+            data: nil
+        ))
+
+        XCTAssertEqual(
+            CodexAppServerSessionWebSocketClient.turnSendOutcome(for: rejectedByData),
+            .rejected(message: rejectedByData.localizedDescription)
+        )
+        XCTAssertEqual(
+            CodexAppServerSessionWebSocketClient.turnSendOutcome(for: invalidParams),
+            .rejected(message: invalidParams.localizedDescription)
+        )
+        XCTAssertEqual(
+            CodexAppServerSessionWebSocketClient.turnSendOutcome(for: ambiguousInternalError),
+            .uncertain(message: ambiguousInternalError.localizedDescription)
+        )
+        XCTAssertEqual(
+            CodexAppServerSessionWebSocketClient.turnSendOutcome(
+                for: CodexAppServerConnectionError.timeout(method: "turn/start", id: .int(7))
+            ),
+            .uncertain(message: CodexAppServerConnectionError.timeout(method: "turn/start", id: .int(7)).localizedDescription)
+        )
+    }
+
     func testTurnStartBuilderUsesRemoteSafeDefaults() throws {
         let project = AgentProject(id: "repo", name: "Repo", path: "/Users/me/repo")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
@@ -313,6 +350,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(decoded.sandboxMode, .dangerFullAccess)
         XCTAssertEqual(decoded.collaborationMode, .default)
         XCTAssertFalse(decoded.planGuidanceEnabled)
+        XCTAssertEqual(decoded.modelSelectionPolicy, .catalogOnly)
     }
 
     func testTurnStartBuilderUsesDefaultCollaborationModeForGoalTurns() throws {
@@ -471,13 +509,24 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
+        let endpoint = "http://127.0.0.1:8787"
+        let gatewaySession = "\(CodexAppServerSessionRuntime.gatewaySessionKey(defaults: defaults))-claude"
         CodexAppServerSessionRuntime.storeGatewayLastSeenSequence(
             37,
+            endpoint: endpoint,
+            gatewaySession: gatewaySession,
+            runtimeProvider: "claude",
+            defaults: defaults
+        )
+        CodexAppServerSessionRuntime.storeGatewayLastSeenSequence(
+            12,
+            endpoint: endpoint,
+            gatewaySession: gatewaySession,
             runtimeProvider: "claude",
             defaults: defaults
         )
         let url = try CodexAppServerSessionRuntime.gatewayURL(
-            endpoint: "http://127.0.0.1:8787",
+            endpoint: endpoint,
             sessionID: "",
             runtimeProvider: "claude",
             defaults: defaults
@@ -493,6 +542,80 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         let codexQuery = URLComponents(url: codex, resolvingAgainstBaseURL: false)?.queryItems ?? []
         XCTAssertNil(codexQuery.first(where: { $0.name == "last_seen" }))
+
+        let otherEndpoint = try CodexAppServerSessionRuntime.gatewayURL(
+            endpoint: "http://127.0.0.1:8788",
+            sessionID: "",
+            runtimeProvider: "claude",
+            defaults: defaults
+        )
+        let otherQuery = URLComponents(url: otherEndpoint, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertNil(otherQuery.first(where: { $0.name == "last_seen" }))
+    }
+
+    func testClaudeGatewayCursorResetStartsANewBridgeEpoch() async throws {
+        let suiteName = "CodexAppServerProtocolTests.gatewayCursorReset.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let endpoint = "http://127.0.0.1:8787"
+        let gatewaySession = "\(CodexAppServerSessionRuntime.gatewaySessionKey(defaults: defaults))-claude"
+        CodexAppServerSessionRuntime.storeGatewayLastSeenSequence(
+            37,
+            endpoint: endpoint,
+            gatewaySession: gatewaySession,
+            runtimeProvider: "claude",
+            defaults: defaults
+        )
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: endpoint,
+            token: "test-token",
+            runtimeProvider: "claude",
+            gatewayDefaults: defaults
+        )
+
+        await runtime.handle(CodexAppServerNotification(
+            method: "_mimi/claudeReplayCursor/reset",
+            params: .object(["sequence": .int(0)])
+        ))
+        XCTAssertEqual(
+            CodexAppServerSessionRuntime.gatewayLastSeenSequence(
+                endpoint: endpoint,
+                gatewaySession: gatewaySession,
+                runtimeProvider: "claude",
+                defaults: defaults
+            ),
+            0
+        )
+
+        await runtime.acknowledgeAppliedReplayBoundary(37, epoch: 0)
+        XCTAssertEqual(
+            CodexAppServerSessionRuntime.gatewayLastSeenSequence(
+                endpoint: endpoint,
+                gatewaySession: gatewaySession,
+                runtimeProvider: "claude",
+                defaults: defaults
+            ),
+            0,
+            "上一 epoch 的迟到确认不能把刚清零的 cursor 写回来"
+        )
+        await runtime.acknowledgeAppliedReplayBoundary(5, epoch: 1)
+        CodexAppServerSessionRuntime.storeGatewayLastSeenSequence(
+            3,
+            endpoint: endpoint,
+            gatewaySession: gatewaySession,
+            runtimeProvider: "claude",
+            defaults: defaults
+        )
+        XCTAssertEqual(
+            CodexAppServerSessionRuntime.gatewayLastSeenSequence(
+                endpoint: endpoint,
+                gatewaySession: gatewaySession,
+                runtimeProvider: "claude",
+                defaults: defaults
+            ),
+            5
+        )
     }
 
     func testRequestBuilderAllowsFullAccessSandboxWithApproval() throws {

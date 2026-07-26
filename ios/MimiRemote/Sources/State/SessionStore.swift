@@ -163,6 +163,10 @@ final class SessionStore: ObservableObject {
     var webSocketReconnectAttemptBySessionID: [SessionID: Int] = [:]
     var lastAppliedNetworkPathSequence: UInt64 = 0
     var networkPathGeneration = 0
+    /// 前台/网络恢复各自推进一次代次；同一代次对当前会话只做一次强制历史对账。
+    var recoveryHistoryGeneration: UInt64 = 0
+    var reconciledRecoveryGenerationBySessionID: [SessionID: UInt64] = [:]
+    var recoveryHistorySucceededBySessionID: [SessionID: Bool] = [:]
     var networkSuspendedSessionID: SessionID?
     var networkRecoveryTask: Task<Void, Never>?
     var appLifecycleSuspendedSessionID: SessionID?

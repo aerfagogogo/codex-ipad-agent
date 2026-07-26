@@ -110,6 +110,7 @@ actor CodexAppServerSessionRuntime {
     var turnStartTasksBySessionID: [SessionID: (token: UUID, task: Task<TurnID?, Error>)] = [:]
     let requestTimeout: TimeInterval
     let longRunningRequestTimeout: TimeInterval
+    let gatewayDefaults: UserDefaults
     var rateLimitRequestTimeout: TimeInterval {
         // Claude 首次读取可能需要通过交互式 `/status` 刷新 Keychain 凭据；
         // 该请求仍在独立 actor/transport 上等待，不阻塞主线程。Codex 保持原 5 秒上限。
@@ -119,6 +120,7 @@ actor CodexAppServerSessionRuntime {
     // turn 误读成 idle/notLoaded；刚收到过实时信号的 thread 在这个时间窗内不接受 history 降级。
     var lastLiveSignalAtBySessionID: [SessionID: Date] = [:]
     let historyDowngradeGraceInterval: TimeInterval = 15
+    var replayCursorEpoch: UInt64 = 0
 
     init(
         endpoint: String,
@@ -127,6 +129,7 @@ actor CodexAppServerSessionRuntime {
         transportFactory: @escaping () -> CodexAppServerTransport = { URLSessionCodexAppServerTransport() },
         requestTimeout: TimeInterval = 20,
         longRunningRequestTimeout: TimeInterval = 60,
+        gatewayDefaults: UserDefaults = .standard,
         configProvider: (() async throws -> CodexAppServerConfigResponse)? = nil
     ) {
         let normalizedEndpoint = AgentAPIClient.normalizedEndpoint(endpoint)
@@ -136,6 +139,7 @@ actor CodexAppServerSessionRuntime {
         self.transportFactory = transportFactory
         self.requestTimeout = requestTimeout
         self.longRunningRequestTimeout = longRunningRequestTimeout
+        self.gatewayDefaults = gatewayDefaults
         self.configProvider = configProvider ?? {
             try await AgentAPIClient(endpoint: normalizedEndpoint, token: token).appServerConfig()
         }
@@ -1849,10 +1853,16 @@ actor CodexAppServerSessionRuntime {
         }
         // 命名这条连接对应的常驻会话。不带它，网关只能按连接给一个隔离会话，
         // 断线重连拿不回还在跑的 turn 和未应答的审批。
-        queryItems.append(URLQueryItem(name: "session", value: "\(gatewaySessionKey(defaults: defaults))-\(runtime)"))
+        let gatewaySession = "\(gatewaySessionKey(defaults: defaults))-\(runtime)"
+        queryItems.append(URLQueryItem(name: "session", value: gatewaySession))
         // Go 写 WebSocket 成功不等于 App 已经投影完该帧。由客户端带回最后
         // 处理完成的 turn 边界，bridge 才能从真正安全的 cursor 继续回放。
-        if runtime == "claude", let lastSeen = gatewayLastSeenSequence(runtimeProvider: runtime, defaults: defaults) {
+        if runtime == "claude", let lastSeen = gatewayLastSeenSequence(
+            endpoint: validatedEndpoint,
+            gatewaySession: gatewaySession,
+            runtimeProvider: runtime,
+            defaults: defaults
+        ) {
             queryItems.append(URLQueryItem(name: "last_seen", value: String(lastSeen)))
         }
         components.queryItems = queryItems
@@ -1874,15 +1884,27 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    private static func gatewayLastSeenStorageKey(runtimeProvider: String) -> String {
-        "appServer.gatewayLastSeen.\(normalizedRuntimeProvider(runtimeProvider))"
+    private static func gatewayLastSeenStorageKey(
+        endpoint: String,
+        gatewaySession: String,
+        runtimeProvider: String
+    ) -> String {
+        // endpoint 可能含 UserDefaults key 不友好的字符；base64 只作为稳定命名，不承载密钥。
+        let endpointKey = Data(AgentAPIClient.normalizedEndpoint(endpoint).utf8).base64EncodedString()
+        return "appServer.gatewayLastSeen.v2.\(normalizedRuntimeProvider(runtimeProvider)).\(gatewaySession).\(endpointKey)"
     }
 
     static func gatewayLastSeenSequence(
+        endpoint: String,
+        gatewaySession: String,
         runtimeProvider: String,
         defaults: UserDefaults = .standard
     ) -> UInt64? {
-        let key = gatewayLastSeenStorageKey(runtimeProvider: runtimeProvider)
+        let key = gatewayLastSeenStorageKey(
+            endpoint: endpoint,
+            gatewaySession: gatewaySession,
+            runtimeProvider: runtimeProvider
+        )
         guard let raw = defaults.string(forKey: key) else {
             return nil
         }
@@ -1891,10 +1913,36 @@ actor CodexAppServerSessionRuntime {
 
     static func storeGatewayLastSeenSequence(
         _ sequence: UInt64,
+        endpoint: String,
+        gatewaySession: String,
         runtimeProvider: String,
         defaults: UserDefaults = .standard
     ) {
-        defaults.set(String(sequence), forKey: gatewayLastSeenStorageKey(runtimeProvider: runtimeProvider))
+        let key = gatewayLastSeenStorageKey(
+            endpoint: endpoint,
+            gatewaySession: gatewaySession,
+            runtimeProvider: runtimeProvider
+        )
+        let current = defaults.string(forKey: key).flatMap(UInt64.init) ?? 0
+        guard sequence > current else { return }
+        defaults.set(String(sequence), forKey: key)
+    }
+
+    static func resetGatewayLastSeenSequence(
+        _ sequence: UInt64,
+        endpoint: String,
+        gatewaySession: String,
+        runtimeProvider: String,
+        defaults: UserDefaults = .standard
+    ) {
+        let key = gatewayLastSeenStorageKey(
+            endpoint: endpoint,
+            gatewaySession: gatewaySession,
+            runtimeProvider: runtimeProvider
+        )
+        // bridge 进程重启后 sequence 会从头计数，必须允许显式倒退；普通确认仍走
+        // storeGatewayLastSeenSequence 的单调写入，避免迟到任务误覆盖新 cursor。
+        defaults.set(String(sequence), forKey: key)
     }
 
     func detachEvents(sessionID: SessionID, token: UUID) {
@@ -2170,7 +2218,12 @@ actor CodexAppServerSessionRuntime {
         }
         // config 只用于确认 gateway 能力；真实 URL 始终从当前连接代次的 endpoint 派生。
         // 这样 REST 与 WebSocket 不会因为反向代理返回了另一 Host 而分裂到不同链路。
-        return try Self.gatewayURL(endpoint: endpoint, sessionID: "", runtimeProvider: runtimeProvider)
+        return try Self.gatewayURL(
+            endpoint: endpoint,
+            sessionID: "",
+            runtimeProvider: runtimeProvider,
+            defaults: gatewayDefaults
+        )
     }
 
     func runtimeGatewayAvailable(in config: CodexAppServerConfigResponse) -> Bool {
@@ -2188,8 +2241,20 @@ actor CodexAppServerSessionRuntime {
     }
 
     func handle(_ notification: CodexAppServerNotification) {
-        defer {
-            acknowledgeReplayBoundary(notification)
+        if notification.method == "_mimi/claudeReplayCursor/reset",
+           runtimeProvider == "claude",
+           let rawSequence = notification.params?.objectValue?["sequence"]?.intValue,
+           rawSequence >= 0 {
+            replayCursorEpoch &+= 1
+            let gatewaySession = "\(Self.gatewaySessionKey(defaults: gatewayDefaults))-\(runtimeProvider)"
+            Self.resetGatewayLastSeenSequence(
+                UInt64(rawSequence),
+                endpoint: endpoint,
+                gatewaySession: gatewaySession,
+                runtimeProvider: runtimeProvider,
+                defaults: gatewayDefaults
+            )
+            return
         }
         recordLiveSignal(from: notification)
         updateContext(from: notification)
@@ -2227,7 +2292,7 @@ actor CodexAppServerSessionRuntime {
             }
             return
         }
-        guard let event = projector.project(notification) else {
+        guard var event = projector.project(notification) else {
             for sessionID in resolved.approvalSessionIDs {
                 emitApprovalResolved(sessionID: sessionID)
             }
@@ -2235,6 +2300,12 @@ actor CodexAppServerSessionRuntime {
                 emitUserInputResolved(sessionID: sessionID, skipped: false)
             }
             return
+        }
+        if notification.method == "turn/completed" || notification.method == "thread/closed" {
+            event = event.withReplayBoundarySequence(
+                notification.replaySequence,
+                epoch: replayCursorEpoch
+            )
         }
         emit(event)
         let emittedSessionID = sessionID(from: event)
@@ -2246,15 +2317,21 @@ actor CodexAppServerSessionRuntime {
         }
     }
 
-    /// 只在完整 turn/线程边界持久化 cursor。delta 中途崩溃宁可在下次连接
-    /// 重放并由投影层去重，也不能把半条 assistant 消息误判为已经交付。
-    func acknowledgeReplayBoundary(_ notification: CodexAppServerNotification) {
+    /// 由 MainActor 在 Conversation/Session 投影全部落地后调用。单调提交避免并行订阅
+    /// 的迟到完成事件把 cursor 倒退；scope 隔离不同 Mac、安装会话与 runtime。
+    func acknowledgeAppliedReplayBoundary(_ sequence: UInt64, epoch: UInt64?) {
         guard runtimeProvider == "claude",
-              let sequence = notification.replaySequence,
-              notification.method == "turn/completed" || notification.method == "thread/closed" else {
+              epoch == replayCursorEpoch else {
             return
         }
-        Self.storeGatewayLastSeenSequence(sequence, runtimeProvider: runtimeProvider)
+        let gatewaySession = "\(Self.gatewaySessionKey(defaults: gatewayDefaults))-\(runtimeProvider)"
+        Self.storeGatewayLastSeenSequence(
+            sequence,
+            endpoint: endpoint,
+            gatewaySession: gatewaySession,
+            runtimeProvider: runtimeProvider,
+            defaults: gatewayDefaults
+        )
     }
 
     func handle(_ request: CodexAppServerServerRequest) {

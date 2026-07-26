@@ -266,49 +266,64 @@ extension SessionStore {
         force: Bool = false,
         reason: HistoryLoadReason = .automatic,
         successStatusMessage: String? = nil,
-        allowPolicyRetry: Bool = true
+        allowPolicyRetry: Bool = true,
+        recoveryGeneration: UInt64? = nil
     ) async -> Bool {
         if !force, canReuseLoadedHistory(for: session, loadMode: loadMode) {
             return true
         }
 
         if let existing = historyLoadJobsBySessionID[session.id] {
-            if existing.loadMode == loadMode {
-                // 已有同模式加载时直接等待同一个 job，避免切换/刷新制造重复大包请求。
-                // 前台刷新加入 quiet job 后必须提升共享 job 的反馈级别；否则 quiet waiter
-                // 若先恢复，会先移除 job 并吞掉失败提示，手动刷新只能静默返回 false。
-                if !quiet {
-                    promoteHistoryLoadJobForForegroundReporting(
-                        existing,
-                        sessionID: session.id,
-                        successStatusMessage: successStatusMessage
-                    )
-                    setHistoryLoadProgress(
-                        sessionID: session.id,
-                        title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
-                        fraction: 0.32
-                    )
-                    let didLoad = await awaitHistoryLoadJob(
+            let belongsToOlderRecovery = recoveryGeneration.map {
+                existing.recoveryGeneration != $0
+            } ?? false
+            if belongsToOlderRecovery {
+                // 先比较恢复代次，再比较 full/economy。旧代 full 降级出的 economy
+                // job 也不能让新代 full 恢复直接返回成功。
+                cancelHistoryLoadJob(existing, sessionID: session.id)
+            } else if existing.loadMode == loadMode {
+                if force && existing.cachePolicy != .bypass {
+                    // 回前台/网络恢复必须读取“此刻”的权威历史。加入一个更早启动的
+                    // reuseRecent job 可能拿到自主 turn 完成前的快照，因此直接换代。
+                    cancelHistoryLoadJob(existing, sessionID: session.id)
+                } else {
+                    // 已有同模式加载时直接等待同一个 job，避免切换/刷新制造重复大包请求。
+                    // 前台刷新加入 quiet job 后必须提升共享 job 的反馈级别；否则 quiet waiter
+                    // 若先恢复，会先移除 job 并吞掉失败提示，手动刷新只能静默返回 false。
+                    if !quiet {
+                        promoteHistoryLoadJobForForegroundReporting(
+                            existing,
+                            sessionID: session.id,
+                            successStatusMessage: successStatusMessage
+                        )
+                        setHistoryLoadProgress(
+                            sessionID: session.id,
+                            title: loadMode == .full ? L10n.text("ui.request_full_history") : L10n.text("ui.request_thumbnail_history"),
+                            fraction: 0.32
+                        )
+                        let didLoad = await awaitHistoryLoadJob(
+                            existing,
+                            session: session,
+                            quiet: false,
+                            successStatusMessage: successStatusMessage
+                        )
+                        clearHistoryLoadProgress(sessionID: session.id)
+                        return didLoad
+                    }
+                    return await awaitHistoryLoadJob(
                         existing,
                         session: session,
-                        quiet: false,
+                        quiet: quiet,
                         successStatusMessage: successStatusMessage
                     )
-                    clearHistoryLoadProgress(sessionID: session.id)
-                    return didLoad
                 }
-                return await awaitHistoryLoadJob(
-                    existing,
-                    session: session,
-                    quiet: quiet,
-                    successStatusMessage: successStatusMessage
-                )
-            }
-            switch reason {
-            case .summaryChoice, .manualFull:
-                cancelHistoryLoadJob(existing, sessionID: session.id)
-            case .automatic:
-                return true
+            } else {
+                switch reason {
+                case .summaryChoice, .manualFull:
+                    cancelHistoryLoadJob(existing, sessionID: session.id)
+                case .automatic:
+                    return true
+                }
             }
         }
 
@@ -329,6 +344,8 @@ extension SessionStore {
             token: jobToken,
             sessionSignature: signature,
             loadMode: loadMode,
+            cachePolicy: cachePolicy,
+            recoveryGeneration: recoveryGeneration,
             allowPolicyRetry: allowPolicyRetry,
             task: task,
             requiresForegroundReporting: !quiet,
@@ -496,7 +513,8 @@ extension SessionStore {
                     loadMode: .economy,
                     force: true,
                     reason: .automatic,
-                    successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.thumbnail_history_automatically_loaded")
+                    successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.thumbnail_history_automatically_loaded"),
+                    recoveryGeneration: job.recoveryGeneration
                 )
             case .economy where job.allowPolicyRetry:
                 let delay = policyFailure.retryAfterNanoseconds ?? historyPolicyRetryFallbackNanoseconds
@@ -520,7 +538,8 @@ extension SessionStore {
                     force: true,
                     reason: .automatic,
                     successStatusMessage: effectiveQuiet ? nil : L10n.text("ui.thumbnail_history_loaded"),
-                    allowPolicyRetry: false
+                    allowPolicyRetry: false,
+                    recoveryGeneration: job.recoveryGeneration
                 )
             default:
                 break
@@ -1105,6 +1124,49 @@ extension SessionStore {
         } else if connectedSessionID != nil {
             disconnectWebSocket()
         }
+    }
+
+    func beginRecoveryHistoryGeneration() -> UInt64 {
+        recoveryHistoryGeneration &+= 1
+        return recoveryHistoryGeneration
+    }
+
+    /// App 回前台或网络恢复时，不能复用“签名没变化”的旧快照。Claude 自主 turn 可能在
+    /// detached 期间完成，而 thread/list 的 revision 尚未及时更新；每个恢复代次必须绕过缓存
+    /// 拉一次完整历史。成功后只需状态回放，失败时由调用方保留 full replay 兜底。
+    func reconcileHistoryForRecovery(
+        sessionID: SessionID,
+        generation: UInt64
+    ) async -> Bool {
+        if reconciledRecoveryGenerationBySessionID[sessionID] == generation {
+            // 必须返回本代请求结果，不能用旧 full snapshot 冒充本次成功。
+            return recoveryHistorySucceededBySessionID[sessionID] == true
+        }
+        guard generation == recoveryHistoryGeneration,
+              let session = sessionsByID[sessionID] else {
+            return false
+        }
+        let didLoad = await loadHistory(
+            for: session,
+            quiet: true,
+            loadMode: .full,
+            force: true,
+            reason: .automatic,
+            recoveryGeneration: generation
+        )
+        guard generation == recoveryHistoryGeneration else {
+            return false
+        }
+        // full 因大小策略自动降级为 economy 时 loadHistory 仍会返回 true，但 summary
+        // 不能证明 detached 期间的 assistant/process 内容已经完整对账，必须保留全量 replay。
+        let didLoadFullHistory = didLoad && historyLoadedQualityBySessionID[sessionID] == .full
+        reconciledRecoveryGenerationBySessionID[sessionID] = generation
+        recoveryHistorySucceededBySessionID[sessionID] = didLoadFullHistory
+        if didLoadFullHistory, let refreshed = sessionsByID[sessionID] {
+            // 历史内容和 thread 状态是两个权威面；随后再校准一次状态，清除陈旧 running。
+            await reconcileSessionStateAfterHistoryRefresh(refreshed)
+        }
+        return didLoadFullHistory
     }
 
     static func replacingSessions(_ current: [AgentSession], with fresh: [AgentSession], projectID: String?) -> [AgentSession] {

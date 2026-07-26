@@ -581,6 +581,7 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
+    var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String) -> Void)?
     var onControlFailure: ((String) -> Void)?
@@ -639,6 +640,10 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         activeClient?.sendUserInputResponse(requestID: requestID, answers: answers) ?? false
     }
 
+    func acknowledgeAppliedEvent(_ event: AgentEvent) {
+        activeClient?.acknowledgeAppliedEvent(event)
+    }
+
     private func wireHandlers(to client: CodexAppServerSessionWebSocketClient) {
         client.onStatus = { [weak self] status in
             self?.onStatus?(status)
@@ -652,6 +657,9 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
         }
         client.onSendFailure = { [weak self] clientMessageID, message in
             self?.onSendFailure?(clientMessageID, message)
+        }
+        client.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
+            self?.onTurnSendOutcome?(clientMessageID, outcome)
         }
         client.onApprovalDecisionFailure = { [weak self] approvalID, message in
             self?.onApprovalDecisionFailure?(approvalID, message)
@@ -681,6 +689,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
+    var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String) -> Void)?
     var onControlFailure: ((String) -> Void)?
@@ -773,19 +782,85 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         }
         let acceptedHandler = onSendAccepted
         let failureHandler = onSendFailure
+        let outcomeHandler = onTurnSendOutcome
         Task { [runtime] in
             do {
-                _ = try await runtime.startTurn(sessionID: sessionID, payload: payload, clientMessageID: clientMessageID)
+                let turnID = try await runtime.startTurn(sessionID: sessionID, payload: payload, clientMessageID: clientMessageID)
                 await MainActor.run {
-                    acceptedHandler?(clientMessageID)
+                    if let outcomeHandler {
+                        outcomeHandler(clientMessageID, .accepted(turnID: turnID))
+                    } else {
+                        acceptedHandler?(clientMessageID)
+                    }
                 }
             } catch {
                 await MainActor.run {
-                    failureHandler?(clientMessageID, error.localizedDescription)
+                    if let outcomeHandler {
+                        outcomeHandler(clientMessageID, Self.turnSendOutcome(for: error))
+                    } else {
+                        failureHandler?(clientMessageID, error.localizedDescription)
+                    }
                 }
             }
         }
         return true
+    }
+
+    func acknowledgeAppliedEvent(_ event: AgentEvent) {
+        guard let metadata = Self.metadata(for: event),
+              let sequence = metadata.replayBoundarySequence else {
+            return
+        }
+        Task { [runtime] in
+            await runtime.acknowledgeAppliedReplayBoundary(
+                sequence,
+                epoch: metadata.replayCursorEpoch
+            )
+        }
+    }
+
+    static func turnSendOutcome(for error: Error) -> TurnSendOutcome {
+        if case CodexAppServerConnectionError.appServer(let appError) = error {
+            let wasExplicitlyRejected = appError.data?.objectValue?["accepted"]?.boolValue == false
+            // -32602 表示请求参数在执行前即被拒绝；-32603 等内部错误可能发生在
+            // bridge 已接受并启动 turn 之后，不能允许自动重试制造重复消息。
+            if wasExplicitlyRejected || appError.code == -32602 {
+                return .rejected(message: error.localizedDescription)
+            }
+            return .uncertain(message: error.localizedDescription)
+        }
+        if error is CodexAppServerRequestBuilderError
+            || error is CodexAppServerSessionRuntimeError
+            || error is AgentAPIError {
+            return .rejected(message: error.localizedDescription)
+        }
+        return .uncertain(message: error.localizedDescription)
+    }
+
+    private static func metadata(for event: AgentEvent) -> AgentEventMetadata? {
+        switch event {
+        case .session, .unknown:
+            return nil
+        case .sessionRow(_, let metadata),
+             .sessionStatus(_, let metadata),
+             .sessionContext(_, let metadata),
+             .goalUpdated(_, let metadata),
+             .goalCleared(let metadata),
+             .turnStarted(let metadata),
+             .assistantDelta(_, let metadata),
+             .messageCompleted(_, let metadata),
+             .processItemCompleted(_, _, let metadata),
+             .logDelta(_, let metadata),
+             .diffUpdated(_, let metadata),
+             .approvalRequest(_, let metadata),
+             .approvalResolved(let metadata),
+             .userInputRequest(_, let metadata),
+             .userInputResolved(let metadata, _),
+             .turnCompleted(let metadata),
+             .warning(_, let metadata),
+             .error(_, let metadata):
+            return metadata
+        }
     }
 
     @discardableResult

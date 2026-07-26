@@ -227,4 +227,86 @@ extension ConversationDataFlowTests {
         XCTAssertTrue(result.hadOrderingCycle)
         XCTAssertEqual(result.messages.map(\.content), ["快照 A", "本地计划", "快照 B"])
     }
+
+    func testPartialSnapshotMovesInjectedUserAheadOfLaterLiveReplies() {
+        let turnID = "turn-guidance-order"
+        let clientMessageID = "client-guidance-order"
+        let anchor = ConversationMessage(
+            stableID: "anchor",
+            turnID: turnID,
+            itemID: "anchor",
+            role: .assistant,
+            kind: .commentary,
+            content: "先运行测试。",
+            createdAt: Date(timeIntervalSince1970: 10)
+        )
+        let firstReply = ConversationMessage(
+            stableID: "reply-1",
+            turnID: turnID,
+            itemID: "reply-1",
+            role: .assistant,
+            kind: .message,
+            content: "还在修改和回归。",
+            createdAt: Date(timeIntervalSince1970: 30)
+        )
+        let secondReply = ConversationMessage(
+            stableID: "reply-2",
+            turnID: turnID,
+            itemID: "reply-2",
+            role: .assistant,
+            kind: .message,
+            content: "又发现一个代次交叉。",
+            createdAt: Date(timeIntervalSince1970: 40)
+        )
+        let localGuidance = ConversationMessage(
+            stableID: clientMessageID,
+            clientMessageID: clientMessageID,
+            role: .user,
+            content: "还在修改是么",
+            createdAt: Date(timeIntervalSince1970: 20),
+            sendStatus: .sent,
+            userDelivery: .guided
+        )
+
+        // 省流历史可能先确认中途 steer 用户消息，但暂时不带其后的实时回复。
+        // 即使当前列表已经错误地把本地回显放在尾部，用户消息也必须按真实发送时间
+        // 回到后续回复之前，不能继续显示成“Agent 先回答、用户后提问”。
+        let partialSnapshot = [
+            ConversationMessage(
+                stableID: "anchor",
+                turnID: turnID,
+                itemID: "anchor",
+                role: .assistant,
+                kind: .commentary,
+                content: "先运行测试。",
+                createdAt: Date(timeIntervalSince1970: 10),
+                timelineOrdinal: 0,
+                isTimestampFallback: true
+            ),
+            ConversationMessage(
+                stableID: "server-guidance",
+                clientMessageID: clientMessageID,
+                turnID: turnID,
+                itemID: "guidance",
+                role: .user,
+                content: "还在修改是么",
+                createdAt: Date(timeIntervalSince1970: 10.001),
+                sendStatus: .confirmed,
+                timelineOrdinal: 1,
+                userDelivery: .injected,
+                isTimestampFallback: true
+            )
+        ]
+
+        let result = ConversationTimelineReducer().rebase(
+            snapshot: partialSnapshot,
+            current: [anchor, firstReply, secondReply, localGuidance]
+        )
+
+        XCTAssertFalse(result.hadOrderingCycle)
+        XCTAssertEqual(
+            result.messages.map(\.content),
+            ["先运行测试。", "还在修改是么", "还在修改和回归。", "又发现一个代次交叉。"]
+        )
+    }
 }
