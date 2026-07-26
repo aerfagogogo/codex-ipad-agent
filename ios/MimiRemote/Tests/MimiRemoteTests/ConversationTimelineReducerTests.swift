@@ -3,6 +3,63 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testLegacyClaudeSnapshotDeduplicatesConfirmedLocalUserEcho() {
+        let localID = UUID()
+        let local = ConversationMessage(
+            id: localID,
+            stableID: "client-confirmed",
+            clientMessageID: "client-confirmed",
+            role: .user,
+            content: "如何",
+            createdAt: Date(timeIntervalSince1970: 100),
+            sendStatus: .confirmed
+        )
+        let history = ConversationMessage(
+            stableID: "appserver:turn_0:user_0_100",
+            turnID: "turn_0",
+            itemID: "user_0_100",
+            role: .user,
+            content: "如何",
+            createdAt: Date(timeIntervalSince1970: 102),
+            sendStatus: .confirmed
+        )
+
+        let result = ConversationTimelineReducer().rebase(
+            snapshot: [history],
+            current: [local]
+        )
+
+        XCTAssertEqual(result.messages.count, 1)
+        XCTAssertEqual(result.messages.first?.id, localID)
+        XCTAssertEqual(result.messages.first?.stableID, history.stableID)
+        XCTAssertEqual(result.messages.first?.clientMessageID, "client-confirmed")
+    }
+
+    func testLegacyClaudeFallbackDoesNotMergeConfirmedHistoryWithoutLocalClientID() {
+        let local = ConversationMessage(
+            role: .user,
+            content: "重复发送",
+            createdAt: Date(timeIntervalSince1970: 100),
+            sendStatus: .confirmed
+        )
+        let history = ConversationMessage(
+            stableID: "appserver:turn_1:user_1_101",
+            turnID: "turn_1",
+            itemID: "user_1_101",
+            role: .user,
+            content: "重复发送",
+            createdAt: Date(timeIntervalSince1970: 101),
+            sendStatus: .confirmed
+        )
+
+        let result = ConversationTimelineReducer().rebase(
+            snapshot: [history],
+            current: [local]
+        )
+
+        XCTAssertEqual(result.messages.count, 2)
+    }
+
     func testTargetThreadSnapshotRebaseKeepsLivePlanAtFirstSeenSlot() {
         let store = ConversationStore()
         let sessionID = "019f7454-64e2-7f70-8208-21291af45ea6"

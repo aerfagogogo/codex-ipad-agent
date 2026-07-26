@@ -314,6 +314,9 @@ fn user_message_to_item(content: &Value, ts: i64, turn_index: usize) -> ThreadIt
     ThreadItem::UserMessage {
         id: format!("user_{turn_index}_{ts}"),
         content: inputs,
+        // Claude JSONL 不保存 App 生成的 clientUserMessageId；服务重启后的旧历史
+        // 由 iOS 的受限语义兜底合并，运行中的 live cache 则会保留该稳定 ID。
+        client_id: None,
     }
 }
 

@@ -329,6 +329,7 @@ pub async fn handle_turn_start(
     let user_message_item = p::ThreadItem::UserMessage {
         id: Uuid::now_v7().to_string(),
         content: params.input.clone(),
+        client_id: params.client_user_message_id.clone(),
     };
     state.record_item(&params.thread_id, &turn_id, user_message_item.clone());
     if state.should_emit("item/started") {

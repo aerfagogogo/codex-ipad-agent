@@ -197,6 +197,14 @@ final class AgentAPIClientRequestTests: XCTestCase {
                 _ = try await client.gitStatus(path: workspacePath)
             },
             .init(
+                "git status summary",
+                path: "/api/git/status",
+                method: "POST",
+                json: ["path": workspacePath, "summary_only": true]
+            ) { client in
+                _ = try await client.gitStatus(path: workspacePath, summaryOnly: true)
+            },
+            .init(
                 "git file action",
                 path: "/api/git/action",
                 method: "POST",

@@ -117,7 +117,7 @@ enum ThemePreset: String, CaseIterable, Identifiable {
     var swatchBackground: Color {
         switch self {
         case .codex:
-            return Color(red: 0.976, green: 0.973, blue: 0.961)
+            return Color(red: 0.980392, green: 0.960784, blue: 0.929412)
         case .github:
             return Color(red: 0.96, green: 0.97, blue: 0.98)
         case .xcode:
@@ -215,7 +215,7 @@ extension ThemeTokens {
         }
         switch resolvedScheme {
         case .light:
-            return Color(red: 0.976, green: 0.973, blue: 0.961)
+            return Color(red: 0.980392, green: 0.960784, blue: 0.929412)
         case .dark:
             return Color(red: 0.090, green: 0.098, blue: 0.118)
         }
@@ -501,7 +501,7 @@ final class ThemeStore: ObservableObject {
         ThemeTokens(
             preset: .codex,
             resolvedScheme: .light,
-            background: Color(red: 0.976, green: 0.973, blue: 0.961),
+            background: Color(red: 0.980392, green: 0.960784, blue: 0.929412),
             surface: Color(red: 1.00, green: 1.00, blue: 1.00),
             elevatedSurface: Color(red: 0.957, green: 0.953, blue: 0.941),
             // 用户内容退回中性表面，品牌紫只承担操作与运行状态，长对话不会出现大块色斑。

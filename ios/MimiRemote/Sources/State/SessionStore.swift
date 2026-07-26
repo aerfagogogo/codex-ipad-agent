@@ -92,6 +92,9 @@ final class SessionStore: ObservableObject {
     @Published var worktreeErrorMessage: String?
     @Published var gitStatusByPath: [String: GitStatusResponse] = [:]
     @Published var gitStatusErrorByPath: [String: String] = [:]
+    @Published var workspaceGitSummaryByPath: [String: GitStatusResponse] = [:]
+    @Published var workspaceGitSummaryUpdatedAtByPath: [String: Date] = [:]
+    @Published var refreshingWorkspaceGitSummaryPaths: Set<String> = []
     @Published var isRefreshingGitStatus = false
     @Published var gitActionErrorByPath: [String: String] = [:]
     @Published var commandActionsByPath: [String: [AgentCommandAction]] = [:]
@@ -266,6 +269,8 @@ final class SessionStore: ObservableObject {
     static let maximumUnverifiedRunningSessionMisses = 3
     static let commandActionHistoryLimit = 10
     static let queuedTurnLimitPerSession = 20
+    static let workspaceGitSummaryTTL: TimeInterval = 60
+    static let workspaceGitSummaryConcurrencyLimit = 3
 
     init(
         appStore: AppStore,

@@ -60,6 +60,63 @@ struct ComposerToolbarControlLabel: View {
 
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
+    var runningControls: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return HStack(spacing: 8) {
+            if canInterruptSelectedSession {
+                Button {
+                    sessionStore.sendCtrlC()
+                } label: {
+                    Label("Ctrl-C", systemImage: "stop.circle")
+                }
+                .buttonStyle(.bordered)
+                .tint(.secondary)
+                .accessibilityLabel(L10n.text("ui.send_ctrl_c"))
+            }
+
+            Button {
+                Task { await sessionStore.stopSelectedSession() }
+            } label: {
+                Label(L10n.text("ui.stop"), systemImage: "xmark.circle")
+            }
+            .buttonStyle(.bordered)
+            .tint(tokens.primaryAction)
+            .accessibilityLabel(L10n.text("ui.stop_current_session"))
+        }
+        .controlSize(.small)
+        .font(themeStore.uiFont(.caption, weight: .medium))
+        // 运行控制悬浮在消息流之上。没有底衬时，最后一条消息右下角的
+        // “已送达，等待回复”会透过按钮间隙与之叠字，因此沿用输入面板同款材质，
+        // 让它像语音胶囊一样成为一枚独立的悬浮控件，遮住身后的消息。
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .background {
+            composerFloatingControlBackground(tokens: tokens)
+        }
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(1)
+    }
+
+    // 悬浮控件底衬：与 composerContainerBackground 同源，只是换成胶囊轮廓，
+    // 保证运行控制与底部输入面板属于同一层材质语言。
+    @ViewBuilder
+    func composerFloatingControlBackground(tokens: ThemeTokens) -> some View {
+        let shape = Capsule(style: .continuous)
+        if reduceTransparency {
+            shape.fill(tokens.elevatedSurface)
+        } else {
+            shape
+                .fill(.thinMaterial)
+                .overlay {
+                    shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
+                }
+        }
+    }
+
     // 宽屏设备直接平铺发送上下文。横向滚动只为大字号与极窄分屏兜底，
     // 不改变“无需先点开开关即可操作”的默认形态。
     var composerContextControlsRow: some View {

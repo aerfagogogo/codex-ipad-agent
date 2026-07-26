@@ -740,33 +740,6 @@ struct ComposerView: View {
             sessionStore.webSocketStatus == .connected
     }
 
-    var runningControls: some View {
-        HStack(spacing: 8) {
-            if canInterruptSelectedSession {
-                Button {
-                    sessionStore.sendCtrlC()
-                } label: {
-                    Label("Ctrl-C", systemImage: "stop.circle")
-                }
-                .buttonStyle(.bordered)
-                .tint(.secondary)
-                .accessibilityLabel(L10n.text("ui.send_ctrl_c"))
-            }
-
-            Button {
-                Task { await sessionStore.stopSelectedSession() }
-            } label: {
-                Label(L10n.text("ui.stop"), systemImage: "xmark.circle")
-            }
-            .buttonStyle(.bordered)
-            .tint(themeStore.tokens(for: colorScheme).primaryAction)
-            .accessibilityLabel(L10n.text("ui.stop_current_session"))
-        }
-        .controlSize(.small)
-        .font(themeStore.uiFont(.caption, weight: .medium))
-        .layoutPriority(1)
-    }
-
     func shouldShowGoalStatusBar(_ goal: ThreadGoal) -> Bool {
         goal.status != .complete || !hiddenCompletedGoalIDs.contains(goal.threadID)
     }
@@ -1716,22 +1689,7 @@ struct ComposerView: View {
     }
 
     func reasoningEffortTitle(for effort: CodexAppServerReasoningEffort) -> String {
-        switch effort {
-        case .none:
-            return L10n.text("ui.close")
-        case .minimal:
-            return L10n.text("ui.lowest")
-        case .low:
-            return L10n.text("ui.low")
-        case .medium:
-            return L10n.text("ui.in")
-        case .high:
-            return L10n.text("ui.high")
-        case .xhigh:
-            return L10n.text("ui.extremely_high")
-        case .max:
-            return L10n.text("ui.maximum")
-        }
+        ModelReasoningGridCatalog.effortTitle(effort)
     }
 
     var serviceTierOptionsMenu: some View {
