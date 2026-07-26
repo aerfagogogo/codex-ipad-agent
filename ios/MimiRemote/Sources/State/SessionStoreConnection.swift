@@ -1565,8 +1565,6 @@ extension SessionStore {
         sessions = []
         setExpandedProjectIDs([])
         setShowingAllSessionProjectIDs([])
-        frozenAllSessionOrder = []
-        frozenSessionOrderByProjectID = [:]
         sessionPageCursorByProjectID = [:]
         sessionHasMoreByProjectID = [:]
         sessionProjectsWithAdditionalPages = []

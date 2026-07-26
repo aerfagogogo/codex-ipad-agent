@@ -1618,7 +1618,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), ["codex_gamma", "codex_beta", "codex_alpha"])
     }
 
-    func testSessionStoreFreezesProjectOrderWhileSessionIsRunning() async {
+    func testSessionStoreKeepsProjectOrderByLatestActivityWhileSessionIsRunning() async {
         let project = makeProject(id: "proj_1")
         let history = makeSession(
             id: "codex_history",
@@ -1662,8 +1662,8 @@ extension ConversationDataFlowTests {
         ])
         await store.refreshSelectedProjectSessions()
 
-        // running 输出刷新会更新 updatedAt；侧栏保持用户正在看的相对顺序，避免列表来回跳。
-        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [history.id, running.id])
+        // 运行态不能冻结整个工作区；活动时间变化后仍须维持“最近会话”的降序语义。
+        XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [running.id, history.id])
 
         client.page = SessionsPage(sessions: [
             history,
@@ -1678,8 +1678,66 @@ extension ConversationDataFlowTests {
         ])
         await store.refreshSelectedProjectSessions()
 
-        // 没有 running session 后释放冻结顺序，恢复 updatedAt 排序。
+        // 进入终态后继续使用同一个排序键，不发生第二套排序规则切换。
         XCTAssertEqual(store.sessions(forProjectID: project.id).map(\.id), [running.id, history.id])
+    }
+
+    func testSessionStoreGloballySortsMixedRuntimesWhileSessionIsRunning() {
+        let project = makeProject(id: "proj_mixed_runtime_order")
+        let codexRunning = makeSession(
+            id: "codex_running",
+            projectID: project.id,
+            title: "Codex 运行中",
+            status: "running",
+            source: "codex",
+            runtimeProvider: "codex",
+            recencyAt: Date(timeIntervalSince1970: 30)
+        )
+        let claudeOld = makeSession(
+            id: "claude_old",
+            projectID: project.id,
+            title: "Claude 较早会话",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            recencyAt: Date(timeIntervalSince1970: 10)
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: []) }
+        )
+
+        // 先写入一批会话，模拟其中一个 runtime 的首批索引已经显示。
+        store.sessions = [claudeOld, codexRunning]
+
+        let claudeNewest = makeSession(
+            id: "claude_newest",
+            projectID: project.id,
+            title: "Claude 最新会话",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            recencyAt: Date(timeIntervalSince1970: 40)
+        )
+        let codexMiddle = makeSession(
+            id: "codex_middle",
+            projectID: project.id,
+            title: "Codex 中间会话",
+            status: "history",
+            source: "codex",
+            runtimeProvider: "codex",
+            recencyAt: Date(timeIntervalSince1970: 20)
+        )
+
+        // 后到的 Codex/Claude 项不能按 provider 成块插到旧顺序前面，必须重新做全局时间排序。
+        store.sessions = [claudeOld, codexMiddle, codexRunning, claudeNewest]
+
+        XCTAssertEqual(
+            store.sessions(forProjectID: project.id).map(\.id),
+            [claudeNewest.id, codexRunning.id, codexMiddle.id, claudeOld.id]
+        )
     }
 
     func testWorkspaceRecentWindowKeepsKnownRunningSessionWhenFirstPageIsStale() async throws {
