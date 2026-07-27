@@ -1,5 +1,65 @@
 import SwiftUI
 
+/// MeeGo / Harmattan 图标底板不是规则圆角矩形，也不是完全对称的超椭圆。
+/// 归一化 Bézier 控制点让上下边略平、左右边轻微收腰，并保留四角细微不同的饱满度。
+private struct WorkspaceIconMeeGoShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        guard rect.width > 0, rect.height > 0 else { return Path() }
+
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(
+                x: rect.minX + rect.width * x,
+                y: rect.minY + rect.height * y
+            )
+        }
+
+        var path = Path()
+        path.move(to: point(0.27, 0.045))
+        path.addCurve(
+            to: point(0.75, 0.035),
+            control1: point(0.41, 0.018),
+            control2: point(0.61, 0.015)
+        )
+        path.addCurve(
+            to: point(0.955, 0.26),
+            control1: point(0.88, 0.045),
+            control2: point(0.945, 0.14)
+        )
+        path.addCurve(
+            to: point(0.95, 0.72),
+            control1: point(0.985, 0.40),
+            control2: point(0.98, 0.59)
+        )
+        path.addCurve(
+            to: point(0.71, 0.955),
+            control1: point(0.93, 0.85),
+            control2: point(0.84, 0.945)
+        )
+        path.addCurve(
+            to: point(0.26, 0.96),
+            control1: point(0.57, 0.985),
+            control2: point(0.40, 0.985)
+        )
+        path.addCurve(
+            to: point(0.045, 0.70),
+            control1: point(0.14, 0.945),
+            control2: point(0.055, 0.84)
+        )
+        path.addCurve(
+            to: point(0.055, 0.25),
+            control1: point(0.018, 0.57),
+            control2: point(0.025, 0.39)
+        )
+        path.addCurve(
+            to: point(0.27, 0.045),
+            control1: point(0.065, 0.13),
+            control2: point(0.15, 0.055)
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
 enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     case codex
     case claude
@@ -615,7 +675,7 @@ private struct WorkspaceLibraryCard: View {
                         } label: {
                             Color.clear
                                 .frame(width: 52, height: 52)
-                                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                .contentShape(WorkspaceIconMeeGoShape())
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(
@@ -708,7 +768,7 @@ private struct WorkspaceLibraryCard: View {
             .frame(width: 52, height: 52)
             .background(
                 tint.opacity(colorScheme == .dark ? 0.30 : 0.18),
-                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                in: WorkspaceIconMeeGoShape()
             )
             .overlay(alignment: .bottomTrailing) {
                 if hasRunningSession {
@@ -915,7 +975,7 @@ private struct WorkspaceEmojiPicker: View {
                                 .frame(width: 44, height: 44)
                                 .background(
                                     tokens.elevatedSurface.opacity(0.68),
-                                    in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                    in: WorkspaceIconMeeGoShape()
                                 )
                             if currentEmoji == emoji {
                                 Image(systemName: "checkmark.circle.fill")
@@ -1083,10 +1143,6 @@ private struct WorkspaceDetailView: View {
             .frame(maxWidth: .infinity, minHeight: actionButtonHeight, maxHeight: actionButtonHeight, alignment: .leading)
             // 快捷入口是立即执行的动作，不是持久选择项；默认统一使用中性背景。
             .background(tokens.surface, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(tokens.primaryAction.opacity(0.24), lineWidth: 1.2)
-            }
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))

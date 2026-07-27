@@ -36,6 +36,7 @@ type claudeBridgeSupervisor struct {
 	dir        string
 	socketPath string
 	cmd        *exec.Cmd
+	startedAt  time.Time
 	// done is closed by the reaper once the process has been waited on. It is
 	// the only exit signal anyone else waits for: cmd.Wait has exactly one
 	// consumer, so startup and shutdown cannot starve each other of it.
@@ -179,6 +180,7 @@ func (s *claudeBridgeSupervisor) start(bin string, args []string, env map[string
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动 Claude bridge 失败：%w", err)
 	}
+	s.startedAt = time.Now().UTC()
 	go captureClaudeBridgeStderr(stderr)
 
 	done := make(chan struct{})
@@ -253,6 +255,18 @@ func (s *claudeBridgeSupervisor) dial() (net.Conn, uint64, error) {
 	}
 }
 
+// runningSince 返回当前 resident bridge 的真实启动时间。
+// bridge 异常退出或 supervisor reset 后立即清空，避免菜单栏继续显示旧进程时长。
+func (s *claudeBridgeSupervisor) runningSince() *time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd == nil || s.exited || s.startedAt.IsZero() {
+		return nil
+	}
+	startedAt := s.startedAt
+	return &startedAt
+}
+
 // shutdown terminates the bridge process group and removes the socket
 // directory. The supervisor refuses to start again afterwards.
 func (s *claudeBridgeSupervisor) shutdown() {
@@ -298,6 +312,7 @@ func (s *claudeBridgeSupervisor) reset() {
 	s.cmd = nil
 	s.done = nil
 	s.socketPath = ""
+	s.startedAt = time.Time{}
 	s.exited = false
 	s.clearCursors()
 }

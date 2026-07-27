@@ -161,6 +161,8 @@ type runtimeAccountStatus struct {
 	Title      string                 `json:"title"`
 	Enabled    bool                   `json:"enabled"`
 	State      runtimeConnectionState `json:"state"`
+	Version    string                 `json:"version,omitempty"`
+	StartedAt  *time.Time             `json:"started_at,omitempty"`
 	AuthMode   string                 `json:"auth_mode,omitempty"`
 	PlanType   string                 `json:"plan_type,omitempty"`
 	Reason     string                 `json:"reason,omitempty"`
@@ -234,6 +236,27 @@ func (r *Router) runtimeStatusHandler(w http.ResponseWriter, req *http.Request) 
 	writeJSON(w, http.StatusOK, r.runtimeStatus.Snapshot())
 }
 
+// SetCodexRuntimeStartedAt 连接 serve 层托管的 resident Codex 进程与本机状态接口。
+// Router 在 HTTP listener 启动前设置一次；锁让测试和未来热重启也能安全更新。
+func (r *Router) SetCodexRuntimeStartedAt(startedAt time.Time) {
+	if r == nil {
+		return
+	}
+	r.runtimeProcessMu.Lock()
+	r.codexRuntimeStartedAt = startedAt.UTC()
+	r.runtimeProcessMu.Unlock()
+}
+
+func (r *Router) codexRuntimeStartTime() *time.Time {
+	r.runtimeProcessMu.RLock()
+	startedAt := r.codexRuntimeStartedAt
+	r.runtimeProcessMu.RUnlock()
+	if startedAt.IsZero() {
+		return nil
+	}
+	return &startedAt
+}
+
 func (r *Router) refreshRuntimeStatus(ctx context.Context) runtimeStatusResponse {
 	codexResult := make(chan runtimeAccountStatus, 1)
 	claudeResult := make(chan runtimeAccountStatus, 1)
@@ -275,11 +298,12 @@ func (r *Router) runtimeStatusPlaceholder() runtimeStatusResponse {
 	return runtimeStatusResponse{
 		Runtimes: []runtimeAccountStatus{
 			{
-				ID:      "codex",
-				Title:   "Codex",
-				Enabled: true,
-				State:   runtimeStateUnavailable,
-				Reason:  "refresh_in_progress",
+				ID:        "codex",
+				Title:     "Codex",
+				Enabled:   true,
+				State:     runtimeStateUnavailable,
+				StartedAt: r.codexRuntimeStartTime(),
+				Reason:    "refresh_in_progress",
 			},
 			claude,
 		},
@@ -298,11 +322,12 @@ func runtimeStatusLoopbackRequest(req *http.Request) bool {
 
 func (r *Router) probeCodexRuntime(ctx context.Context) runtimeAccountStatus {
 	status := runtimeAccountStatus{
-		ID:      "codex",
-		Title:   "Codex",
-		Enabled: true,
-		State:   runtimeStateUnavailable,
-		Reason:  "upstream_unavailable",
+		ID:        "codex",
+		Title:     "Codex",
+		Enabled:   true,
+		State:     runtimeStateUnavailable,
+		StartedAt: r.codexRuntimeStartTime(),
+		Reason:    "upstream_unavailable",
 	}
 	upstreamURL, err := r.appServerUpstreamWebSocketURL()
 	if err != nil {
@@ -323,9 +348,11 @@ func (r *Router) probeCodexRuntime(ctx context.Context) runtimeAccountStatus {
 	defer conn.Close()
 
 	rpc := runtimeWebSocketRPC{conn: conn}
-	if err := rpc.initialize(ctx); err != nil {
+	userAgent, err := rpc.initialize(ctx)
+	if err != nil {
 		return status
 	}
+	status.Version = runtimeVersionFromUserAgent(userAgent)
 	status.State = runtimeStateAvailable
 	status.Reason = ""
 
@@ -409,6 +436,7 @@ func (r *Router) probeClaudeRuntime(ctx context.Context) runtimeAccountStatus {
 			return status
 		}
 	}
+	status.StartedAt = r.claudeBridge.runningSince()
 	if ctx.Err() != nil {
 		return status
 	}
@@ -426,9 +454,13 @@ func (r *Router) probeClaudeRuntime(ctx context.Context) runtimeAccountStatus {
 		},
 	})
 	defer client.Close()
-	if _, err := client.Initialize(ctx); err != nil {
+	initialization, err := client.Initialize(ctx)
+	if err != nil {
 		return status
 	}
+	// Claude 行展示的是实际已连接的 resident bridge 版本，而不是磁盘上
+	// 可能已经被新安装包替换、但尚未重启的二进制版本。
+	status.Version = runtimeVersionFromUserAgent(initialization.UserAgent)
 	status.State = runtimeStateAvailable
 	status.Reason = ""
 
@@ -561,13 +593,37 @@ func normalizeAuthMode(raw string) string {
 	}
 }
 
+func runtimeVersionFromUserAgent(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	// Codex 与 Claude bridge 都用 product/version 形式报告实际运行进程。
+	// 只提取首个版本 token，避免把平台描述等不稳定信息塞进菜单栏。
+	if slash := strings.LastIndex(value, "/"); slash >= 0 && slash+1 < len(value) {
+		value = value[slash+1:]
+	}
+	if fields := strings.Fields(value); len(fields) > 0 {
+		if len(fields) > 1 {
+			candidate := strings.TrimPrefix(fields[1], "v")
+			if candidate != "" && candidate[0] >= '0' && candidate[0] <= '9' {
+				return candidate
+			}
+		}
+		return strings.TrimPrefix(fields[0], "v")
+	}
+	return ""
+}
+
 type runtimeWebSocketRPC struct {
 	conn   *websocket.Conn
 	nextID int64
 }
 
-func (c *runtimeWebSocketRPC) initialize(ctx context.Context) error {
-	var result map[string]any
+func (c *runtimeWebSocketRPC) initialize(ctx context.Context) (string, error) {
+	var result struct {
+		UserAgent string `json:"userAgent"`
+	}
 	if err := c.call(ctx, "initialize", map[string]any{
 		"clientInfo": map[string]any{
 			"name":    "mimi_remote_mac_status",
@@ -576,9 +632,12 @@ func (c *runtimeWebSocketRPC) initialize(ctx context.Context) error {
 		},
 		"capabilities": map[string]any{},
 	}, &result); err != nil {
-		return err
+		return "", err
 	}
-	return c.notify(ctx, "initialized", map[string]any{})
+	if err := c.notify(ctx, "initialized", map[string]any{}); err != nil {
+		return "", err
+	}
+	return result.UserAgent, nil
 }
 
 func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params any, result any) error {

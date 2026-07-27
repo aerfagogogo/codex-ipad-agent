@@ -124,11 +124,6 @@ extension ComposerView {
             HStack(spacing: 8) {
                 skillPickerButton
                 permissionMenu
-                // GPT-5.6 的底部模型入口已经同时负责模型和推理强度；
-                // 只有其它模型仍保留独立强度入口，避免去重时丢失低频配置能力。
-                if showsStandaloneReasoningEffortControl {
-                    reasoningEffortMenu
-                }
             }
         }
         .scrollIndicators(.hidden)

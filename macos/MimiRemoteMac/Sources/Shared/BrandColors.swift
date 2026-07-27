@@ -21,24 +21,4 @@ extension Color {
             )
         }
     )
-
-    /// 菜单里的停止操作仍保留危险语义，但比系统红更沉稳，避免抢过主要状态和操作。
-    static let mimiMutedDestructive = Color(
-        nsColor: NSColor(name: nil) { appearance in
-            if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
-                return NSColor(
-                    red: 206.0 / 255.0,
-                    green: 82.0 / 255.0,
-                    blue: 89.0 / 255.0,
-                    alpha: 1
-                )
-            }
-            return NSColor(
-                red: 164.0 / 255.0,
-                green: 50.0 / 255.0,
-                blue: 58.0 / 255.0,
-                alpha: 1
-            )
-        }
-    )
 }

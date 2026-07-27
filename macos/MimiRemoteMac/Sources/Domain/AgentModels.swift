@@ -173,6 +173,8 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
     let title: String
     let enabled: Bool
     let state: AgentRuntimeConnectionState
+    let version: String?
+    let startedAt: String?
     let authMode: String?
     let planType: String?
     let reason: String?
@@ -183,14 +185,47 @@ struct AgentRuntimeStatus: Codable, Equatable, Identifiable, Sendable {
         case title
         case enabled
         case state
+        case version
+        case startedAt = "started_at"
         case authMode = "auth_mode"
         case planType = "plan_type"
         case reason
         case rateLimits = "rate_limits"
     }
 
+    init(
+        id: String,
+        title: String,
+        enabled: Bool,
+        state: AgentRuntimeConnectionState,
+        version: String? = nil,
+        startedAt: String? = nil,
+        authMode: String?,
+        planType: String?,
+        reason: String?,
+        rateLimits: AgentRuntimeRateLimits?
+    ) {
+        self.id = id
+        self.title = title
+        self.enabled = enabled
+        self.state = state
+        self.version = version
+        self.startedAt = startedAt
+        self.authMode = authMode
+        self.planType = planType
+        self.reason = reason
+        self.rateLimits = rateLimits
+    }
+
     var effectivePlanType: String? {
         planType?.trimmedNonEmpty ?? rateLimits?.planType?.trimmedNonEmpty
+    }
+
+    var startedDate: Date? {
+        guard let startedAt = startedAt?.trimmedNonEmpty else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: startedAt) ?? ISO8601DateFormatter().date(from: startedAt)
     }
 }
 
@@ -301,6 +336,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
     let processError: String?
     let serviceError: String?
     let version: String
+    let serverVersion: String?
     let endpoint: String
     let configPath: String
     let projects: Int
@@ -315,6 +351,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         case processError = "process_error"
         case serviceError = "service_error"
         case version
+        case serverVersion = "server_version"
         case endpoint
         case configPath = "config_path"
         case projects
@@ -330,6 +367,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         processError: String?,
         serviceError: String?,
         version: String,
+        serverVersion: String? = nil,
         endpoint: String,
         configPath: String,
         projects: Int,
@@ -343,6 +381,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         self.processError = processError
         self.serviceError = serviceError
         self.version = version
+        self.serverVersion = serverVersion
         self.endpoint = endpoint
         self.configPath = configPath
         self.projects = projects
@@ -359,6 +398,7 @@ struct AgentStatus: Codable, Equatable, Sendable {
         processError = try container.decodeIfPresent(String.self, forKey: .processError)
         serviceError = try container.decodeIfPresent(String.self, forKey: .serviceError)
         version = try container.decode(String.self, forKey: .version)
+        serverVersion = try container.decodeIfPresent(String.self, forKey: .serverVersion)
         endpoint = try container.decode(String.self, forKey: .endpoint)
         configPath = try container.decode(String.self, forKey: .configPath)
         projects = try container.decode(Int.self, forKey: .projects)
@@ -375,6 +415,15 @@ struct AgentStatus: Codable, Equatable, Sendable {
             // 该快照，不能让健康检查、迁移和服务控制一起解码失败。
             runtimeStatus = nil
         }
+    }
+
+    var hasAgentVersionMismatch: Bool {
+        guard let running = serverVersion?.trimmedNonEmpty,
+              let bundled = version.trimmedNonEmpty
+        else {
+            return false
+        }
+        return running != bundled
     }
 }
 

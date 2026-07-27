@@ -17,7 +17,9 @@ import (
 
 func TestRuntimeStatusRequiresAuthAndReturnsSanitizedCodexSnapshot(t *testing.T) {
 	upstreamURL, _, connections := fakeAppServerUpstream(t, runtimeStatusCodexResponder(t))
-	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, nil)
+	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, nil)
+	codexStartedAt := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	router.SetCodexRuntimeStartedAt(codexStartedAt)
 
 	unauthorized := httptest.NewRecorder()
 	handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/runtime/status", nil))
@@ -42,8 +44,12 @@ func TestRuntimeStatusRequiresAuthAndReturnsSanitizedCodexSnapshot(t *testing.T)
 	}
 	codex := response.Runtimes[0]
 	if codex.ID != "codex" || codex.State != runtimeStateConnected ||
+		codex.Version != "fake-codex" ||
 		codex.AuthMode != "chatgpt" || codex.PlanType != "plus" {
 		t.Fatalf("Codex 账号状态异常：%+v", codex)
+	}
+	if codex.StartedAt == nil || !codex.StartedAt.Equal(codexStartedAt) {
+		t.Fatalf("Codex 状态应包含 resident app-server 启动时间：%+v", codex)
 	}
 	if codex.RateLimits == nil || codex.RateLimits.Primary == nil ||
 		codex.RateLimits.Primary.UsedPercent == nil ||
@@ -202,13 +208,32 @@ while IFS= read -r line; do :; done
 	_, response := readRuntimeStatusEventually(t, handler)
 	claude := response.Runtimes[1]
 	if claude.ID != "claude" || claude.State != runtimeStateConnected ||
+		claude.Version != "fake-claude" ||
 		claude.AuthMode != "oauth" || claude.PlanType != "pro" {
 		t.Fatalf("Claude OAuth 连接状态异常：%+v", claude)
+	}
+	if claude.StartedAt == nil || time.Since(*claude.StartedAt) > time.Minute {
+		t.Fatalf("Claude 状态应包含当前 resident bridge 启动时间：%+v", claude)
 	}
 	if claude.RateLimits == nil || claude.RateLimits.Secondary == nil ||
 		claude.RateLimits.Secondary.WindowDurationMin == nil ||
 		*claude.RateLimits.Secondary.WindowDurationMin != 10_080 {
 		t.Fatalf("Claude 周额度窗口异常：%+v", claude.RateLimits)
+	}
+}
+
+func TestRuntimeVersionFromUserAgent(t *testing.T) {
+	tests := map[string]string{
+		"codex_cli_rs/0.146.0-alpha.3.1":  "0.146.0-alpha.3.1",
+		"alleycat-claude-bridge/0.2.6":    "0.2.6",
+		"codex-cli v1.2.3-beta.1 (macOS)": "1.2.3-beta.1",
+		"  fake-runtime  ":                "fake-runtime",
+		"":                                "",
+	}
+	for input, want := range tests {
+		if got := runtimeVersionFromUserAgent(input); got != want {
+			t.Fatalf("runtime userAgent 版本解析错误：input=%q got=%q want=%q", input, got, want)
+		}
 	}
 }
 

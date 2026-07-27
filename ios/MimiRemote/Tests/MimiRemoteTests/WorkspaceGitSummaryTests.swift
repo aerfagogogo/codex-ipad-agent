@@ -3,6 +3,33 @@ import XCTest
 
 @MainActor
 final class WorkspaceGitSummaryTests: XCTestCase {
+    func testGitStatusDecodesOmittedFalseFileFlagsFromDeployedAgent() throws {
+        let json = """
+        {
+          "path": "/tmp/repo",
+          "is_repository": true,
+          "branch": "main",
+          "head": "780d0b3",
+          "upstream": "origin/main",
+          "files": [
+            {
+              "path": "README.md",
+              "code": " M",
+              "unstaged": true
+            }
+          ]
+        }
+        """
+
+        let status = try AgentAPIClient.decoder.decode(GitStatusResponse.self, from: Data(json.utf8))
+
+        XCTAssertEqual(status.branch, "main")
+        XCTAssertEqual(status.files.count, 1)
+        XCTAssertFalse(status.files[0].staged)
+        XCTAssertTrue(status.files[0].unstaged)
+        XCTAssertFalse(status.files[0].untracked)
+    }
+
     func testSummaryCacheUsesTTLAndCanBeForced() async {
         let project = makeProject(id: "workspace-summary")
         let status = GitStatusResponse(

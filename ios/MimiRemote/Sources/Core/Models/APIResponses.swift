@@ -1494,6 +1494,24 @@ struct GitFileStatus: Codable, Hashable, Identifiable {
         case unstaged
         case untracked
     }
+
+    init(path: String, code: String, staged: Bool, unstaged: Bool, untracked: Bool) {
+        self.path = path
+        self.code = code
+        self.staged = staged
+        self.unstaged = unstaged
+        self.untracked = untracked
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.path = try container.decode(String.self, forKey: .path)
+        self.code = try container.decode(String.self, forKey: .code)
+        // Go 的 omitempty 会省略 false；缺失字段按 false 处理，兼容已经部署的 agentd。
+        self.staged = try container.decodeIfPresent(Bool.self, forKey: .staged) ?? false
+        self.unstaged = try container.decodeIfPresent(Bool.self, forKey: .unstaged) ?? false
+        self.untracked = try container.decodeIfPresent(Bool.self, forKey: .untracked) ?? false
+    }
 }
 
 struct GitStatusResponse: Codable, Hashable {

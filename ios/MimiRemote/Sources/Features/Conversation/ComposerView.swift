@@ -14,6 +14,13 @@ enum VoiceTranscriptionDefaults {
     }
 }
 
+struct ModelPickerContentDetent: CustomPresentationDetent {
+    static func height(in context: Context) -> CGFloat? {
+        // 选择器的实际内容约 350pt；横屏或窄窗口由 maxDetentValue 自动收紧。
+        min(372, context.maxDetentValue)
+    }
+}
+
 struct ComposerView: View {
     // 相关实现按职责分布在 Composer* 扩展文件中；这些成员保持 module-internal，
     // 仅用于跨文件扩展协作，不构成对外 API。
@@ -57,6 +64,7 @@ struct ComposerView: View {
     @State var guidedFollowUpEnabled = false
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
+    @State var isSelectingVoiceDraftText = false
 
     var availableWidth: CGFloat?
 
@@ -168,6 +176,7 @@ struct ComposerView: View {
             }
             composerState.updateTurnOptions { options in
                 options = options.sanitizedForStandardComposer()
+                normalizeModelControlsForStandardComposer(&options)
             }
             showsAdvancedOptionsSheet = false
         }
@@ -439,10 +448,13 @@ struct ComposerView: View {
     func preparedTurnOptionsForSubmit() -> CodexAppServerTurnOptions {
         var options = developerModeEnabled ? composerState.turnOptions : composerState.turnOptions.sanitizedForStandardComposer()
         options.modelSelectionPolicy = developerModeEnabled ? .allowUnlisted : .catalogOnly
-        if let effort = options.reasoningEffort,
+        if developerModeEnabled,
+           let effort = options.reasoningEffort,
            !supportsReasoningEffort(effort, modelID: options.model ?? effectiveModelID) {
             // 提交边界再做一次兜底，避免模型列表刷新与点击发送之间的竞态把非法组合发给 runtime。
             options.reasoningEffort = nil
+        } else if !developerModeEnabled {
+            normalizeModelControlsForStandardComposer(&options)
         }
         if composerState.isPlanModeSelected {
             options.collaborationMode = .plan
@@ -1388,9 +1400,6 @@ struct ComposerView: View {
                             .font(themeStore.uiFont(.callout, weight: .semibold))
                             .lineLimit(1)
                     }
-                    Image(systemName: "chevron.up")
-                        .font(themeStore.uiFont(size: 10, weight: .bold))
-                        .opacity(0.72)
                 }
                 .foregroundStyle(isGuidedSelected ? tokens.accent : tokens.primaryText)
                 .frame(height: 44)
@@ -1432,6 +1441,7 @@ struct ComposerView: View {
     @ViewBuilder
     var voiceReviewNotice: some View {
         if composerState.voiceDraftNeedsReview {
+            let draftText = composerState.draft.trimmingCharacters(in: .whitespacesAndNewlines)
             HStack(spacing: 7) {
                 Image(systemName: "checkmark.shield")
                 Text(L10n.text("ui.voice_draft_to_be_confirmed"))
@@ -1447,12 +1457,31 @@ struct ComposerView: View {
                     .strokeBorder(themeStore.tokens(for: colorScheme).accent.opacity(0.35))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // 与对话面板保持一致：转写草稿也可长按整条复制，或进入可自由选择的文本表面
+            // 挑选片段复制，而不必手动在输入框里精确拖选。
+            .contextMenu {
+                if !draftText.isEmpty {
+                    Button {
+                        UIPasteboard.general.string = draftText
+                    } label: {
+                        Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        isSelectingVoiceDraftText = true
+                    } label: {
+                        Label(L10n.text("ui.select_text"), systemImage: "text.cursor")
+                    }
+                }
+            }
+            .sheet(isPresented: $isSelectingVoiceDraftText) {
+                MessageTextSelectionSheet(text: draftText)
+                    .environmentObject(themeStore)
+            }
         }
     }
 
     var runSettingsMenu: some View {
         Menu {
-            serviceTierOptionsMenu
             outputOptionsMenu
             if developerModeEnabled {
                 Divider()
@@ -1497,7 +1526,7 @@ struct ComposerView: View {
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.switch_model_and_inference_strength"))
         .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
-        .accessibilityHint(L10n.text("ui.double_click_to_select_you_can_also_drag"))
+        .accessibilityHint(L10n.text("ui.select_the_model_to_use_in_the_next"))
         .accessibilityIdentifier("composer.model")
         .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
             ModelReasoningGridPicker(
@@ -1507,23 +1536,26 @@ struct ComposerView: View {
                 selectedModelID: composerState.turnOptions.model,
                 isRefreshing: sessionStore.isRefreshingAppServerModels,
                 isFastMode: isFastModeSelected,
-                onSelect: { option, effort in
-                    selectGridModel(option, effort: effort)
+                onSelectModel: { option, effort in
+                    selectModel(option, effort: effort)
+                },
+                onSelectDefaultModel: { option, effort in
+                    selectDefaultModel(option, effort: effort)
                 },
                 onFastModeChange: { isEnabled in
                     composerState.updateTurnOptions {
-                        $0.serviceTier = isEnabled ? "priority" : nil
+                        $0.serviceTier = ModelReasoningGridCatalog.serviceTierForFastMode(isEnabled)
                     }
-                },
-                onSelectModelOnly: { option in
-                    selectModelOnly(option)
                 },
                 onRefresh: {
                     Task { await sessionStore.refreshAppServerModelOptions(force: true) }
                 }
             )
             .environmentObject(themeStore)
-            .presentationCompactAdaptation(.sheet)
+            .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
+            .presentationDetents([.custom(ModelPickerContentDetent.self)])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(themeStore.tokens(for: colorScheme).surface)
         }
     }
 
@@ -1554,22 +1586,15 @@ struct ComposerView: View {
         let selectedOption = effectiveModelID.flatMap { modelID in
             modelOptionsForMenu.first { $0.model.caseInsensitiveCompare(modelID) == .orderedSame }
         }
-        let option = layout.row(matching: effectiveModelID)
-            ?? layout.rows.first(where: \.isDefault)
-            ?? layout.rows.first
-        let effortOption = selectedOption ?? option
-        let effort = composerState.turnOptions.reasoningEffort.flatMap { selected in
-            guard layout.efforts.contains(selected),
-                  effortOption.map({ ModelReasoningGridCatalog.supports(selected, option: $0) }) ?? true
-            else {
-                return nil
-            }
-            return selected
-        } ?? effortOption.flatMap { option in
-            option.defaultReasoningEffort
-                .flatMap(CodexAppServerReasoningEffort.init(rawValue:))
-                .flatMap { layout.efforts.contains($0) ? $0 : nil }
-        } ?? layout.efforts.first ?? .medium
+        let option = selectedOption
+            ?? layout.model(matching: effectiveModelID)
+            ?? layout.models.first(where: \.isDefault)
+            ?? layout.models.first
+        let effort = ModelReasoningGridCatalog.normalizedVisibleEffort(
+            option: option,
+            current: composerState.turnOptions.reasoningEffort,
+            layout: layout
+        )
         return ModelReasoningGridSelection(
             modelID: option?.model ?? "gpt-5.6-sol",
             effort: effort
@@ -1578,9 +1603,12 @@ struct ComposerView: View {
 
     var modelPickerTriggerTitle: String {
         guard let selectedModel = effectiveModelID,
+              let selectedEffort = developerModeEnabled
+                  ? composerState.turnOptions.reasoningEffort
+                  : selectedModelGridSelection.effort,
               let title = ModelReasoningGridCatalog.triggerTitle(
                   for: selectedModel,
-                  effort: selectedModelGridSelection.effort,
+                  effort: selectedEffort,
                   layout: modelReasoningGridLayout
               )
         else {
@@ -1589,101 +1617,34 @@ struct ComposerView: View {
         return title
     }
 
-    var showsStandaloneReasoningEffortControl: Bool {
-        !modelReasoningGridLayout.contains(modelID: effectiveModelID)
-    }
-
-    func selectGridModel(_ option: CodexAppServerModelOption, effort: CodexAppServerReasoningEffort) {
+    func selectModel(
+        _ option: CodexAppServerModelOption,
+        effort: CodexAppServerReasoningEffort?
+    ) {
         composerState.updateTurnOptions { options in
-            options.runtimeProvider = option.runtimeProvider
-            options.model = option.model
-            options.modelProvider = option.provider
-            options.reasoningEffort = effort
-            if normalizedRuntimeProvider(option.runtimeProvider) == "claude" {
-                options.serviceTier = nil
-            }
-        }
-    }
-
-    func selectModelOnly(_ option: CodexAppServerModelOption?) {
-        let layout = modelReasoningGridLayout
-        composerState.updateTurnOptions { options in
-            options.runtimeProvider = option?.runtimeProvider ?? payloadRuntimeProviderForSelectedSessionLock()
-            options.model = option?.model
-            options.modelProvider = option?.provider
-            options.reasoningEffort = ModelReasoningGridCatalog.reasoningEffortForModelSelection(
+            ModelReasoningGridCatalog.applySelection(
                 option: option,
-                current: options.reasoningEffort,
-                layout: layout
-            )
-            if normalizedRuntimeProvider(options.runtimeProvider) == "claude" {
-                options.serviceTier = nil
-            }
-        }
-    }
-
-    var reasoningEffortMenu: some View {
-        Menu {
-            reasoningEffortOptions
-        } label: {
-            composerToolbarControlLabel(
-                title: L10n.format("ui.reasoning_value", reasoningEffortTitle),
-                systemImage: "brain.head.profile",
-                accessibilityLabel: L10n.text("ui.reasoning_strength")
+                effort: effort,
+                preservesServerDefault: false,
+                fallbackRuntimeProvider: payloadRuntimeProviderForSelectedSessionLock(),
+                to: &options
             )
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.reasoning_strength"))
-        .accessibilityValue(reasoningEffortTitle)
-        .accessibilityHint(L10n.text("ui.choose_the_depth_of_thinking_for_the_next"))
-        .help(L10n.format("ui.inference_strength_value", reasoningEffortTitle))
     }
 
-    @ViewBuilder
-    var reasoningEffortOptions: some View {
-        Button {
-            composerState.updateTurnOptions { $0.reasoningEffort = nil }
-        } label: {
-            Label(L10n.text("ui.default_option"), systemImage: composerState.turnOptions.reasoningEffort == nil ? "checkmark" : "brain.head.profile")
-        }
-        ForEach(standaloneReasoningEfforts) { effort in
-            Button {
-                composerState.updateTurnOptions { $0.reasoningEffort = effort }
-            } label: {
-                Label(
-                    reasoningEffortTitle(for: effort),
-                    systemImage: composerState.turnOptions.reasoningEffort == effort ? "checkmark" : "brain.head.profile"
-                )
-            }
-        }
-    }
-
-    var standaloneReasoningEfforts: [CodexAppServerReasoningEffort] {
-        let layout = modelReasoningGridLayout
-        let option = effectiveModelID.flatMap { modelID in
-            modelOptionsForMenu.first {
-                $0.model.caseInsensitiveCompare(modelID) == .orderedSame
-            } ?? layout.row(matching: modelID)
-        }
-        return ModelReasoningGridCatalog.supportedEfforts(for: option, layout: layout)
-    }
-
-    var reasoningEffortTitle: String {
-        composerState.turnOptions.reasoningEffort.map { reasoningEffortTitle(for: $0) } ?? L10n.text("ui.default_option")
-    }
-
-    func reasoningEffortTitle(for effort: CodexAppServerReasoningEffort) -> String {
-        ModelReasoningGridCatalog.effortTitle(effort)
-    }
-
-    var serviceTierOptionsMenu: some View {
-        Menu {
-            Button(L10n.text("ui.default_option")) { composerState.updateTurnOptions { $0.serviceTier = nil } }
-            Button("auto") { composerState.updateTurnOptions { $0.serviceTier = "auto" } }
-            Button("priority") { composerState.updateTurnOptions { $0.serviceTier = "priority" } }
-            Button("flex") { composerState.updateTurnOptions { $0.serviceTier = "flex" } }
-        } label: {
-            Label(composerState.turnOptions.serviceTier ?? L10n.text("ui.speed_default"), systemImage: "speedometer")
+    func selectDefaultModel(
+        _ option: CodexAppServerModelOption,
+        effort: CodexAppServerReasoningEffort?
+    ) {
+        composerState.updateTurnOptions { options in
+            // Default Model 只借用服务端默认模型的强度菜单，协议层继续提交 model = nil。
+            ModelReasoningGridCatalog.applySelection(
+                option: option,
+                effort: effort,
+                preservesServerDefault: true,
+                fallbackRuntimeProvider: payloadRuntimeProviderForSelectedSessionLock(),
+                to: &options
+            )
         }
     }
 
@@ -1887,9 +1848,20 @@ struct ComposerView: View {
             return
         }
         let runtimeChanged = normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider) != runtimeProvider
-        let unsupportedEffort = composerState.turnOptions.reasoningEffort.map { effort in
-            !supportsReasoningEffort(effort, modelID: effectiveModelID)
-        } ?? false
+        let normalizedEffort: CodexAppServerReasoningEffort?
+        if developerModeEnabled {
+            normalizedEffort = composerState.turnOptions.reasoningEffort.flatMap { effort in
+                supportsReasoningEffort(effort, modelID: effectiveModelID) ? effort : nil
+            }
+        } else {
+            let option = modelOption(matching: effectiveModelID)
+            normalizedEffort = ModelReasoningGridCatalog.normalizedVisibleEffort(
+                option: option,
+                current: composerState.turnOptions.reasoningEffort,
+                layout: modelReasoningGridLayout
+            )
+        }
+        let unsupportedEffort = composerState.turnOptions.reasoningEffort != normalizedEffort
         let unsupportedServiceTier = runtimeProvider == "claude"
             && composerState.turnOptions.serviceTier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
 
@@ -1902,8 +1874,11 @@ struct ComposerView: View {
                 options.model = nil
                 options.modelProvider = nil
                 options.reasoningEffort = nil
+                if !developerModeEnabled {
+                    normalizeModelControlsForStandardComposer(&options)
+                }
             } else if unsupportedEffort {
-                options.reasoningEffort = nil
+                options.reasoningEffort = normalizedEffort
             }
             if runtimeProvider == "claude" {
                 options.serviceTier = nil
@@ -1915,17 +1890,43 @@ struct ComposerView: View {
         _ effort: CodexAppServerReasoningEffort,
         modelID: String?
     ) -> Bool {
-        let layout = modelReasoningGridLayout
-        let option = modelID.flatMap { resolvedModelID in
-            modelOptionsForMenu.first {
-                $0.model.caseInsensitiveCompare(resolvedModelID) == .orderedSame
-            } ?? layout.row(matching: resolvedModelID)
-        }
+        let option = modelOption(matching: modelID)
         guard let option else {
             // 未知/自定义模型继续走开发者模式原有能力，不能因本地目录不认识就擅自降级。
             return true
         }
-        return ModelReasoningGridCatalog.supports(effort, option: option, layout: layout)
+        return ModelReasoningGridCatalog.supports(
+            effort,
+            option: option,
+            kind: modelReasoningGridLayout.kind
+        )
+    }
+
+    func normalizeModelControlsForStandardComposer(
+        _ options: inout CodexAppServerTurnOptions
+    ) {
+        let modelID = ModelReasoningGridCatalog.effectiveModelID(
+            selectedModelID: options.model,
+            options: modelOptionsForMenu
+        )
+        let option = modelOption(matching: modelID)
+        options.reasoningEffort = ModelReasoningGridCatalog.normalizedVisibleEffort(
+            option: option,
+            current: options.reasoningEffort,
+            layout: modelReasoningGridLayout
+        )
+        // 普通模式只有 Fast 会写 priority；auto/flex 仅属于开发者高级选项。
+        options.serviceTier = ModelReasoningGridCatalog.normalizedStandardServiceTier(
+            options.serviceTier,
+            runtimeProvider: options.runtimeProvider
+        )
+    }
+
+    func modelOption(matching modelID: String?) -> CodexAppServerModelOption? {
+        guard let modelID else { return nil }
+        return modelOptionsForMenu.first {
+            $0.model.caseInsensitiveCompare(modelID) == .orderedSame
+        } ?? modelReasoningGridLayout.model(matching: modelID)
     }
 
     func payloadRuntimeProviderForSelectedSessionLock() -> String? {

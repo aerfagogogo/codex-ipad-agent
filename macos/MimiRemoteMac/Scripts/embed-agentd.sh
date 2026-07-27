@@ -43,6 +43,12 @@ trap 'rm -rf "$build_dir"' EXIT
 
 architectures=($ARCHS)
 outputs=()
+agent_version="${MARKETING_VERSION:-devel}"
+if [[ -n "${CURRENT_PROJECT_VERSION:-}" && "$agent_version" != "devel" ]]; then
+  # 同一个 marketing version 会有多个本地/发布构建；把 App build 写进 agentd，
+  # 才能识别更新 App 后 launchd 仍驻留旧二进制的情况。
+  agent_version="${agent_version}+mac.${CURRENT_PROJECT_VERSION}"
+fi
 for architecture in "${architectures[@]}"; do
   case "$architecture" in
     arm64) go_arch=arm64 ;;
@@ -57,7 +63,7 @@ for architecture in "${architectures[@]}"; do
     cd "$project_root"
     CGO_ENABLED=0 GOOS=darwin GOARCH="$go_arch" GOTOOLCHAIN=local \
       "$go_binary" build -trimpath \
-      -ldflags "-s -w -X main.version=${MARKETING_VERSION:-devel}" \
+      -ldflags "-s -w -X main.version=${agent_version}" \
       -o "$output" ./cmd/agentd
   )
   outputs+=("$output")

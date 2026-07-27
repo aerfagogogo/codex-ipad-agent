@@ -316,8 +316,8 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
 
         var planOptions = CodexAppServerTurnOptions.default
-        planOptions.model = "gpt-5-codex"
-        planOptions.reasoningEffort = .high
+        planOptions.model = "gpt-5.6-sol"
+        planOptions.reasoningEffort = .ultra
         planOptions.collaborationMode = .plan
         planOptions.planGuidanceEnabled = true
         let planPayload = CodexAppServerTurnPayload(prompt: "先做方案", options: planOptions)
@@ -326,8 +326,8 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let collaborationMode = try XCTUnwrap(planParams["collaborationMode"]?.objectValue)
         XCTAssertEqual(collaborationMode["mode"]?.stringValue, "plan")
         let settings = try XCTUnwrap(collaborationMode["settings"]?.objectValue)
-        XCTAssertEqual(settings["model"]?.stringValue, "gpt-5-codex")
-        XCTAssertEqual(settings["reasoning_effort"]?.stringValue, "high")
+        XCTAssertEqual(settings["model"]?.stringValue, "gpt-5.6-sol")
+        XCTAssertEqual(settings["reasoning_effort"]?.stringValue, "ultra")
         XCTAssertEqual(settings["developer_instructions"], .null)
 
         let standardPayload = CodexAppServerTurnPayload(prompt: "直接做", options: .default)
@@ -775,7 +775,9 @@ final class CodexAppServerProtocolTests: XCTestCase {
                     "supportedReasoningEfforts": .array([
                         .object(["reasoningEffort": .string("medium"), "description": .string("Balanced")]),
                         .object(["reasoningEffort": .string("high"), "description": .string("Deep")]),
-                        .object(["reasoningEffort": .string("xhigh"), "description": .string("Deepest")])
+                        .object(["reasoningEffort": .string("xhigh"), "description": .string("Deepest")]),
+                        .object(["reasoningEffort": .string("max"), "description": .string("Maximum")]),
+                        .object(["reasoningEffort": .string("ultra"), "description": .string("Ultra")])
                     ])
                 ])
             ])
@@ -783,11 +785,11 @@ final class CodexAppServerProtocolTests: XCTestCase {
 
         let option = try XCTUnwrap(parsed.first)
         XCTAssertEqual(option.title, "GPT-5.6 Sol")
-        XCTAssertEqual(option.supportedReasoningEfforts, ["medium", "high", "xhigh"])
+        XCTAssertEqual(option.supportedReasoningEfforts, ["medium", "high", "xhigh", "max", "ultra"])
         XCTAssertEqual(option.defaultReasoningEffort, "low")
         XCTAssertFalse(option.hidden)
         XCTAssertEqual(
-            ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: parsed).rows.map(\.model),
+            ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: parsed).models.map(\.model),
             ["gpt-5.6-sol"]
         )
     }
@@ -828,24 +830,34 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: options)
 
         XCTAssertEqual(
-            layout.rows.map(\.model),
+            layout.models.map(\.model),
             ["claude-fable-5", "claude-opus-5", "claude-sonnet-4-6"]
         )
         XCTAssertEqual(
-            layout.rows.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
+            layout.models.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
             ["Claude Fable 5", "Claude Opus 5", "Claude Sonnet 4.6"]
         )
-        XCTAssertEqual(layout.efforts, [.high, .xhigh, .max])
+        XCTAssertEqual(layout.efforts, [.medium, .high, .xhigh, .max])
+        XCTAssertEqual(layout.modelRowCount, 3)
+        XCTAssertEqual(layout.effortColumnCount, 4)
+        XCTAssertEqual(
+            layout.selection(modelRow: 0, effortColumn: 0),
+            ModelReasoningGridSelection(modelID: "claude-fable-5", effort: .medium)
+        )
+        XCTAssertEqual(
+            layout.selection(modelRow: 2, effortColumn: 3),
+            ModelReasoningGridSelection(modelID: "claude-sonnet-4-6", effort: .max)
+        )
         XCTAssertFalse(layout.contains(modelID: "fable"), "未返回的 alias 不应再被本地映射成具体模型")
         XCTAssertFalse(layout.contains(modelID: "claude-haiku-4-5-20251001"), "网格只展示运行时返回的前三个模型")
         XCTAssertFalse(layout.showsFastMode)
         XCTAssertEqual(
             ModelReasoningGridCatalog.triggerTitle(for: "claude-fable-5", effort: .max, layout: layout),
-            "Claude Fable 5 · max"
+            "Claude Fable 5 · Max"
         )
         XCTAssertEqual(
             ModelReasoningGridCatalog.triggerTitle(for: "claude-sonnet-4-6", effort: .high, layout: layout),
-            "Claude Sonnet 4.6 · high"
+            "Claude Sonnet 4.6 · High"
         )
     }
 
@@ -863,18 +875,19 @@ final class CodexAppServerProtocolTests: XCTestCase {
         )
         let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: [sonnet, opus])
 
-        XCTAssertEqual(layout.efforts, [.high, .xhigh, .max])
-        XCTAssertFalse(ModelReasoningGridCatalog.supports(.xhigh, option: sonnet, layout: layout))
-        XCTAssertTrue(ModelReasoningGridCatalog.supports(.xhigh, option: opus, layout: layout))
-        XCTAssertNil(
-            ModelReasoningGridCatalog.reasoningEffortForModelSelection(
+        XCTAssertEqual(layout.efforts, [.medium, .high, .xhigh, .max])
+        XCTAssertFalse(ModelReasoningGridCatalog.isStandardEffortAvailable(.xhigh, option: sonnet, layout: layout))
+        XCTAssertTrue(ModelReasoningGridCatalog.isStandardEffortAvailable(.xhigh, option: opus, layout: layout))
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.normalizedVisibleEffort(
                 option: sonnet,
                 current: .xhigh,
                 layout: layout
-            )
+            ),
+            .medium
         )
         XCTAssertEqual(
-            ModelReasoningGridCatalog.reasoningEffortForModelSelection(
+            ModelReasoningGridCatalog.normalizedVisibleEffort(
                 option: opus,
                 current: .medium,
                 layout: layout
@@ -882,12 +895,192 @@ final class CodexAppServerProtocolTests: XCTestCase {
             .xhigh
         )
         XCTAssertEqual(
-            ModelReasoningGridCatalog.supportedEfforts(for: sonnet, layout: layout),
-            [.high]
+            ModelReasoningGridCatalog.visibleEfforts(for: sonnet, layout: layout),
+            [.medium, .high]
         )
         XCTAssertEqual(
-            ModelReasoningGridCatalog.supportedEfforts(for: opus, layout: layout),
+            ModelReasoningGridCatalog.visibleEfforts(for: opus, layout: layout),
             [.xhigh, .max]
+        )
+    }
+
+    func testCodexStandardMenuKeepsFullCapabilitiesButHidesLowAndMax() {
+        let options = CodexAppServerModelOption.builtInFallback
+        let sol = options[0]
+        let terra = options[1]
+        let luna = options[2]
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: options)
+
+        XCTAssertEqual(layout.efforts, [.medium, .high, .xhigh, .ultra])
+        XCTAssertEqual(layout.modelRowCount, 3)
+        XCTAssertEqual(layout.effortColumnCount, 4)
+        XCTAssertEqual(
+            layout.selection(modelRow: 2, effortColumn: 3),
+            ModelReasoningGridSelection(modelID: luna.model, effort: .ultra)
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.allSupportedEfforts(for: sol),
+            [.low, .medium, .high, .xhigh, .max, .ultra]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.allSupportedEfforts(for: terra),
+            [.low, .medium, .high, .xhigh, .max, .ultra]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.allSupportedEfforts(for: luna),
+            [.low, .medium, .high, .xhigh, .max]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: sol, layout: layout),
+            [.medium, .high, .xhigh, .ultra]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: terra, layout: layout),
+            [.medium, .high, .xhigh, .ultra]
+        )
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: luna, layout: layout),
+            [.medium, .high, .xhigh]
+        )
+        XCTAssertEqual(sol.defaultReasoningEffort, "low")
+        XCTAssertEqual(terra.defaultReasoningEffort, "medium")
+        XCTAssertEqual(luna.defaultReasoningEffort, "medium")
+        XCTAssertTrue(ModelReasoningGridCatalog.supports(.ultra, option: sol))
+        XCTAssertFalse(ModelReasoningGridCatalog.supports(.ultra, option: luna))
+        XCTAssertFalse(ModelReasoningGridCatalog.isStandardEffortAvailable(.max, option: sol, layout: layout))
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.normalizedVisibleEffort(
+                option: luna,
+                current: .ultra,
+                layout: layout
+            ),
+            .medium
+        )
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.max), "Max")
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.ultra), "Ultra")
+    }
+
+    func testEmptyReasoningMetadataUsesProviderSpecificFallback() {
+        let codex = CodexAppServerModelOption(
+            id: "legacy-codex",
+            runtimeProvider: "codex",
+            supportedReasoningEfforts: []
+        )
+        let claude = CodexAppServerModelOption(
+            id: "claude-haiku",
+            supportedReasoningEfforts: []
+        )
+        let codexLayout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: [codex])
+        let claudeLayout = ModelReasoningGridCatalog.layout(runtimeProvider: "claude", options: [claude])
+
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.visibleEfforts(for: codex, layout: codexLayout),
+            [.medium, .high, .xhigh, .ultra]
+        )
+        XCTAssertTrue(ModelReasoningGridCatalog.visibleEfforts(for: claude, layout: claudeLayout).isEmpty)
+        XCTAssertNil(
+            ModelReasoningGridCatalog.normalizedVisibleEffort(
+                option: claude,
+                current: .max,
+                layout: claudeLayout
+            )
+        )
+    }
+
+    func testAllModelsSelectionUpdatesModelAndEffortTogether() {
+        let codex = CodexAppServerModelOption(
+            id: "gpt-5.6-sol",
+            title: "GPT-5.6 Sol",
+            provider: "openai",
+            runtimeProvider: "codex",
+            supportedReasoningEfforts: ["medium", "high", "xhigh", "ultra"]
+        )
+        var options = CodexAppServerTurnOptions.default
+
+        ModelReasoningGridCatalog.applySelection(
+            option: codex,
+            effort: .ultra,
+            preservesServerDefault: false,
+            fallbackRuntimeProvider: nil,
+            to: &options
+        )
+
+        XCTAssertEqual(options.model, "gpt-5.6-sol")
+        XCTAssertEqual(options.modelProvider, "openai")
+        XCTAssertEqual(options.reasoningEffort, .ultra)
+
+        ModelReasoningGridCatalog.applySelection(
+            option: codex,
+            effort: .high,
+            preservesServerDefault: true,
+            fallbackRuntimeProvider: nil,
+            to: &options
+        )
+
+        XCTAssertNil(options.model)
+        XCTAssertNil(options.modelProvider)
+        XCTAssertEqual(options.reasoningEffort, .high)
+    }
+
+    func testNoNativeEffortModelClearsEffortAndClaudeServiceTier() {
+        let haiku = CodexAppServerModelOption(
+            id: "haiku",
+            provider: "anthropic",
+            runtimeProvider: "claude",
+            supportedReasoningEfforts: []
+        )
+        var options = CodexAppServerTurnOptions.default
+        options.serviceTier = "priority"
+
+        ModelReasoningGridCatalog.applySelection(
+            option: haiku,
+            effort: nil,
+            preservesServerDefault: false,
+            fallbackRuntimeProvider: nil,
+            to: &options
+        )
+
+        XCTAssertEqual(options.model, "haiku")
+        XCTAssertNil(options.reasoningEffort)
+        XCTAssertNil(options.serviceTier)
+    }
+
+    func testLeavingDeveloperMaxFallsBackToStandardCodexEffort() {
+        let sol = CodexAppServerModelOption.builtInFallback[0]
+        let layout = ModelReasoningGridCatalog.layout(runtimeProvider: "codex", options: [sol])
+
+        XCTAssertTrue(ModelReasoningGridCatalog.supports(.max, option: sol))
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.normalizedVisibleEffort(
+                option: sol,
+                current: .max,
+                layout: layout
+            ),
+            .medium
+        )
+    }
+
+    func testFastModeIsTheOnlyStandardServiceTierEntry() {
+        XCTAssertEqual(ModelReasoningGridCatalog.serviceTierForFastMode(true), "priority")
+        XCTAssertNil(ModelReasoningGridCatalog.serviceTierForFastMode(false))
+        XCTAssertEqual(
+            ModelReasoningGridCatalog.normalizedStandardServiceTier(
+                "priority",
+                runtimeProvider: "codex"
+            ),
+            "priority"
+        )
+        XCTAssertNil(
+            ModelReasoningGridCatalog.normalizedStandardServiceTier(
+                "auto",
+                runtimeProvider: "codex"
+            )
+        )
+        XCTAssertNil(
+            ModelReasoningGridCatalog.normalizedStandardServiceTier(
+                "priority",
+                runtimeProvider: "claude"
+            )
         )
     }
 

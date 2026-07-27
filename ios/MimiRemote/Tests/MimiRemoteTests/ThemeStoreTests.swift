@@ -168,8 +168,8 @@ final class ThemeStoreTests: XCTestCase {
         XCTAssertEqual(ThemePreset.codex.title, L10n.text("ui.warm_sun"))
         XCTAssertEqual(ThemePreset.codex.subtitle, L10n.text("ui.neutral_warm_white_with_a_single_main_color"))
 
-        assertRGB(lightBackground, red: 250, green: 245, blue: 237)
-        assertRGB(lightSidebarBackground, red: 250, green: 245, blue: 237)
+        assertRGB(lightBackground, red: 250, green: 247, blue: 241)
+        assertRGB(lightSidebarBackground, red: 250, green: 247, blue: 241)
         assertRGB(lightSelectionFill, red: 239, green: 236, blue: 237)
         assertRGB(lightSidebarHoverFill, red: 240, green: 239, blue: 237)
         assertRGB(lightInputBackground, red: 255, green: 255, blue: 255)

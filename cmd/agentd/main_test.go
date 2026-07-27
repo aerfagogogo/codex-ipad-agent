@@ -880,6 +880,11 @@ func TestAgentStatusAggregatesHealthAndReadiness(t *testing.T) {
 			if fields["process_ok"] != true || fields["service_ok"] != testCase.wantServiceOK {
 				t.Fatalf("status JSON 字段语义错误：%v", fields)
 			}
+			if testCase.readyVersion != "" &&
+				testCase.clientToken == serverToken &&
+				fields["server_version"] != testCase.readyVersion {
+				t.Fatalf("status 必须保留 Endpoint 的真实服务版本：%v", fields)
+			}
 			serviceError, _ := fields["service_error"].(string)
 			if testCase.wantReadyError == "" {
 				if serviceError != "" {
@@ -1195,8 +1200,34 @@ func TestWaitForServiceReadyAllowsDevelopmentClientVersion(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := waitForServiceReady(context.Background(), server.URL, "token", "devel", time.Second); err != nil {
-		t.Fatalf("默认开发版本不应误伤本地测试服务：%v", err)
+	for _, clientVersion := range []string{"devel", "devel-e6049e97bd9d"} {
+		if err := waitForServiceReady(context.Background(), server.URL, "token", clientVersion, time.Second); err != nil {
+			t.Fatalf("开发版本 %q 不应误伤本地测试服务：%v", clientVersion, err)
+		}
+	}
+}
+
+func TestAgentVersionsKeepMacBuildStrictButAllowReleaseCLI(t *testing.T) {
+	tests := []struct {
+		expected string
+		running  string
+		want     bool
+	}{
+		{expected: "0.1.5", running: "0.1.5+mac.240", want: true},
+		{expected: "0.1.5+mac.240", running: "0.1.5+mac.240", want: true},
+		{expected: "0.1.5+mac.240", running: "0.1.5+mac.239", want: false},
+		{expected: "0.1.6", running: "0.1.5+mac.240", want: false},
+	}
+	for _, testCase := range tests {
+		if got := agentVersionsCompatible(testCase.expected, testCase.running); got != testCase.want {
+			t.Fatalf(
+				"agentd 版本兼容判断错误：expected=%q running=%q got=%v want=%v",
+				testCase.expected,
+				testCase.running,
+				got,
+				testCase.want,
+			)
+		}
 	}
 }
 

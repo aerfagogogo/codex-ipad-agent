@@ -356,6 +356,17 @@ func TestGitStatusSummaryReturnsMetadataWithoutDiff(t *testing.T) {
 	if len(response.Files) != 1 || response.Files[0].Path != "README.md" {
 		t.Fatalf("摘要应包含结构化文件状态：%+v", response.Files)
 	}
+	var rawResponse struct {
+		Files []map[string]any `json:"files"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rawResponse); err != nil {
+		t.Fatalf("响应无法按原始 JSON 检查：%v", err)
+	}
+	for _, key := range []string{"staged", "unstaged", "untracked"} {
+		if _, ok := rawResponse.Files[0][key]; !ok {
+			t.Fatalf("文件状态必须显式返回 %q，避免严格客户端解码失败：%s", key, rec.Body.String())
+		}
+	}
 	if response.StatusText != "" || response.DiffStat != "" || response.UnstagedDiff != "" || response.StagedDiff != "" {
 		t.Fatalf("轻量摘要不应生成完整状态文本或 diff：%+v", response)
 	}

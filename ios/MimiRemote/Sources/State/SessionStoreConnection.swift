@@ -601,6 +601,7 @@ extension SessionStore {
                     dispatchNextQueuedRunningTurnIfIdle(sessionID: id)
                 }
             }
+            scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: id)
         }
         await scheduleRuntimeNotificationIfNeeded(runtimeNotification)
     }
@@ -974,6 +975,14 @@ extension SessionStore {
         let existing = runtimeActivityBySessionID[sessionID]
         let resolvedStart = turnStartedAt ?? existing?.turnStartedAt ?? activityAt
         let next = RuntimeActivitySnapshot(turnStartedAt: resolvedStart, lastActivityAt: activityAt)
+        if let existing, existing.turnStartedAt == resolvedStart {
+            let elapsed = activityAt.timeIntervalSince(existing.lastActivityAt)
+            // 流式事件可能几十毫秒一次。活动时间只用于“仍在运行”的视觉提示，
+            // 合并短间隔更新可避免 Debug/-Onone 下反复刷新整棵 SessionStore 观察树。
+            if elapsed >= 0, elapsed < 1 {
+                return
+            }
+        }
         guard existing != next else {
             return
         }
@@ -1623,6 +1632,7 @@ extension SessionStore {
         historyLoadJobTokenBySessionID = [:]
         historyLoadedSignatureBySessionID = [:]
         historyLoadedQualityBySessionID = [:]
+        deferredFullHistorySessionIDs = []
         freshEmptyHistorySignatureBySessionID = [:]
         initialHistoryLoadingSessionIDs = []
         historyLoadProgressBySessionID = [:]

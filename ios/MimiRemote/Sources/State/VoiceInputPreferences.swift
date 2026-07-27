@@ -38,9 +38,11 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
     var icon: VoiceInputProviderIcon {
         switch self {
         case .codex:
-            return .asset("ChatGPT")
+            // 这里表达的是“录音后转写”能力，不再嵌入第三方品牌图标；
+            // 使用系统波形后，也能和设备端的 Siri 标识保持同一套视觉语言。
+            return .system("waveform")
         case .apple:
-            return .system("waveform.badge.mic")
+            return .system("siri")
         }
     }
 

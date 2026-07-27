@@ -30,12 +30,14 @@ final class AgentModelsTests: XCTestCase {
     }
 
     func testStatusPayloadDecodesDoctorAndReadinessSeparately() throws {
-        let raw = Data(#"{"process_ok":true,"service_ok":false,"service_error":"upstream unavailable","version":"0.1.0","endpoint":"http://127.0.0.1:8787","config_path":"/tmp/config.json","projects":2,"doctor_ok":true,"doctor":{"ok":true,"version":"0.1.0","listen":"127.0.0.1:8787","checks":[]}}"#.utf8)
+        let raw = Data(#"{"process_ok":true,"service_ok":false,"service_error":"upstream unavailable","version":"0.1.1+mac.240","server_version":"0.1.0+mac.239","endpoint":"http://127.0.0.1:8787","config_path":"/tmp/config.json","projects":2,"doctor_ok":true,"doctor":{"ok":true,"version":"0.1.0+mac.239","listen":"127.0.0.1:8787","checks":[]}}"#.utf8)
         let status = try JSONDecoder().decode(AgentStatus.self, from: raw)
 
         XCTAssertTrue(status.processOK)
         XCTAssertFalse(status.serviceOK)
         XCTAssertEqual(status.serviceError, "upstream unavailable")
+        XCTAssertEqual(status.serverVersion, "0.1.0+mac.239")
+        XCTAssertTrue(status.hasAgentVersionMismatch)
         XCTAssertTrue(status.doctor.ok)
     }
 
@@ -58,6 +60,8 @@ final class AgentModelsTests: XCTestCase {
                 "title": "Codex",
                 "enabled": true,
                 "state": "connected",
+                "version": "0.146.0-alpha.3.1",
+                "started_at": "2026-07-27T08:30:00Z",
                 "auth_mode": "chatgpt",
                 "plan_type": "plus",
                 "rate_limits": {
@@ -80,6 +84,7 @@ final class AgentModelsTests: XCTestCase {
                 "title": "Claude",
                 "enabled": false,
                 "state": "disabled",
+                "version": "0.2.6",
                 "reason": "disabled"
               }
             ]
@@ -91,6 +96,12 @@ final class AgentModelsTests: XCTestCase {
         let snapshot = try XCTUnwrap(status.runtimeStatus)
         let runtimes = snapshot.runtimes
         XCTAssertEqual(runtimes.map(\.id), ["codex", "claude"])
+        XCTAssertEqual(runtimes.map(\.version), ["0.146.0-alpha.3.1", "0.2.6"])
+        XCTAssertEqual(
+            runtimes[0].startedDate,
+            ISO8601DateFormatter().date(from: "2026-07-27T08:30:00Z")
+        )
+        XCTAssertNil(runtimes[1].startedDate)
         let checkedDate = try XCTUnwrap(snapshot.checkedDate)
         XCTAssertFalse(snapshot.isExpired(at: checkedDate.addingTimeInterval(60)))
         XCTAssertTrue(snapshot.isExpired(at: checkedDate.addingTimeInterval(121)))

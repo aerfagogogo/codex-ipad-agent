@@ -356,7 +356,11 @@ extension SessionStore {
         )
         historyLoadJobsBySessionID[session.id] = job
         if !quiet {
-            setHistoryLoadNotice(sessionID: session.id, kind: loadMode == .full ? .loadingFull : .loadingSummary)
+            setHistoryLoadNotice(
+                sessionID: session.id,
+                kind: loadMode == .full ? .loadingFull : .loadingSummary,
+                message: loadMode == .economy ? deferredFullHistoryNotice(sessionID: session.id) : nil
+            )
         }
 
         if !quiet {
@@ -390,7 +394,8 @@ extension SessionStore {
         historyLoadJobsBySessionID[sessionID] = current
         setHistoryLoadNotice(
             sessionID: sessionID,
-            kind: current.loadMode == .full ? .loadingFull : .loadingSummary
+            kind: current.loadMode == .full ? .loadingFull : .loadingSummary,
+            message: current.loadMode == .economy ? deferredFullHistoryNotice(sessionID: sessionID) : nil
         )
     }
 
@@ -470,9 +475,19 @@ extension SessionStore {
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
         historyLoadedQualityBySessionID[sessionID] = job.loadMode == .full ? .full : .summary
         if job.loadMode == .full {
+            deferredFullHistorySessionIDs.remove(sessionID)
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
         } else if !effectiveQuiet {
-            setHistoryLoadNotice(sessionID: sessionID, kind: .summaryLoaded)
+            setHistoryLoadNotice(
+                sessionID: sessionID,
+                kind: .summaryLoaded,
+                message: deferredFullHistoryNotice(sessionID: sessionID)
+            )
+        }
+        if job.loadMode == .economy {
+            // Turn 可能在 summary 请求尚未返回时就完成；等当前 job 落盘后再补拉 full，
+            // 避免不同模式的并发请求互相抢占并丢失恢复机会。
+            scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: sessionID)
         }
         if let effectiveSuccessStatusMessage {
             setStatusMessage(effectiveSuccessStatusMessage)
@@ -504,7 +519,11 @@ extension SessionStore {
         if let policyFailure = historyPolicyFailure(from: error) {
             switch job.loadMode {
             case .full:
-                let message = L10n.text("ui.the_full_history_content_is_large_and_the")
+                if policyFailure.reason == "history_response_too_large", session.isRunning {
+                    deferredFullHistorySessionIDs.insert(sessionID)
+                }
+                let message = deferredFullHistoryNotice(sessionID: sessionID)
+                    ?? L10n.text("ui.the_full_history_content_is_large_and_the")
                 if !effectiveQuiet {
                     setHistoryLoadNotice(sessionID: sessionID, kind: .loadingSummary, message: message)
                     setStatusMessage(message)
@@ -665,7 +684,11 @@ extension SessionStore {
         } else {
             retryAfterNanoseconds = nil
         }
-        return HistoryPolicyFailure(retryAfterNanoseconds: retryAfterNanoseconds, retryAfterSeconds: retryAfterSeconds)
+        return HistoryPolicyFailure(
+            reason: reason,
+            retryAfterNanoseconds: retryAfterNanoseconds,
+            retryAfterSeconds: retryAfterSeconds
+        )
     }
 
     func boundedHistoryPolicyRetryNanoseconds(_ nanoseconds: UInt64) -> UInt64 {
@@ -717,6 +740,56 @@ extension SessionStore {
         }
         let message = customMessage ?? defaultMessage
         historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(sessionID: sessionID, kind: kind, message: message)
+    }
+
+    func deferredFullHistoryNotice(sessionID: SessionID) -> String? {
+        guard deferredFullHistorySessionIDs.contains(sessionID) else {
+            return nil
+        }
+        return L10n.text("ui.the_full_history_will_be_restored_after_the_current_turn")
+    }
+
+    /// full 响应只在 Turn 运行期间因过程项临时膨胀时才进入该路径。完成事件已经先把
+    /// session 更新为 completed；这里异步补拉，避免历史网络请求阻塞事件队列和完成通知。
+    func scheduleDeferredFullHistoryReloadAfterTurnCompletion(sessionID: SessionID) {
+        guard deferredFullHistorySessionIDs.contains(sessionID),
+              selectedSessionID == sessionID,
+              queuedRunningTurnsBySessionID[sessionID]?.isEmpty != false,
+              historyLoadJobsBySessionID[sessionID] == nil,
+              let session = sessionsByID[sessionID],
+              !session.isRunning
+        else {
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            await Task.yield()
+            guard self.deferredFullHistorySessionIDs.contains(sessionID),
+                  self.selectedSessionID == sessionID,
+                  self.queuedRunningTurnsBySessionID[sessionID]?.isEmpty != false,
+                  self.historyLoadJobsBySessionID[sessionID] == nil,
+                  let latestSession = self.sessionsByID[sessionID],
+                  !latestSession.isRunning
+            else {
+                return
+            }
+            // 发起 canonical full 前移除标记；若完成后的 full 仍然过大，应回到普通缩略提示，
+            // 不能继续声称会在“当前 Turn 完成后”恢复。
+            self.deferredFullHistorySessionIDs.remove(sessionID)
+            let didLoad = await self.loadHistory(
+                for: latestSession,
+                quiet: true,
+                loadMode: .full,
+                force: true,
+                reason: .automatic
+            )
+            if !didLoad,
+               self.historyLoadedQualityBySessionID[sessionID] == .summary {
+                self.setHistoryLoadNotice(sessionID: sessionID, kind: .summaryLoaded)
+            }
+        }
     }
 
     func refreshSelectedSessionContent(
@@ -812,7 +885,11 @@ extension SessionStore {
             historySavingsNoticesBySessionID.removeValue(forKey: sessionID)
             return
         }
-        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(sessionID: sessionID, kind: .summaryLoaded, message: notice)
+        historySavingsNoticesBySessionID[sessionID] = HistorySavingsNotice(
+            sessionID: sessionID,
+            kind: .summaryLoaded,
+            message: deferredFullHistoryNotice(sessionID: sessionID) ?? notice
+        )
     }
 
     func scheduleSessionStateReconciliationAfterHistoryRefresh(_ session: AgentSession) {
@@ -1991,6 +2068,7 @@ extension SessionStore {
         historyLoadJobTokenBySessionID = historyLoadJobTokenBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedSignatureBySessionID = historyLoadedSignatureBySessionID.filter { validSessionIDs.contains($0.key) }
         historyLoadedQualityBySessionID = historyLoadedQualityBySessionID.filter { validSessionIDs.contains($0.key) }
+        deferredFullHistorySessionIDs.formIntersection(validSessionIDs)
         let staleHistoryFirstPageKeys = historyFirstPageInFlightByKey.keys.filter { !validSessionIDs.contains($0.sessionID) }
         for key in staleHistoryFirstPageKeys {
             historyFirstPageInFlightByKey[key]?.task.cancel()

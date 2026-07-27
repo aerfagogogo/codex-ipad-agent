@@ -14,6 +14,7 @@ final class HostStore {
     private(set) var recentLogs: [String] = []
     private(set) var appliedFixes: [String] = []
     private(set) var isBusy = false
+    private(set) var isStoppingForQuit = false
     private(set) var isRefreshingStatus = false
     private(set) var homebrewLoaded = false
     private(set) var launchesAtLogin = false
@@ -28,22 +29,28 @@ final class HostStore {
     private let homebrew: HomebrewServiceClient
     private let health: HealthClient
     private let logs: AgentLogClient
+    private let terminateApplication: @MainActor () -> Void
     private var didBootstrap = false
     private var monitorTask: Task<Void, Never>?
     private var runtimeStatusFollowUpTask: Task<Void, Never>?
+    private var stopServiceAndQuitTask: Task<Void, Never>?
 
     init(
         agent: AgentCommandClient,
         services: ServiceManagementClient,
         homebrew: HomebrewServiceClient,
         health: HealthClient,
-        logs: AgentLogClient
+        logs: AgentLogClient,
+        terminateApplication: @escaping @MainActor () -> Void = {
+            NSApplication.shared.terminate(nil)
+        }
     ) {
         self.agent = agent
         self.services = services
         self.homebrew = homebrew
         self.health = health
         self.logs = logs
+        self.terminateApplication = terminateApplication
     }
 
     static func live() -> HostStore {
@@ -159,7 +166,7 @@ final class HostStore {
         lastError = nil
         defer { isBusy = false }
         do {
-            try await services.unregisterAgent()
+            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
             try await homebrew.start()
             try await waitForHomebrewReady(binary: oldAgent)
             homebrewLoaded = true
@@ -330,10 +337,7 @@ final class HostStore {
         lastError = nil
         defer { isBusy = false }
         do {
-            try await services.unregisterAgent()
-            // SMAppService.unregister() 返回时，launchd 的注册状态仍可能短暂保持 enabled。
-            // 必须等状态真正落到未注册后再注册，否则第一次重启可能只完成停止。
-            try await waitForMacAgentUnregistered()
+            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
             try services.registerAgent()
             try await waitForMacAgentReady()
         } catch {
@@ -341,15 +345,26 @@ final class HostStore {
         }
     }
 
-    /// 用户明确选择退出时才停止服务；停止失败则保留 App，避免制造错误的“已经断开”认知。
-    func stopServiceAndQuit() async {
-        guard !isBusy else { return }
+    /// 菜单栏弹窗关闭后对应 View 可能立即销毁，因此停止任务必须由长生命周期的 Store 持有。
+    /// 这个同步入口还会立即更新 UI，让用户明确知道点击已经生效。
+    func requestStopServiceAndQuit() {
+        guard !isBusy, stopServiceAndQuitTask == nil else { return }
         isBusy = true
+        isStoppingForQuit = true
         lastError = nil
+        stopServiceAndQuitTask = Task { [weak self] in
+            await self?.performStopServiceAndQuit()
+        }
+    }
+
+    /// 用户明确选择退出时才停止服务；停止失败则保留 App，避免制造错误的“已经断开”认知。
+    private func performStopServiceAndQuit() async {
         do {
             switch owner {
             case .macApp:
-                try await services.unregisterAgent()
+                // App 退出前确认 LaunchAgent 已注销且 HTTP listener 已关闭；
+                // agentd 的 shutdown 会在这段时间同步回收 resident Claude bridge。
+                try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
             case .homebrew:
                 try await homebrew.stop()
             case .none:
@@ -357,9 +372,11 @@ final class HostStore {
             }
             owner = .none
             lifecycle = .stopped
-            NSApplication.shared.terminate(nil)
+            terminateApplication()
         } catch {
             isBusy = false
+            isStoppingForQuit = false
+            stopServiceAndQuitTask = nil
             fail(error)
         }
     }
@@ -368,7 +385,23 @@ final class HostStore {
         switch services.agentStatus() {
         case .enabled:
             owner = .macApp
-            await refreshMacAgentStatus()
+            do {
+                let current = try await agent.status()
+                status = current
+                doctor = current.doctor
+                if current.hasAgentVersionMismatch {
+                    // 覆盖安装不会自动替换 launchd 已映射的旧二进制。只在 App
+                    // 启动阶段发现明确版本漂移时做一次受控换代，避免长期半更新。
+                    lifecycle = .starting
+                    try await unregisterMacAgentAndWait(endpoint: current.endpoint)
+                    try services.registerAgent()
+                    try await waitForMacAgentReady()
+                } else {
+                    apply(current)
+                }
+            } catch {
+                fail(error)
+            }
         case .notRegistered:
             lifecycle = .starting
             do {
@@ -422,6 +455,29 @@ final class HostStore {
             }
         }
         throw ServiceLifecycleError.unregisterTimedOut
+    }
+
+    private func unregisterMacAgentAndWait(endpoint: String?) async throws {
+        try await services.unregisterAgent()
+        // SMAppService.unregister() 返回时，launchd 的注册状态仍可能短暂保持 enabled。
+        // 先等状态落到未注册，再确认旧 listener 消失，防止新注册误连到旧进程。
+        try await waitForMacAgentUnregistered()
+        if let endpoint {
+            try await waitForMacAgentStopped(endpoint: endpoint)
+        }
+    }
+
+    private func waitForMacAgentStopped(endpoint: String) async throws {
+        for attempt in 0..<30 {
+            try Task.checkCancellation()
+            if !(await health.check(endpoint)) {
+                return
+            }
+            if attempt < 29 {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        throw ServiceLifecycleError.stopTimedOut
     }
 
     private func waitForHomebrewReady(binary: URL) async throws {
@@ -644,7 +700,8 @@ final class HostStore {
             serviceOK: true,
             processError: nil,
             serviceError: nil,
-            version: "0.1.0",
+            version: "0.1.0+mac.240",
+            serverVersion: "0.1.0+mac.240",
             endpoint: "http://100.64.0.8:8787",
             configPath: "~/Library/Application Support/mimi-remote/config.json",
             projects: 12,
@@ -659,6 +716,10 @@ final class HostStore {
                         title: "Codex",
                         enabled: true,
                         state: .connected,
+                        version: "0.146.0-alpha.3.1",
+                        startedAt: ISO8601DateFormatter().string(
+                            from: Date().addingTimeInterval(-49 * 60 * 60)
+                        ),
                         authMode: "chatgpt",
                         planType: "plus",
                         reason: nil,
@@ -689,6 +750,10 @@ final class HostStore {
                         title: "Claude",
                         enabled: true,
                         state: .connected,
+                        version: "0.2.6",
+                        startedAt: ISO8601DateFormatter().string(
+                            from: Date().addingTimeInterval(-7.5 * 60 * 60)
+                        ),
                         authMode: "oauth",
                         planType: "pro",
                         reason: nil,
@@ -770,6 +835,7 @@ final class HostStore {
 
 private enum ServiceLifecycleError: LocalizedError {
     case unregisterTimedOut
+    case stopTimedOut
     case requiresApproval
     case agentNotFound
 
@@ -777,6 +843,8 @@ private enum ServiceLifecycleError: LocalizedError {
         switch self {
         case .unregisterTimedOut:
             "服务停止超时，未继续启动；请稍后重试。"
+        case .stopTimedOut:
+            "旧服务仍占用当前 Endpoint，未继续启动新版本；请稍后重试。"
         case .requiresApproval:
             "请先在系统设置的登录项中允许 Mimi Remote Mac。"
         case .agentNotFound:

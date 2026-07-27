@@ -62,6 +62,7 @@ struct HistoryFirstPageFetchFailure: LocalizedError {
 }
 
 struct HistoryPolicyFailure: Equatable {
+    let reason: String?
     let retryAfterNanoseconds: UInt64?
     let retryAfterSeconds: Int?
 }
@@ -399,6 +400,8 @@ protocol SessionReminderScheduling {
 }
 
 struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
+    static let runtimeNotificationIDPrefix = "mimi.sessionRuntime."
+
     let center: UNUserNotificationCenter
 
     init(center: UNUserNotificationCenter = .current()) {
@@ -512,7 +515,11 @@ struct UserNotificationSessionReminderScheduler: SessionReminderScheduling {
     }
 
     static func runtimeNotificationID(for id: String) -> String {
-        "mimi.sessionRuntime.\(id)"
+        "\(runtimeNotificationIDPrefix)\(id)"
+    }
+
+    static func isRuntimeNotificationID(_ identifier: String) -> Bool {
+        identifier.hasPrefix(runtimeNotificationIDPrefix)
     }
 }
 

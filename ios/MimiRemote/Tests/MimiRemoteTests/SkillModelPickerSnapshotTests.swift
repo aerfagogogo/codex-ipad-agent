@@ -42,11 +42,11 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             modelID.flatMap {
                 ModelReasoningGridCatalog.triggerTitle(for: $0, effort: .xhigh, layout: layout)
             },
-            "GPT-5.6 Sol · xhigh"
+            "GPT-5.6 Sol · Extra High"
         )
     }
 
-    func testClaudeUsesServerOrderedTopThreeModelsAndStrongestThreeEfforts() {
+    func testClaudeUsesServerOrderedTopThreeModelsAndStandardFourEfforts() {
         let nonGridOptions = [CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5", isDefault: true)]
         let claudeOptions = CodexAppServerModelOption.builtInClaudeFallback
 
@@ -57,13 +57,16 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         XCTAssertTrue(codexLayout.contains(modelID: nonGridModelID))
         XCTAssertTrue(claudeLayout.contains(modelID: claudeModelID))
-        XCTAssertEqual(claudeLayout.rows.map(\.model), ["claude-fable-5", "opus", "sonnet"])
+        XCTAssertEqual(claudeLayout.models.map(\.model), ["claude-fable-5", "opus", "sonnet"])
         XCTAssertEqual(
-            claudeLayout.rows.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
+            claudeLayout.models.map { ModelReasoningGridCatalog.shortTitle(for: $0, kind: .claude) },
             ["Claude Fable 5", "Claude Opus 5", "Claude Sonnet 5"]
         )
-        XCTAssertEqual(claudeLayout.efforts, [.high, .xhigh, .max])
-        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.max), "max")
+        XCTAssertEqual(claudeLayout.efforts, [.medium, .high, .xhigh, .max])
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.low), "Light")
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.xhigh), "Extra High")
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.max), "Max")
+        XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.ultra), "Ultra")
         XCTAssertFalse(claudeLayout.showsFastMode)
     }
 
@@ -138,9 +141,9 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 selectedModelID: "gpt-5.6-terra",
                 isRefreshing: false,
                 isFastMode: true,
-                onSelect: { _, _ in },
+                onSelectModel: { _, _ in },
+                onSelectDefaultModel: { _, _ in },
                 onFastModeChange: { _ in },
-                onSelectModelOnly: { _ in },
                 onRefresh: {}
             )
         }
@@ -172,20 +175,108 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             selectedModelID: "gpt-5.6-sol",
             isRefreshing: false,
             isFastMode: false,
-            onSelect: { _, _ in },
+            onSelectModel: { _, _ in },
+            onSelectDefaultModel: { _, _ in },
             onFastModeChange: { _ in },
-            onSelectModelOnly: { _ in },
             onRefresh: {}
         )
         .environmentObject(themeStore)
         .environment(\.colorScheme, .light)
         .padding(32)
-        .frame(width: 440, height: 360, alignment: .top)
+        .frame(width: 440, height: 430, alignment: .top)
         .background(themeStore.tokens(for: .light).background)
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 440, height: 360))
+            as: .image(precision: 0.98, layout: .fixed(width: 440, height: 430))
+        )
+    }
+
+    func testModelPickerAdaptiveWidthAndAccessibilityLayouts() {
+        assertSnapshot(
+            of: adaptiveModelPicker(
+                width: 320,
+                height: 372,
+                horizontalSizeClass: .compact
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 320, height: 372),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "iphone-320"
+        )
+
+        assertSnapshot(
+            of: adaptiveModelPicker(
+                width: 390,
+                height: 372,
+                colorScheme: .dark,
+                horizontalSizeClass: .compact
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 390, height: 372),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "iphone-390-dark"
+        )
+
+        assertSnapshot(
+            of: adaptiveModelPicker(
+                width: 667,
+                height: 300,
+                horizontalSizeClass: .compact
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 667, height: 300),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "iphone-landscape-compact-height"
+        )
+
+        assertSnapshot(
+            of: adaptiveModelPicker(
+                width: 420,
+                height: 372,
+                horizontalSizeClass: .regular
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 420, height: 372),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "ipad-popover-420"
+        )
+
+        assertSnapshot(
+            of: adaptiveModelPicker(
+                width: 375,
+                height: 372,
+                horizontalSizeClass: .compact
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 375, height: 372),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "ipad-split-375"
+        )
+
+        assertSnapshot(
+            of: adaptiveModelPicker(
+                width: 390,
+                height: 372,
+                dynamicTypeSize: .accessibility3,
+                horizontalSizeClass: .compact
+            ),
+            as: .image(
+                precision: 0.98,
+                layout: .fixed(width: 390, height: 372),
+                traits: UITraitCollection(displayScale: 2)
+            ),
+            named: "accessibility3"
         )
     }
 
@@ -264,6 +355,40 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
             of: view,
             as: .image(precision: 0.98, layout: .fixed(width: 520, height: 120))
         )
+    }
+
+    private func adaptiveModelPicker(
+        width: CGFloat,
+        height: CGFloat,
+        colorScheme: ColorScheme = .light,
+        dynamicTypeSize: DynamicTypeSize = .large,
+        horizontalSizeClass: UserInterfaceSizeClass
+    ) -> some View {
+        let defaults = UserDefaults(suiteName: "SkillModelPickerSnapshotTests.\(UUID().uuidString)")!
+        let themeStore = ThemeStore(defaults: defaults)
+        themeStore.mode = colorScheme == .dark ? .dark : .light
+
+        return ModelReasoningGridPicker(
+            options: CodexAppServerModelOption.builtInFallback,
+            layout: ModelReasoningGridCatalog.layout(
+                runtimeProvider: "codex",
+                options: CodexAppServerModelOption.builtInFallback
+            ),
+            selection: ModelReasoningGridSelection(modelID: "gpt-5.6-sol", effort: .xhigh),
+            selectedModelID: "gpt-5.6-sol",
+            isRefreshing: false,
+            isFastMode: false,
+            onSelectModel: { _, _ in },
+            onSelectDefaultModel: { _, _ in },
+            onFastModeChange: { _ in },
+            onRefresh: {}
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, colorScheme)
+        .environment(\.dynamicTypeSize, dynamicTypeSize)
+        .environment(\.horizontalSizeClass, horizontalSizeClass)
+        .frame(width: width, height: height, alignment: .top)
+        .background(themeStore.tokens(for: colorScheme).background)
     }
 }
 #endif

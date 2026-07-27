@@ -1,12 +1,19 @@
 import AppKit
 import SwiftUI
 
+private enum MenuBarLayout {
+    // 状态信息、运行时和操作区共用同一列网格，避免不同区块的图标与文字左右漂移。
+    static let sectionInset: CGFloat = 3
+    static let symbolColumnWidth: CGFloat = 16
+    static let symbolTextSpacing: CGFloat = 8
+    static let textColumnLeading = sectionInset + symbolColumnWidth + symbolTextSpacing
+}
+
 struct MenuBarContentView: View {
     let store: HostStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
-    @State private var confirmsQuit = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -69,7 +76,7 @@ struct MenuBarContentView: View {
 
                 Divider()
                     .opacity(0.4)
-                    .padding(.leading, 34)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
 
                 MenuActionRow(
                     title: "运行诊断…",
@@ -80,7 +87,7 @@ struct MenuBarContentView: View {
 
                 Divider()
                     .opacity(0.4)
-                    .padding(.leading, 34)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
 
                 MenuActionRow(
                     title: "设置",
@@ -93,7 +100,7 @@ struct MenuBarContentView: View {
                 if store.owner == .macApp {
                     Divider()
                         .opacity(0.4)
-                        .padding(.leading, 34)
+                        .padding(.leading, MenuBarLayout.textColumnLeading)
 
                     MenuActionRow(
                         title: "重新启动服务",
@@ -108,16 +115,17 @@ struct MenuBarContentView: View {
 
                 Divider()
                     .opacity(0.4)
-                    .padding(.leading, 34)
+                    .padding(.leading, MenuBarLayout.textColumnLeading)
 
                 MenuActionRow(
-                    title: "退出并停止服务…",
+                    title: store.isStoppingForQuit ? "正在停止并退出…" : "退出并停止服务…",
                     systemImage: "power",
                     isEnabled: !store.isBusy,
                     role: .destructive,
-                    showsDisclosure: false
+                    showsDisclosure: false,
+                    isWorking: store.isStoppingForQuit
                 ) {
-                    confirmsQuit = true
+                    presentStopAndQuitConfirmation()
                 }
             }
             .padding(.top, 6)
@@ -131,14 +139,6 @@ struct MenuBarContentView: View {
         )
         .task {
             await store.refresh()
-        }
-        .alert("退出并停止 Mimi Remote Mac？", isPresented: $confirmsQuit) {
-            Button("取消", role: .cancel) {}
-            Button("退出并停止", role: .destructive) {
-                Task { await store.stopServiceAndQuit() }
-            }
-        } message: {
-            Text("这会立即中断 iPhone 和 iPad 的连接。下次打开 App 或重新登录 Mac 时会重新启动服务。")
         }
     }
 
@@ -156,6 +156,24 @@ struct MenuBarContentView: View {
         // 等本轮菜单跟踪结束后再激活，避免系统仍把焦点留在刚关闭的 MenuBarExtra 上。
         DispatchQueue.main.async {
             NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func presentStopAndQuitConfirmation() {
+        // SwiftUI Alert 附着在 MenuBarExtra 的临时窗口上，窗口关闭时可能丢失后续异步动作。
+        // 使用 AppKit 的应用级确认框，既符合 macOS 习惯，也能稳定地把结果交给全局 Store。
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "退出并停止 Mimi Remote Mac？"
+            alert.informativeText = "这会立即中断 iPhone 和 iPad 的连接。下次打开 App 或重新登录 Mac 时会重新启动服务。"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "退出并停止")
+            alert.addButton(withTitle: "取消")
+            alert.buttons.first?.hasDestructiveAction = true
+
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            store.requestStopServiceAndQuit()
         }
     }
 
@@ -276,21 +294,35 @@ private struct MenuConnectionSummary: View {
             }
 
             MenuMetadataRow(systemImage: "shippingbox") {
-                Text("agentd \(status.version) · \(status.projects) 个项目")
+                Text("App \(appVersionLabel) · agentd \(runningAgentVersion)")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(status.hasAgentVersionMismatch ? Color.orange : Color.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
 
             MenuMetadataRow(systemImage: ownerSymbol) {
-                Text(ownerTitle)
+                Text("\(ownerTitle) · \(status.projects) 个项目")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(ownerColor)
             }
         }
-        .padding(.horizontal, 3)
+        .padding(.horizontal, MenuBarLayout.sectionInset)
         .accessibilityElement(children: .contain)
+    }
+
+    private var appVersionLabel: String {
+        let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        guard let version, !version.isEmpty else { return "版本未知" }
+        guard let build, !build.isEmpty else { return version }
+        return "\(version) (\(build))"
+    }
+
+    private var runningAgentVersion: String {
+        status.serverVersion ?? status.version
     }
 
     private var ownerTitle: String {
@@ -328,11 +360,11 @@ private struct MenuMetadataRow<Content: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: MenuBarLayout.symbolTextSpacing) {
             Image(systemName: systemImage)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.tertiary)
-                .frame(width: 16)
+                .frame(width: MenuBarLayout.symbolColumnWidth)
             content
             Spacer(minLength: 0)
         }
@@ -347,6 +379,10 @@ private struct MenuRuntimeSummary: View {
     let lifecycle: HostLifecycleState
 
     var body: some View {
+        let codex = runtime(id: "codex")
+        let claude = runtime(id: "claude")
+        let usageItems = MenuRuntimePresentation.usageItems(codex: codex, claude: claude)
+
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 5) {
                 Text("AI 运行时")
@@ -367,10 +403,10 @@ private struct MenuRuntimeSummary: View {
                 }
             }
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 3)
+            .padding(.horizontal, MenuBarLayout.sectionInset)
 
             MenuRuntimeRow(
-                runtime: runtime(id: "codex"),
+                runtime: codex,
                 fallbackTitle: "Codex",
                 systemImage: "chevron.left.forwardslash.chevron.right",
                 serviceAvailable: serviceAvailable,
@@ -380,7 +416,7 @@ private struct MenuRuntimeSummary: View {
             )
 
             MenuRuntimeRow(
-                runtime: runtime(id: "claude"),
+                runtime: claude,
                 fallbackTitle: "Claude",
                 systemImage: "sparkles",
                 serviceAvailable: serviceAvailable,
@@ -388,6 +424,16 @@ private struct MenuRuntimeSummary: View {
                 isStale: isStale,
                 missingDetail: missingDetail
             )
+
+            if !usageItems.isEmpty {
+                MenuRuntimeUsageOverview(
+                    items: usageItems,
+                    expectedRingCount: claude?.enabled == true ? 3 : 1
+                )
+                // 额度卡是独立模块，不继承运行时行的图标/文字列缩进。
+                // 左右使用相同分区边距，保证卡片中心与菜单内容中心一致。
+                .padding(.horizontal, MenuBarLayout.sectionInset)
+            }
         }
     }
 
@@ -446,11 +492,11 @@ private struct MenuRuntimeRow: View {
     let missingDetail: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .top, spacing: MenuBarLayout.symbolTextSpacing) {
             Image(systemName: systemImage)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(stateColor)
-                .frame(width: 16, height: 19)
+                .frame(width: MenuBarLayout.symbolColumnWidth, height: 19)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 6) {
@@ -476,11 +522,29 @@ private struct MenuRuntimeRow: View {
                     }
                 }
 
-                if !usageWindows.isEmpty {
-                    HStack(alignment: .top, spacing: 6) {
-                        ForEach(usageWindows) { item in
-                            MenuRuntimeQuotaWindow(item: item)
+                if MenuRuntimePresentation.versionText(for: runtime) != nil ||
+                    runtime?.startedDate != nil
+                {
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            if let versionText = MenuRuntimePresentation.versionText(for: runtime) {
+                                Text(versionText)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+
+                            Spacer(minLength: 2)
+
+                            if let uptime = MenuRuntimePresentation.uptimeText(
+                                for: runtime,
+                                at: context.date
+                            ) {
+                                Label(uptime, systemImage: "clock")
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
                         }
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
                     }
                 }
 
@@ -498,7 +562,7 @@ private struct MenuRuntimeRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                if usageWindows.isEmpty, quotaNoticeText == nil, creditSummary == nil {
+                if !hasUsageData, quotaNoticeText == nil, creditSummary == nil {
                     Text(detailText)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -506,33 +570,15 @@ private struct MenuRuntimeRow: View {
                 }
             }
         }
-        .padding(.horizontal, 3)
+        .padding(.horizontal, MenuBarLayout.sectionInset)
         .accessibilityElement(children: .contain)
     }
 
-    private var usageWindows: [MenuRuntimeQuotaWindowItem] {
-        guard let limits = runtime?.rateLimits else { return [] }
-        let reached = limits.reachedType?.lowercased() ?? ""
-        var result: [MenuRuntimeQuotaWindowItem] = []
-        if let primary = limits.primary,
-           primary.usedPercent != nil || primary.resetsAt != nil || primary.windowDurationMins != nil
-        {
-            result.append(MenuRuntimeQuotaWindowItem(
-                id: "primary",
-                window: primary,
-                isExhausted: primary.isExhausted || reached.contains("primary")
-            ))
+    private var hasUsageData: Bool {
+        guard let limits = runtime?.rateLimits else { return false }
+        return limits.windows.contains {
+            $0.usedPercent != nil || $0.resetsAt != nil || $0.windowDurationMins != nil
         }
-        if let secondary = limits.secondary,
-           secondary.usedPercent != nil || secondary.resetsAt != nil || secondary.windowDurationMins != nil
-        {
-            result.append(MenuRuntimeQuotaWindowItem(
-                id: "secondary",
-                window: secondary,
-                isExhausted: secondary.isExhausted || reached.contains("secondary")
-            ))
-        }
-        return result
     }
 
     private var stateTitle: String {
@@ -649,72 +695,148 @@ private struct MenuRuntimeRow: View {
     }
 }
 
-private struct MenuRuntimeQuotaWindowItem: Identifiable {
-    let id: String
-    let window: AgentRuntimeRateLimitWindow
-    let isExhausted: Bool
-}
-
-private struct MenuRuntimeQuotaWindow: View {
-    let item: MenuRuntimeQuotaWindowItem
-
-    private var window: AgentRuntimeRateLimitWindow {
-        item.window
-    }
+private struct MenuRuntimeUsageOverview: View {
+    let items: [MenuRuntimeUsageItem]
+    let expectedRingCount: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(window.durationLabel)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 2)
-                Text(valueText)
-                    .font(.caption2.monospacedDigit().weight(.medium))
-                    .foregroundStyle(item.isExhausted ? Color.red : Color.primary)
-            }
+        VStack(alignment: .center, spacing: 8) {
+            MenuRuntimeUsageRingsGraphic(
+                items: items,
+                expectedRingCount: expectedRingCount
+            )
+            // 圆环相对整个额度卡片居中，而不是相对左侧信息栏居中。
+            .frame(maxWidth: .infinity, alignment: .center)
 
-            if item.isExhausted || window.remainingFraction != nil {
-                let progress = item.isExhausted ? 0 : (window.remainingFraction ?? 0)
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
-                    .tint(item.isExhausted ? Color.red : progressColor(progress))
-                    .accessibilityLabel("\(window.durationLabel)额度")
-                    .accessibilityValue(valueText)
+            HStack(alignment: .top, spacing: 4) {
+                ForEach(items) { item in
+                    MenuRuntimeUsageCompactColumn(item: item)
+                        .frame(maxWidth: .infinity, alignment: .top)
+                }
             }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(
+            Color.primary.opacity(0.04),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+        .accessibilityElement(children: .contain)
+    }
+}
 
-            if let resetDate = window.resetDate {
-                Text("\(resetText(resetDate)) 重置")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+/// 与设置页一致的三层同心圆：Codex 长窗口、Claude 长窗口、Claude 短窗口。
+/// 菜单栏只缩小尺寸，不改变颜色、顺序和“剩余额度”语义。
+private struct MenuRuntimeUsageRingsGraphic: View {
+    let items: [MenuRuntimeUsageItem]
+    let expectedRingCount: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let diameter: CGFloat = 74
+    private let lineWidth: CGFloat = 5
+    private let ringStep: CGFloat = 20
+
+    var body: some View {
+        let ringCount = min(max(expectedRingCount, items.count), 3)
+
+        ZStack(alignment: .center) {
+            ForEach(0..<ringCount, id: \.self) { index in
+                let ringDiameter = diameter - CGFloat(index) * ringStep
+                let item = index < items.count ? items[index] : nil
+
+                ZStack {
+                    Circle()
+                        .stroke(Color.secondary.opacity(0.18), lineWidth: lineWidth)
+
+                    if let progress = item?.window.remainingFraction {
+                        Circle()
+                            .trim(from: 0, to: item?.isExhausted == true ? 0 : progress)
+                            .stroke(
+                                itemTint(item),
+                                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                            )
+                            .rotationEffect(.degrees(-90))
+                            .animation(
+                                reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1),
+                                value: progress
+                            )
+                    }
+                }
+                .frame(width: ringDiameter, height: ringDiameter)
             }
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            item.isExhausted ? Color.red.opacity(0.07) : Color.primary.opacity(0.045),
-            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-        )
+        .frame(width: diameter, height: diameter, alignment: .center)
+        .accessibilityHidden(true)
+    }
+
+    private func itemTint(_ item: MenuRuntimeUsageItem?) -> Color {
+        guard let item else { return .secondary }
+        if item.isExhausted { return .red }
+        switch item.tintRole {
+        case .codexLong: return .pink
+        case .claudeLong: return .cyan
+        case .claudeShort: return .mimiPrimary
+        }
+    }
+}
+
+private struct MenuRuntimeUsageCompactColumn: View {
+    let item: MenuRuntimeUsageItem
+
+    var body: some View {
+        VStack(alignment: .center, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 6, height: 6)
+                    .accessibilityHidden(true)
+
+                Text("\(item.providerName) · \(item.window.durationLabel)")
+                    .font(.caption2.weight(.semibold))
+                    .lineLimit(1)
+            }
+
+            Text(valueText)
+                .font(.caption2.monospacedDigit().weight(.semibold))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+
+            if let resetDate = item.window.resetDate {
+                Text("\(resetText(resetDate)) 重置")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.providerName) \(item.window.durationLabel)额度")
+        .accessibilityValue(valueText)
     }
 
     private var valueText: String {
         if item.isExhausted { return "已耗尽" }
-        return window.remainingPercentText.map { "剩余 \($0)" } ?? "等待刷新"
+        return item.window.remainingPercentText.map { "剩余 \($0)" } ?? "等待刷新"
     }
 
-    private func progressColor(_ remaining: Double) -> Color {
-        if remaining <= 0.05 { return .red }
-        if remaining <= 0.2 { return .orange }
-        return .mimiPrimary
+    private var tint: Color {
+        if item.isExhausted { return .red }
+        switch item.tintRole {
+        case .codexLong: return .pink
+        case .claudeLong: return .cyan
+        case .claudeShort: return .mimiPrimary
+        }
     }
 
     private func resetText(_ date: Date) -> String {
-        if Calendar.current.isDateInToday(date) {
-            return date.formatted(date: .omitted, time: .shortened)
-        }
-        return date.formatted(date: .abbreviated, time: .shortened)
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.setLocalizedDateFormatFromTemplate(
+            Calendar.current.isDateInToday(date) ? "Hm" : "MdHm"
+        )
+        return formatter.string(from: date)
     }
 }
 
@@ -746,14 +868,14 @@ private struct MenuActionRow: View {
 
     var body: some View {
         Button(role: role, action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: MenuBarLayout.symbolTextSpacing) {
                 Image(systemName: systemImage)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(role == .destructive ? Color.mimiMutedDestructive : Color.secondary)
-                    .frame(width: 18)
+                    .foregroundStyle(symbolColor)
+                    .frame(width: MenuBarLayout.symbolColumnWidth)
                 Text(title)
                     .font(.callout.weight(.medium))
-                    .foregroundStyle(role == .destructive ? Color.mimiMutedDestructive : Color.primary)
+                    .foregroundStyle(labelColor)
                 Spacer(minLength: 0)
                 if isWorking {
                     ProgressView()
@@ -764,7 +886,7 @@ private struct MenuActionRow: View {
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.horizontal, 7)
+            .padding(.horizontal, MenuBarLayout.sectionInset)
             .frame(maxWidth: .infinity, minHeight: 35, alignment: .leading)
             .background(
                 Color.primary.opacity(isHovered ? 0.075 : 0),
@@ -780,6 +902,15 @@ private struct MenuActionRow: View {
                 isHovered = hovering
             }
         }
+    }
+
+    private var labelColor: Color {
+        role == .destructive ? Color(nsColor: .systemRed) : .primary
+    }
+
+    private var symbolColor: Color {
+        // 使用 macOS 语义化系统红，自动适配外观并符合用户对危险操作的既有认知。
+        role == .destructive ? Color(nsColor: .systemRed) : .secondary
     }
 }
 

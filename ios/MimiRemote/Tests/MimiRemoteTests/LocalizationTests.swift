@@ -67,9 +67,9 @@ final class LocalizationTests: XCTestCase {
         XCTAssertEqual(VoiceInputProvider.stored(in: defaults), .codex)
     }
 
-    func testVoiceInputProvidersExposeDistinctBrandAndSystemIcons() {
-        XCTAssertEqual(VoiceInputProvider.codex.icon, .asset("ChatGPT"))
-        XCTAssertEqual(VoiceInputProvider.apple.icon, .system("waveform.badge.mic"))
+    func testVoiceInputProvidersExposeDistinctNativeSystemIcons() {
+        XCTAssertEqual(VoiceInputProvider.codex.icon, .system("waveform"))
+        XCTAssertEqual(VoiceInputProvider.apple.icon, .system("siri"))
     }
 
     func testCodexVoiceInputDescriptionExplainsPostRecordingTranscription() {

@@ -84,6 +84,17 @@ struct WorkbenchNavigationState: Equatable {
         }
     }
 
+    /// selectedSessionID 可能在设置 Tab 或列表页继续保留，不能据此判断会话是否真的可见。
+    func visibleSessionID(usesCompactNavigation: Bool) -> SessionID? {
+        if usesCompactNavigation, compactSelectedTab == .settings {
+            return nil
+        }
+        guard case .session(let sessionID) = selection else {
+            return nil
+        }
+        return sessionID
+    }
+
     @discardableResult
     mutating func reduce(
         _ event: WorkbenchNavigationEvent,
@@ -375,14 +386,17 @@ struct UnifiedWorkbenchShell: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
 
     @Binding var showingInspector: Bool
     @Binding var restorationRoute: WorkbenchRestorationRoute
     @State private var navigationState = WorkbenchNavigationState()
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var presentedSheet: AppSheetDestination?
+    @State private var notificationVisibilitySceneID = UUID()
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -439,6 +453,17 @@ struct UnifiedWorkbenchShell: View {
                 guard navigationState.route != route else { return }
                 applyNavigation(.synchronize(route), layout: layout)
             }
+            .onAppear {
+                updateVisibleSessionNotificationRoute(
+                    visibleSessionNotificationRoute(layout: layout)
+                )
+            }
+            .onChange(of: visibleSessionNotificationRoute(layout: layout)) { _, route in
+                updateVisibleSessionNotificationRoute(route)
+            }
+            .onDisappear {
+                updateVisibleSessionNotificationRoute(nil)
+            }
         }
         .background(tokens.background.ignoresSafeArea())
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -448,6 +473,34 @@ struct UnifiedWorkbenchShell: View {
                 networkUnavailableBanner(tokens: tokens)
             }
         }
+    }
+
+    private func visibleSessionNotificationRoute(
+        layout: WorkbenchLayout
+    ) -> SessionNotificationRoute? {
+        guard scenePhase == .active,
+              presentedSheet == nil,
+              !(showingInspector && !layout.usesAttachedInspector),
+              let visibleSessionID = navigationState.visibleSessionID(
+                  usesCompactNavigation: layout.usesCompactNavigation
+              ),
+              let session = sessionStore.selectedSession,
+              session.id == visibleSessionID
+        else {
+            return nil
+        }
+        return SessionNotificationRoute.current(
+            profileID: appStore.notificationRoutingProfileID,
+            projectID: session.projectID,
+            sessionID: session.id
+        )
+    }
+
+    private func updateVisibleSessionNotificationRoute(_ route: SessionNotificationRoute?) {
+        notificationResponseAdapter.setVisibleSessionRoute(
+            route,
+            for: notificationVisibilitySceneID
+        )
     }
 
     private func compactLayout(

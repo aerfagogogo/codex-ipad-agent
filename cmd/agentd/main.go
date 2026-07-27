@@ -504,6 +504,13 @@ func serviceStatusFields(serviceStatus agentServiceStatus, token string) map[str
 		// 不能再用只有进程存活语义的 healthz 冒充移动端可用。
 		"service_ok": serviceStatus.Ready(),
 	}
+	if serviceStatus.ReadinessResults != nil {
+		if runningVersion := strings.TrimSpace(serviceStatus.ReadinessResults.Version); runningVersion != "" {
+			// version 是当前命令自身版本；server_version 才是 Endpoint 上真实运行的服务版本。
+			// 两者同时返回，Mac App 才能识别安装更新后仍驻留的旧 LaunchAgent。
+			status["server_version"] = runningVersion
+		}
+	}
 	if serviceStatus.ProcessErr != nil {
 		status["process_error"] = publicStatusError(serviceStatus.ProcessErr, token)
 	}
@@ -953,6 +960,9 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	})
 
 	apiHandler, apiRouter := httpapi.NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
+	if appServerWSProcess != nil {
+		apiRouter.SetCodexRuntimeStartedAt(appServerWSProcess.StartedAt())
+	}
 	server := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           apiHandler,
@@ -1691,7 +1701,7 @@ func waitForServiceReadyResults(
 			decoded, decodeErr := decodeReadyServiceResults(resp.Body, expectedVersion)
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			if decodeErr == nil {
+			if strings.TrimSpace(decoded.Version) != "" || len(decoded.Checks) > 0 {
 				latest = decoded
 			}
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -1779,10 +1789,22 @@ func decodeReadyServiceResults(body io.Reader, expectedVersion string) (doctor.R
 		return doctor.Results{}, readyVersionCheckError("readyz 响应缺少 server version")
 	}
 	expectedVersion = strings.TrimSpace(expectedVersion)
-	if isDevelopmentAgentVersion(expectedVersion) || runningVersion == expectedVersion {
+	if agentVersionsCompatible(expectedVersion, runningVersion) {
 		return payload, nil
 	}
-	return doctor.Results{}, readyVersionCheckError(fmt.Sprintf("运行中的 agentd 版本为 %q，当前命令版本为 %q，可能仍是占用端口的旧服务", runningVersion, expectedVersion))
+	return payload, readyVersionCheckError(fmt.Sprintf("运行中的 agentd 版本为 %q，当前命令版本为 %q，可能仍是占用端口的旧服务", runningVersion, expectedVersion))
+}
+
+func agentVersionsCompatible(expectedVersion string, runningVersion string) bool {
+	expected := strings.TrimSpace(expectedVersion)
+	running := strings.TrimSpace(runningVersion)
+	if isDevelopmentAgentVersion(expected) || running == expected {
+		return true
+	}
+	// 独立安装的正式 CLI 只有 marketing version，应能检查同版本的 Mac 构建。
+	// 反向不放宽：App 内嵌版本含 mac build，必须精确识别覆盖安装后的旧进程。
+	return !strings.Contains(expected, "+") &&
+		strings.HasPrefix(running, expected+"+mac.")
 }
 
 func isDevelopmentAgentVersion(value string) bool {
@@ -1790,7 +1812,11 @@ func isDevelopmentAgentVersion(value string) bool {
 	if normalized == "" || normalized == "devel" || normalized == "(devel)" {
 		return true
 	}
-	return strings.Contains(normalized, "-next") || strings.Contains(normalized, "dirty")
+	// GoReleaser/本地 make 会把提交摘要追加成 devel-<sha>；它和裸 devel
+	// 一样没有可用于部署一致性判断的正式版本，不能误报 App 托管服务过旧。
+	return strings.HasPrefix(normalized, "devel-") ||
+		strings.Contains(normalized, "-next") ||
+		strings.Contains(normalized, "dirty")
 }
 
 func readyVersionCheckError(reason string) error {

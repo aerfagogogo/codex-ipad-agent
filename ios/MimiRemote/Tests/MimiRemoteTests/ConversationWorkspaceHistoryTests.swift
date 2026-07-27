@@ -2995,6 +2995,137 @@ extension ConversationDataFlowTests {
 
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["自动缩略历史"])
         XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .summaryLoaded)
+        XCTAssertTrue(store.deferredFullHistorySessionIDs.isEmpty)
+    }
+
+    func testRunningFullHistoryResponseTooLargeReloadsFullAfterTurnCompletes() async {
+        let project = makeProject(id: "proj_1")
+        let running = makeSession(
+            id: "codex_running_auto_full",
+            projectID: project.id,
+            title: "运行时历史临时膨胀",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn_running_auto_full"
+        )
+        let client = OrderedHistoryPageClient(
+            projects: [project],
+            page: SessionsPage(sessions: [running])
+        )
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.upsert(running)
+        store.selectedProjectID = project.id
+        store.selectedSessionID = running.id
+
+        let initialLoadTask = Task {
+            await store.loadHistory(for: running, force: true)
+        }
+        await client.waitForHistoryRequestCount(1)
+        client.failHistoryRequest(
+            at: 0,
+            with: historyPolicyError(reason: "history_response_too_large")
+        )
+
+        await client.waitForHistoryRequestCount(2)
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy])
+        XCTAssertTrue(store.deferredFullHistorySessionIDs.contains(running.id))
+        XCTAssertEqual(
+            store.selectedHistorySavingsNotice?.message,
+            L10n.text("ui.the_full_history_will_be_restored_after_the_current_turn")
+        )
+
+        // 覆盖竞态：Turn 可能先完成，而 summary 请求仍在途。此时不能启动并发 full，
+        // 但 summary 返回后必须继续补拉。
+        await store.applyRuntimeEvent(
+            .turnCompleted(AgentEventMetadata(
+                seq: 1,
+                sessionID: running.id,
+                turnID: "turn_running_auto_full",
+                itemID: nil,
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil
+            )),
+            sessionID: running.id
+        )
+
+        XCTAssertEqual(store.selectedSessionID, running.id)
+        XCTAssertEqual(store.sessionsByID[running.id]?.status, SessionStatus.completed.rawValue)
+        XCTAssertNil(store.sessionsByID[running.id]?.activeTurnID)
+        XCTAssertTrue(store.queuedRunningTurnsBySessionID[running.id]?.isEmpty != false)
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy])
+        XCTAssertTrue(store.deferredFullHistorySessionIDs.contains(running.id))
+
+        client.resolveHistoryRequest(
+            at: 1,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(
+                        id: "rollout:running-summary",
+                        role: "assistant",
+                        content: "运行中的缩略历史",
+                        createdAt: Date(timeIntervalSince1970: 20)
+                    )
+                ],
+                loadMode: .economy,
+                notice: "当前显示缩略历史。"
+            )
+        )
+        await initialLoadTask.value
+
+        XCTAssertEqual(
+            store.selectedHistorySavingsNotice?.message,
+            L10n.text("ui.the_full_history_will_be_restored_after_the_current_turn")
+        )
+
+        for _ in 0..<100 {
+            if client.requestedMessageLoadModes.count >= 3 {
+                break
+            }
+            await Task.yield()
+        }
+        XCTAssertEqual(client.requestedMessageLoadModes, [.full, .economy, .full])
+        XCTAssertFalse(store.deferredFullHistorySessionIDs.contains(running.id))
+        guard client.requestedMessageLoadModes.count >= 3 else {
+            XCTFail("Turn 完成后未触发 full 历史补拉")
+            return
+        }
+
+        client.resolveHistoryRequest(
+            at: 2,
+            with: HistoryMessagesPage(
+                messages: [
+                    CodexHistoryMessage(
+                        id: "rollout:completed-full",
+                        role: "assistant",
+                        content: "完成后的完整历史",
+                        createdAt: Date(timeIntervalSince1970: 30)
+                    )
+                ]
+            )
+        )
+        for _ in 0..<100 {
+            if store.historyLoadedQualityBySessionID[running.id] == .full {
+                break
+            }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(store.historyLoadedQualityBySessionID[running.id], .full)
+        XCTAssertEqual(
+            conversationStore.messages(for: running.id).map(\.content),
+            ["完成后的完整历史"]
+        )
+        XCTAssertNil(store.selectedHistorySavingsNotice)
     }
 
     func testSummaryHistoryPolicyFailureRetriesOnceAfterRetryAfter() async {

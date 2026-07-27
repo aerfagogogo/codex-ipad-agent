@@ -560,6 +560,79 @@ extension ConversationDataFlowTests {
         XCTAssertNil(adapter.pendingRoute, "已消费路由不能重复触发")
     }
 
+    func testNotificationPresentationSilencesOnlyVisibleRuntimeSessionAcrossScenes() {
+        let adapter = SessionNotificationResponseAdapter()
+        let currentRoute = SessionNotificationRoute.current(
+            profileID: "mac-a",
+            projectID: "proj-a",
+            sessionID: "session-a"
+        )
+        let otherRoute = SessionNotificationRoute.current(
+            profileID: "mac-a",
+            projectID: "proj-b",
+            sessionID: "session-b"
+        )
+        let currentSceneID = UUID()
+        let otherSceneID = UUID()
+        let runtimeIDs = [
+            "approval:session-a:request-1",
+            "user-input:session-a:request-2",
+            "completed:session-a:turn-1",
+            "failed:session-a:turn-2"
+        ].map(UserNotificationSessionReminderScheduler.runtimeNotificationID(for:))
+        let runtimeID = runtimeIDs[0]
+        let defaultOptions: UNNotificationPresentationOptions = [.banner, .sound]
+
+        adapter.setVisibleSessionRoute(currentRoute, for: currentSceneID)
+        adapter.setVisibleSessionRoute(otherRoute, for: otherSceneID)
+        for identifier in runtimeIDs {
+            XCTAssertEqual(
+                adapter.presentationOptions(
+                    forNotificationIdentifier: identifier,
+                    userInfo: currentRoute.userInfo
+                ),
+                [],
+                "审批、补充信息、完成和失败通知都应使用同一静默策略"
+            )
+        }
+        XCTAssertEqual(
+            adapter.presentationOptions(
+                forNotificationIdentifier: runtimeID,
+                userInfo: otherRoute.userInfo
+            ),
+            [],
+            "不同 Scene 各自显示的会话都应参与静默判断"
+        )
+
+        adapter.setVisibleSessionRoute(nil, for: currentSceneID)
+        XCTAssertEqual(
+            adapter.presentationOptions(
+                forNotificationIdentifier: runtimeID,
+                userInfo: currentRoute.userInfo
+            ),
+            defaultOptions,
+            "Scene 离开或销毁后不能残留旧可见状态"
+        )
+        XCTAssertEqual(
+            adapter.presentationOptions(
+                forNotificationIdentifier: UserNotificationSessionReminderScheduler.notificationID(
+                    for: currentRoute.sessionID
+                ),
+                userInfo: otherRoute.userInfo
+            ),
+            defaultOptions,
+            "定时提醒即使目标会话可见也保持系统展示"
+        )
+        XCTAssertEqual(
+            adapter.presentationOptions(
+                forNotificationIdentifier: runtimeID,
+                userInfo: ["mimi.route.sessionID": currentRoute.sessionID]
+            ),
+            defaultOptions,
+            "畸形或旧版路由必须默认继续提醒"
+        )
+    }
+
     func testPreviewFileWritesDecodedPayloadToTemporaryFile() async throws {
         let filePath = "/repo/report.pdf"
         let payload = Data("preview-payload".utf8)
@@ -918,6 +991,45 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(
             WorkbenchRestorationRoute(storageValue: route.storageValue),
             route
+        )
+    }
+
+    func testWorkbenchVisibleSessionExcludesSettingsTabAndRootPages() {
+        var state = WorkbenchNavigationState(
+            route: .session(id: "session-visible", source: .sessions)
+        )
+
+        XCTAssertEqual(
+            state.visibleSessionID(usesCompactNavigation: true),
+            "session-visible"
+        )
+        _ = state.reduce(
+            .compactTabChanged(.settings),
+            usesCompactNavigation: true,
+            selectedSessionID: "session-visible"
+        )
+        XCTAssertNil(
+            state.visibleSessionID(usesCompactNavigation: true),
+            "设置 Tab 会保留会话路由，但会话内容已经不可见"
+        )
+
+        _ = state.reduce(
+            .compactTabChanged(.sessions),
+            usesCompactNavigation: true,
+            selectedSessionID: "session-visible"
+        )
+        XCTAssertEqual(
+            state.visibleSessionID(usesCompactNavigation: true),
+            "session-visible"
+        )
+        _ = state.reduce(
+            .compactPathChanged(tab: .sessions, path: []),
+            usesCompactNavigation: true,
+            selectedSessionID: "session-visible"
+        )
+        XCTAssertNil(
+            state.visibleSessionID(usesCompactNavigation: true),
+            "返回会话列表后不应再把 selectedSessionID 当作可见详情"
         )
     }
 

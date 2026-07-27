@@ -104,9 +104,9 @@ type githubPullRequestView struct {
 type gitFileStatus struct {
 	Path      string `json:"path"`
 	Code      string `json:"code"`
-	Staged    bool   `json:"staged,omitempty"`
-	Unstaged  bool   `json:"unstaged,omitempty"`
-	Untracked bool   `json:"untracked,omitempty"`
+	Staged    bool   `json:"staged"`
+	Unstaged  bool   `json:"unstaged"`
+	Untracked bool   `json:"untracked"`
 }
 
 type gitStatusResponse struct {

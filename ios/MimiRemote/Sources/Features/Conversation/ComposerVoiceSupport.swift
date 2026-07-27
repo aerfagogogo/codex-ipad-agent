@@ -339,6 +339,27 @@ struct AdvancedTurnOptionsSheet: View {
                     TextField(L10n.text("ui.service_name"), text: optionalStringBinding(\.serviceName))
                 }
 
+                Section("Reasoning & Service Tier") {
+                    // 标准选择器只暴露四档；完整协议值集中在开发者高级选项中，
+                    // 让 Low、Codex Max、auto 和 flex 仍可显式配置而不污染普通入口。
+                    Picker("Reasoning Effort", selection: $draft.reasoningEffort) {
+                        Text(L10n.text("ui.default_option"))
+                            .tag(Optional<CodexAppServerReasoningEffort>.none)
+                        ForEach(CodexAppServerReasoningEffort.allCases) { effort in
+                            Text(ModelReasoningGridCatalog.effortTitle(effort))
+                                .tag(Optional(effort))
+                        }
+                    }
+
+                    Picker("Service Tier", selection: $draft.serviceTier) {
+                        Text(L10n.text("ui.default_option"))
+                            .tag(Optional<String>.none)
+                        Text("auto").tag(Optional("auto"))
+                        Text("priority").tag(Optional("priority"))
+                        Text("flex").tag(Optional("flex"))
+                    }
+                }
+
                 Section(L10n.text("ui.thread_source")) {
                     TextField(L10n.text("ui.session_start_source"), text: optionalStringBinding(\.sessionStartSource))
                     TextField(L10n.text("ui.thread_source"), text: optionalStringBinding(\.threadSource))
@@ -406,6 +427,8 @@ struct AdvancedTurnOptionsSheet: View {
     private func clearAdvancedOptions() {
         draft.runtimeProvider = nil
         draft.modelProvider = nil
+        draft.reasoningEffort = nil
+        draft.serviceTier = nil
         draft.config = nil
         draft.baseInstructions = nil
         draft.developerInstructions = nil

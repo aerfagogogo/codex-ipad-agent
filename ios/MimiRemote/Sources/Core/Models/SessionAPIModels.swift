@@ -503,6 +503,7 @@ enum CodexAppServerReasoningEffort: String, Codable, CaseIterable, Hashable, Ide
     case high
     case xhigh
     case max
+    case ultra
 
     var id: String { rawValue }
 }
@@ -1003,21 +1004,21 @@ struct CodexAppServerModelOption: Codable, Hashable, Identifiable {
             id: "gpt-5.6-sol",
             title: "GPT-5.6 Sol",
             description: "Detail and polish",
-            supportedReasoningEfforts: ["medium", "high", "xhigh"],
-            defaultReasoningEffort: "medium"
+            supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
+            defaultReasoningEffort: "low"
         ),
         CodexAppServerModelOption(
             id: "gpt-5.6-terra",
             title: "GPT-5.6 Terra",
             description: "Everyday workhorse",
-            supportedReasoningEfforts: ["medium", "high", "xhigh"],
+            supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
             defaultReasoningEffort: "medium"
         ),
         CodexAppServerModelOption(
             id: "gpt-5.6-luna",
             title: "GPT-5.6 Luna",
             description: "Clear and repeatable",
-            supportedReasoningEfforts: ["medium", "high", "xhigh"],
+            supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
             defaultReasoningEffort: "medium"
         ),
         CodexAppServerModelOption(id: "gpt-5.5", title: "GPT-5.5", isDefault: true),
