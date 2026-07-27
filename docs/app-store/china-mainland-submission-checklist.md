@@ -17,7 +17,7 @@ KittyLitter 已在中国大陆商店提供，说明“移动端连接用户自�
 - [ ] 当前开发版本同时开放设备端与 Codex 转写；再次提交中国大陆审核前，应根据最新审核反馈决定是否限制为仅设备端，并同步代码、隐私政策、审核备注和截图。
 - [x] 已用当前中国大陆提交代码重拍 iPhone、iPad mini 和 13 英寸 iPad 截图；旧截图中的 ChatGPT 图标、`openai` 路径和旧 `agentd` 界面不复用。
 
-README 当前四张实机图仅保留为研发记录，不进入中国大陆商店素材：
+以下旧 README 实机图已从仓库删除，不进入中国大陆商店素材：
 
 - `iphone-workspace-light-real.png`、`iphone-workspace-dark-real.png`：含第三方品牌图标或产品名称。
 - `ipad-workspace-light-real.png`：含旧品牌图标、Codex/Claude Code 入口和旧显示名称。

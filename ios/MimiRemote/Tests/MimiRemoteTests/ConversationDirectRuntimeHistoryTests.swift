@@ -2143,13 +2143,15 @@ extension ConversationDataFlowTests {
 
     func testUsageRingMetricsAdaptToIPadMiniAndIPhone() {
         let iPadMini = CodexUsageRingMetrics(isCompact: false)
-        XCTAssertEqual(iPadMini.diameter, 34)
-        XCTAssertEqual(iPadMini.innerDiameter, 23)
+        XCTAssertEqual(iPadMini.diameter, 36)
+        XCTAssertEqual(iPadMini.lineWidth, 3.2)
+        XCTAssertEqual(iPadMini.ringSpacing, 1.8)
         XCTAssertEqual(iPadMini.hitSize, 44)
 
         let iPhone = CodexUsageRingMetrics(isCompact: true)
-        XCTAssertEqual(iPhone.diameter, 30)
-        XCTAssertEqual(iPhone.innerDiameter, 20)
+        XCTAssertEqual(iPhone.diameter, 32)
+        XCTAssertEqual(iPhone.lineWidth, 3)
+        XCTAssertEqual(iPhone.ringSpacing, 1.5)
         XCTAssertEqual(iPhone.hitSize, 44)
     }
 

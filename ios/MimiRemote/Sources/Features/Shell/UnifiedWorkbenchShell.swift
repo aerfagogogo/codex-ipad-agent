@@ -687,43 +687,62 @@ struct UnifiedWorkbenchShell: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(tokens.sidebarBackground.ignoresSafeArea())
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                // 标题放进系统顶栏，才能与 iPad 的侧栏收起按钮保持同一行。
-                HStack(spacing: 8) {
-                    CodexUsageRingsControl(
-                        display: sessionStore.accountCodexUsageWindowsDisplay,
-                        onRefresh: {
-                            await sessionStore.refreshCodexUsage()
-                        }
-                    )
-
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Mimi Remote")
-                                .font(themeStore.uiFont(.headline, weight: .semibold))
-                                .foregroundStyle(tokens.primaryText)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.82)
-                            Text(connectionSubtitle)
-                                .font(themeStore.uiFont(.caption2))
-                                .foregroundStyle(tokens.tertiaryText)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.82)
-                        }
-
-                        Circle()
-                            .fill(connectionTone(tokens: tokens))
-                            .frame(width: 7, height: 7)
-                            .accessibilityHidden(true)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(L10n.format("ui.mimi_remote_connection_accessibility", connectionSubtitle))
-                }
+            ToolbarItem(placement: .topBarLeading) {
+                sidebarBrandHeader(tokens: tokens)
             }
+            // iPadOS 26+ 会默认给 leading toolbar item 添加共享玻璃底板；
+            // 品牌标题不是独立按钮，隐藏底板后仍保留系统正确的 leading 对齐。
+            .sharedBackgroundVisibility(.hidden)
         }
         .task {
             await sessionStore.refreshSessionLibraryIndex()
         }
+    }
+
+    private func sidebarBrandHeader(tokens: ThemeTokens) -> some View {
+        let headerWidth: CGFloat = 190
+
+        return HStack(spacing: 8) {
+            AIUsageRingsControl(
+                codexDisplay: sessionStore.accountCodexUsageWindowsDisplay,
+                claudeDisplay: sessionStore.accountClaudeUsageWindowsDisplay,
+                includesClaude: sessionStore.hasClaudeRuntimeChannel,
+                onRefresh: {
+                    await sessionStore.refreshCodexUsage()
+                    if sessionStore.hasClaudeRuntimeChannel {
+                        await sessionStore.refreshClaudeUsage()
+                    }
+                }
+            )
+            .fixedSize()
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 7) {
+                    Text(L10n.text("ui.mimi"))
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+
+                    Circle()
+                        .fill(connectionTone(tokens: tokens))
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
+                }
+
+                Text(connectionSubtitle)
+                    .font(themeStore.uiFont(.caption2))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.86)
+            }
+            // 品牌是这个标题项的主信息；窄侧栏先压缩副标题，不能把标题整体挤没。
+            .layoutPriority(1)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                L10n.format("ui.mimi_remote_connection_accessibility", connectionSubtitle)
+            )
+        }
+        .frame(width: headerWidth, alignment: .leading)
     }
 
     private func sidebarSessionLink(_ session: AgentSession) -> some View {
@@ -1242,14 +1261,16 @@ struct WorkbenchSidebarFooter: View {
     }
 }
 
-/// 侧栏标题旁的账号剩余用量入口。图形尺寸跟随横向尺寸环境变化，
-/// 因而 iPad mini 分屏和 iPhone 会自动使用更紧凑的版本。
-private struct CodexUsageRingsControl: View {
+/// 侧栏标题旁的 AI 账号剩余用量入口。与设置页共享三环和窗口选择规则，
+/// 在窄侧栏里只缩小图形，仍保留完整的 44pt 点击区。
+private struct AIUsageRingsControl: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    let display: CodexUsageWindowsDisplay
+    let codexDisplay: CodexUsageWindowsDisplay
+    let claudeDisplay: CodexUsageWindowsDisplay
+    let includesClaude: Bool
     let onRefresh: () async -> Void
 
     @State private var showsDetails = false
@@ -1258,40 +1279,50 @@ private struct CodexUsageRingsControl: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let metrics = CodexUsageRingMetrics(isCompact: horizontalSizeClass == .compact)
+        let items = usageItems(tokens: tokens)
 
-        Button {
+        CombinedUsageRingsGraphic(
+            items: items,
+            // 三环也是稳定的品牌识别；额度未接入时保留灰色轨道，不退化成单环。
+            expectedRingCount: 3,
+            diameter: metrics.diameter,
+            lineWidth: metrics.lineWidth,
+            ringSpacing: metrics.ringSpacing
+        )
+        .frame(width: metrics.hitSize, height: metrics.hitSize)
+        .contentShape(Rectangle())
+        .onTapGesture {
             showsDetails.toggle()
-        } label: {
-            usageRings(metrics: metrics)
-                .frame(width: metrics.hitSize, height: metrics.hitSize)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(L10n.text("ui.codex_remaining_usage"))
-        .accessibilityValue(accessibilityValue)
+        .hoverEffect(.highlight)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(L10n.text("ui.token_quota"))
+        .accessibilityValue(accessibilityValue(items: items))
         .accessibilityIdentifier("sidebar.codexUsageRings")
+        .accessibilityAction {
+            showsDetails.toggle()
+        }
         .popover(isPresented: $showsDetails, arrowEdge: .top) {
             usageDetails(tokens: tokens)
                 .presentationCompactAdaptation(.sheet)
-                .presentationDetents([.height(300), .medium])
+                .presentationDetents([.height(360), .medium])
                 .presentationDragIndicator(.visible)
         }
     }
 
-    private func usageRings(metrics: CodexUsageRingMetrics) -> some View {
-        CodexUsageRingsGraphic(display: display, metrics: metrics)
-    }
-
     private func usageDetails(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let items = usageItems(tokens: tokens)
+
+        return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n.text("ui.codex_remaining_usage"))
+                    Text(L10n.text("ui.token_quota"))
                         .font(themeStore.uiFont(.headline, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
-                    Text(display.windowSummaryText)
+                    Text(windowSummaryText)
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(2)
                 }
 
                 Spacer(minLength: 8)
@@ -1319,76 +1350,84 @@ private struct CodexUsageRingsControl: View {
                         .stroke(tokens.border.opacity(0.72), lineWidth: 1)
                 }
                 .disabled(isRefreshing)
-                .accessibilityLabel(L10n.text("ui.refresh_codex_usage_c0f2c6f0"))
+                .accessibilityLabel(L10n.format("ui.refresh_value_usage", "AI"))
             }
 
             VStack(spacing: 14) {
-                if display.windows.isEmpty {
+                if items.isEmpty {
                     Text(L10n.text("ui.after_refreshing_the_account_window_currently_returned_by"))
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.secondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    ForEach(Array(display.windows.enumerated()), id: \.element.id) { index, window in
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         if index > 0 {
                             Divider().overlay(tokens.border.opacity(0.72))
                         }
-                        usageWindowRow(window: window, tokens: tokens)
+                        usageWindowRow(item: item, tokens: tokens)
                     }
                 }
             }
 
-            HStack(spacing: 7) {
-                Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
-                    .font(.system(size: 12, weight: .semibold))
-                Text(display.creditText)
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .lineLimit(2)
+            VStack(alignment: .leading, spacing: 5) {
+                usageCreditLine(name: "Codex", display: codexDisplay)
+                if includesClaude {
+                    usageCreditLine(name: "Claude", display: claudeDisplay)
+                }
             }
             .foregroundStyle(tokens.secondaryText)
         }
         .padding(16)
-        .frame(width: horizontalSizeClass == .compact ? nil : 300)
+        .frame(width: horizontalSizeClass == .compact ? nil : 320)
         .frame(maxWidth: horizontalSizeClass == .compact ? .infinity : nil, alignment: .leading)
     }
 
-    private func usageWindowRow(window: CodexUsageWindowDisplay, tokens: ThemeTokens) -> some View {
-        let progress = window.remainingProgress ?? 0
-        let tint = tint(for: window)
+    private func usageWindowRow(item: CombinedUsageItem, tokens: ThemeTokens) -> some View {
+        let progress = item.window.remainingProgress ?? 0
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Circle()
-                    .stroke(tint, lineWidth: 2.5)
+                    .stroke(item.tint, lineWidth: 2.5)
                     .frame(width: 12, height: 12)
-                Text(window.label)
+                Text("\(item.providerName) · \(item.window.label)")
                     .font(themeStore.uiFont(.callout, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                     .monospacedDigit()
-                Text(window.title)
+                Text(item.window.title)
                     .font(themeStore.uiFont(.caption, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
 
                 Spacer(minLength: 8)
 
-                Text(window.remainingText)
+                Text(item.window.remainingText)
                     .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
+                    .foregroundStyle(
+                        item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
+                    )
                     .monospacedDigit()
             }
 
             ProgressView(value: progress)
-                .tint(tint)
-                .opacity(window.remainingProgress == nil ? 0.3 : 1)
+                .tint(item.tint)
+                .opacity(item.window.remainingProgress == nil ? 0.3 : 1)
 
-            Text(window.resetText)
+            Text(item.window.resetText)
                 .font(themeStore.uiFont(.caption))
                 .foregroundStyle(tokens.secondaryText)
                 .lineLimit(1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(L10n.format("ui.value_remaining_usage", window.accessibilityName))
-        .accessibilityValue(L10n.format("ui.usage_window_accessibility_value", window.remainingText, window.resetText))
+        .accessibilityLabel(
+            L10n.format("ui.value_remaining_usage", item.window.accessibilityName)
+        )
+        .accessibilityValue(
+            L10n.format(
+                "ui.usage_window_accessibility_value",
+                item.window.remainingText,
+                item.window.resetText
+            )
+        )
     }
 
     private func refreshUsage() async {
@@ -1398,119 +1437,103 @@ private struct CodexUsageRingsControl: View {
         await onRefresh()
     }
 
-    private func tint(for window: CodexUsageWindowDisplay) -> Color {
-        if window.durationMinutes != nil {
-            return window.isDayScaleWindow ? .pink : .cyan
-        }
-        return window.kind == .secondary ? .pink : .cyan
+    private func usageItems(tokens: ThemeTokens) -> [CombinedUsageItem] {
+        CombinedUsageItem.make(
+            codexDisplay: codexDisplay,
+            claudeDisplay: claudeDisplay,
+            includesClaude: includesClaude,
+            claudeShortTint: tokens.accent
+        )
     }
 
-    private var accessibilityValue: String {
-        guard !display.windows.isEmpty else {
+    private var windowSummaryText: String {
+        var summaries = [codexDisplay.windowSummaryText]
+        if includesClaude {
+            summaries.append(claudeDisplay.windowSummaryText)
+        }
+        return summaries.joined(separator: " · ")
+    }
+
+    private func usageCreditLine(
+        name: String,
+        display: CodexUsageWindowsDisplay
+    ) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
+                .font(.system(size: 12, weight: .semibold))
+            Text("\(name): \(display.creditText)")
+                .font(themeStore.uiFont(.caption, weight: .medium))
+                .lineLimit(2)
+        }
+    }
+
+    private func accessibilityValue(items: [CombinedUsageItem]) -> String {
+        guard !items.isEmpty else {
             return L10n.text("ui.account_usage_has_not_been_obtained_yet")
         }
-        return display.windows
-            .map { "\($0.accessibilityName)\($0.remainingText)" }
+        return items
+            .map { "\($0.providerName)\($0.window.accessibilityName)\($0.window.remainingText)" }
             .joined(separator: L10n.text("ui.list_separator"))
-    }
-}
-
-/// 首页和设置页共用同一套双圆环，避免同一份额度在不同入口出现相反或不一致的视觉语义。
-struct CodexUsageRingsGraphic: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let display: CodexUsageWindowsDisplay
-    let metrics: CodexUsageRingMetrics
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let windows = Array(display.windows.prefix(2))
-
-        ZStack {
-            ForEach(Array(windows.enumerated()), id: \.element.id) { index, window in
-                usageRing(
-                    progress: window.remainingProgress,
-                    diameter: windows.count == 1 || index == 1 ? metrics.diameter : metrics.innerDiameter,
-                    lineWidth: windows.count == 1 || index == 1 ? metrics.outerLineWidth : metrics.innerLineWidth,
-                    tint: tint(for: window),
-                    tokens: tokens
-                )
-            }
-
-            if !display.windows.contains(where: { $0.remainingProgress != nil }) {
-                Text("?")
-                    .font(.system(size: metrics.questionMarkSize, weight: .bold, design: .rounded))
-                    .foregroundStyle(tokens.tertiaryText)
-            }
-        }
-        .frame(width: metrics.diameter, height: metrics.diameter)
-        .accessibilityHidden(true)
-    }
-
-    private func usageRing(
-        progress: Double?,
-        diameter: CGFloat,
-        lineWidth: CGFloat,
-        tint: Color,
-        tokens: ThemeTokens
-    ) -> some View {
-        ZStack {
-            Circle()
-                .stroke(tokens.tertiaryText.opacity(0.18), lineWidth: lineWidth)
-
-            if let progress {
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-        }
-        .frame(width: diameter, height: diameter)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: progress)
-    }
-
-    private func tint(for window: CodexUsageWindowDisplay) -> Color {
-        if window.durationMinutes != nil {
-            return window.isDayScaleWindow ? .pink : .cyan
-        }
-        return window.kind == .secondary ? .pink : .cyan
     }
 }
 
 struct CodexUsageRingMetrics {
     let diameter: CGFloat
-    let innerDiameter: CGFloat
-    let outerLineWidth: CGFloat
-    let innerLineWidth: CGFloat
+    let lineWidth: CGFloat
+    let ringSpacing: CGFloat
     let hitSize: CGFloat
-    let questionMarkSize: CGFloat
 
     init(isCompact: Bool) {
-        diameter = isCompact ? 30 : 34
-        innerDiameter = isCompact ? 20 : 23
-        outerLineWidth = isCompact ? 3.4 : 3.8
-        innerLineWidth = isCompact ? 3 : 3.2
+        diameter = isCompact ? 32 : 36
+        lineWidth = isCompact ? 3 : 3.2
+        ringSpacing = isCompact ? 1.5 : 1.8
         // 图形在 iPhone 上收紧，但点击区始终保持 44pt，兼顾窄屏排版和触控可用性。
         hitSize = 44
-        questionMarkSize = isCompact ? 7 : 8
     }
 }
 
 #if DEBUG
-#Preview(L10n.text("ui.codex_usage_dual_loop_adaptive")) {
-    let loaded = CodexUsageWindowsDisplay.make(
-        rateLimit: RateLimitSummary(primaryUsedPercent: 62, secondaryUsedPercent: 38)
+#Preview(L10n.text("ui.token_quota")) {
+    let codex = CodexUsageWindowsDisplay.make(
+        rateLimit: RateLimitSummary(
+            limitName: "Codex",
+            secondaryUsedPercent: 44,
+            secondaryWindowDurationMins: 10_080
+        )
+    )
+    let claude = CodexUsageWindowsDisplay.make(
+        rateLimit: RateLimitSummary(
+            limitName: "Claude",
+            primaryUsedPercent: 48,
+            secondaryUsedPercent: 0,
+            primaryWindowDurationMins: 10_080,
+            secondaryWindowDurationMins: 300
+        ),
+        fallbackDisplayName: "Claude"
     )
     let pending = CodexUsageWindowsDisplay.make(rateLimit: nil)
 
     HStack(spacing: 24) {
-        CodexUsageRingsControl(display: loaded, onRefresh: {})
+        AIUsageRingsControl(
+            codexDisplay: codex,
+            claudeDisplay: claude,
+            includesClaude: true,
+            onRefresh: {}
+        )
             .environment(\.horizontalSizeClass, .regular)
-        CodexUsageRingsControl(display: loaded, onRefresh: {})
+        AIUsageRingsControl(
+            codexDisplay: codex,
+            claudeDisplay: claude,
+            includesClaude: true,
+            onRefresh: {}
+        )
             .environment(\.horizontalSizeClass, .compact)
-        CodexUsageRingsControl(display: pending, onRefresh: {})
+        AIUsageRingsControl(
+            codexDisplay: pending,
+            claudeDisplay: pending,
+            includesClaude: true,
+            onRefresh: {}
+        )
             .environment(\.horizontalSizeClass, .compact)
     }
     .environmentObject(ThemeStore())

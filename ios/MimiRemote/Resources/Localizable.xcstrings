@@ -107,13 +107,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mimi Remote"
+            "value" : "mimi"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "咪咪 Console"
+            "value" : "mimi"
           }
         }
       }
@@ -1360,6 +1360,7 @@
     },
     "ui.ai_usage" : {
       "comment" : "Settings section title grouping account usage for supported AI runtimes.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -13695,13 +13696,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mimi"
+            "value" : "mimi"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "咪咪"
+            "value" : "mimi"
           }
         }
       }
@@ -13729,13 +13730,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mimi Remote, %@"
+            "value" : "mimi, %@"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mimi Remote，%@"
+            "value" : "mimi，%@"
           }
         }
       }
