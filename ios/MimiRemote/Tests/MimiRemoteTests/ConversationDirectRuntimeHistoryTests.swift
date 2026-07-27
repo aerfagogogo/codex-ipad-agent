@@ -415,7 +415,8 @@ extension ConversationDataFlowTests {
         }
         XCTAssertEqual(plan.kind, .plan)
         XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
-        guard case .processGroup(let processGroup) = items[3] else {
+        guard case .workGroup(let workGroup) = items[3],
+              case .processGroup(let processGroup) = workGroup.entries.first else {
             return XCTFail("真实 reasoning 与后续命令应合并为可折叠阶段")
         }
         XCTAssertEqual(processGroup.header.itemID, "reasoning_processed")

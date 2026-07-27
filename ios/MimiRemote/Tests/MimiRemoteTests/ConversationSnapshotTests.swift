@@ -438,6 +438,86 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         .frame(width: 820, height: 260)
     }
 
+    private func makeWorkGroup(isExpanded: Bool) -> some View {
+        let themeStore = makeThemeStore()
+        let turnID = "snapshot-work-group"
+        let commentary = ConversationMessage(
+            stableID: "snapshot-work-commentary",
+            turnID: turnID,
+            role: .assistant,
+            kind: .commentary,
+            content: "我会先检查当前实现，再运行测试确认行为。",
+            createdAt: snapshotMessageDate,
+            sendStatus: .confirmed,
+            turnLifecycle: .completed
+        )
+        let command = ConversationMessage(
+            stableID: "snapshot-work-command",
+            turnID: turnID,
+            role: .system,
+            kind: .commandSummary,
+            content: "命令：xcodebuild test",
+            createdAt: snapshotMessageDate.addingTimeInterval(3),
+            sendStatus: .confirmed,
+            activityPayload: ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: "运行 iOS 单元测试",
+                status: "completed",
+                command: "xcodebuild test",
+                exitCode: 0
+            ),
+            turnLifecycle: .completed
+        )
+        let batch = ConversationActivityBatch(
+            id: "snapshot-work-batch",
+            messages: [command],
+            kind: .execution,
+            status: .completed
+        )
+        let group = ConversationWorkGroup(
+            id: "snapshot-work-group",
+            turnID: turnID,
+            entries: [
+                .commentary(commentary),
+                .activityBatch(batch)
+            ],
+            status: .completed,
+            startedAt: snapshotMessageDate,
+            endedAt: snapshotMessageDate.addingTimeInterval(74)
+        )
+        let layout = ConversationLayout(containerWidth: 820, horizontalSizeClass: .regular)
+
+        return VStack {
+            ConversationWorkGroupRow(
+                group: group,
+                layout: layout,
+                isExpanded: isExpanded,
+                toggleGroup: {}
+            ) {
+                Text(commentary.content)
+                    .font(themeStore.uiFont(size: 14))
+                    .foregroundStyle(themeStore.tokens(for: .light).primaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                ConversationActivityBatchRow(
+                    group: batch,
+                    layout: layout,
+                    isExpanded: false,
+                    expandedActivityIDs: [],
+                    toggleGroup: {},
+                    toggleActivity: { _ in }
+                )
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 24)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .background(themeStore.tokens(for: .light).background)
+        .frame(width: 820, height: isExpanded ? 260 : 110)
+    }
+
     private func makeCommentaryAndTrailingProcessConversation() -> some View {
         let sessionID = "snapshot-commentary"
         let turnID = "turn-commentary"
@@ -464,7 +544,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(1),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-old-command",
@@ -478,7 +559,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(2),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-visible",
@@ -494,7 +576,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 """,
                 createdAt: snapshotMessageDate.addingTimeInterval(3),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-trailing-reasoning-old",
@@ -509,7 +592,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(4),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-trailing-command",
@@ -523,7 +607,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(5),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-trailing-reasoning-latest",
@@ -538,7 +623,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(6),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             )
         ], sessionID: sessionID)
 
@@ -597,6 +683,20 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testExpandedProcessGroupRendering() {
         assertSnapshot(
             of: makeExpandedProcessGroup(),
+            as: .image(precision: 0.98, layout: .fixed(width: 820, height: 260))
+        )
+    }
+
+    func testCollapsedWorkGroupRendering() {
+        assertSnapshot(
+            of: makeWorkGroup(isExpanded: false),
+            as: .image(precision: 0.98, layout: .fixed(width: 820, height: 110))
+        )
+    }
+
+    func testExpandedWorkGroupRendering() {
+        assertSnapshot(
+            of: makeWorkGroup(isExpanded: true),
             as: .image(precision: 0.98, layout: .fixed(width: 820, height: 260))
         )
     }

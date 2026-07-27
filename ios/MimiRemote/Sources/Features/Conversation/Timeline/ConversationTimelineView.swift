@@ -19,6 +19,8 @@ struct ConversationTimelineView: View {
     @State private var isPreservingHistoryScroll = false
     @State private var expandedActivityIDs: Set<String> = []
     @State private var expandedActivityGroupIDs: Set<String> = []
+    // nil 表示跟随状态默认值；显式 true/false 都是用户 override，状态切换时优先保留。
+    @State private var workGroupExpansionOverrides: [String: Bool] = [:]
     @State private var timelineItemCache = ConversationTimelineItemCache()
     // 滚动任务 bookkeeping 不属于界面状态，放在引用对象中避免每次取消/重排任务都触发 body 失效。
     @State private var tailScrollCoordinator = ConversationTailScrollCoordinator()
@@ -161,6 +163,7 @@ struct ConversationTimelineView: View {
                 isUserScrollingTimeline = false
                 expandedActivityIDs.removeAll()
                 expandedActivityGroupIDs.removeAll()
+                workGroupExpansionOverrides.removeAll()
                 timelineItemCache.removeAll()
                 cancelPendingTailScrollAttempts()
                 if newID != nil {
@@ -355,6 +358,116 @@ struct ConversationTimelineView: View {
                 }
             )
             .equatable()
+        case .workGroup(let group):
+            let isExpanded = workGroupExpansionOverrides[group.id] ?? group.defaultIsExpanded
+            ConversationWorkGroupRow(
+                group: group,
+                layout: layout,
+                isExpanded: isExpanded,
+                toggleGroup: {
+                    toggleWorkGroup(
+                        group: group,
+                        isCurrentlyExpanded: isExpanded,
+                        proxy: proxy
+                    )
+                }
+            ) {
+                ForEach(group.entries) { entry in
+                    workGroupEntryRow(
+                        entry,
+                        activeUserDeliveryMessageID: activeUserDeliveryMessageID,
+                        outerGroupID: group.id,
+                        proxy: proxy
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func workGroupEntryRow(
+        _ entry: ConversationWorkGroupEntry,
+        activeUserDeliveryMessageID: UUID?,
+        outerGroupID: String,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        switch entry {
+        case .commentary(let message):
+            MessageRow(
+                message: message,
+                themeVersion: themeStore.themeVersion,
+                layout: layout,
+                showsActiveDeliveryStatus: message.id == activeUserDeliveryMessageID,
+                skills: sessionStore.capabilityList?.skills ?? [],
+                retry: { message in
+                    Task { await sessionStore.retryFailedUserMessage(message) }
+                },
+                stop: {
+                    sessionStore.sendCtrlC()
+                },
+                previewFile: { path in
+                    try await sessionStore.previewFile(path: path)
+                }
+            )
+            .equatable()
+        case .activity(let message):
+            ConversationActivityRow(
+                message: message,
+                layout: layout,
+                isExpanded: expandedActivityIDs.contains(entry.id),
+                toggle: {
+                    toggleActivityDetails(
+                        itemID: entry.id,
+                        scrollAnchorID: outerGroupID,
+                        proxy: proxy
+                    )
+                }
+            )
+            .equatable()
+        case .activityBatch(let group):
+            ConversationActivityBatchRow(
+                group: group,
+                layout: layout,
+                isExpanded: expandedActivityGroupIDs.contains(group.id),
+                expandedActivityIDs: expandedActivityIDs,
+                toggleGroup: {
+                    toggleActivityGroup(
+                        groupID: group.id,
+                        scrollAnchorID: outerGroupID,
+                        proxy: proxy
+                    )
+                },
+                toggleActivity: { message in
+                    toggleActivityDetails(
+                        itemID: ConversationTimelineItem.activityID(for: message),
+                        scrollAnchorID: outerGroupID,
+                        proxy: proxy
+                    )
+                }
+            )
+            .equatable()
+        case .processGroup(let group):
+            ConversationProcessGroupRow(
+                group: group,
+                layout: layout,
+                isExpanded: expandedActivityGroupIDs.contains(group.id),
+                expandedActivityIDs: expandedActivityIDs,
+                toggleGroup: {
+                    toggleActivityGroup(
+                        groupID: group.id,
+                        scrollAnchorID: outerGroupID,
+                        proxy: proxy
+                    )
+                },
+                toggleActivity: { message in
+                    toggleActivityDetails(
+                        itemID: ConversationTimelineItem.activityID(for: message),
+                        scrollAnchorID: outerGroupID,
+                        proxy: proxy
+                    )
+                }
+            )
+            .equatable()
         }
     }
 
@@ -385,7 +498,11 @@ struct ConversationTimelineView: View {
         }
     }
 
-    private func toggleActivityGroup(groupID: String, proxy: ScrollViewProxy) {
+    private func toggleActivityGroup(
+        groupID: String,
+        scrollAnchorID: String? = nil,
+        proxy: ScrollViewProxy
+    ) {
         let isExpanding = !expandedActivityGroupIDs.contains(groupID)
         let updateExpansion = {
             if isExpanding {
@@ -413,7 +530,40 @@ struct ConversationTimelineView: View {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                proxy.scrollTo(groupID, anchor: .bottom)
+                proxy.scrollTo(scrollAnchorID ?? groupID, anchor: .bottom)
+            }
+        }
+    }
+
+    private func toggleWorkGroup(
+        group: ConversationWorkGroup,
+        isCurrentlyExpanded: Bool,
+        proxy: ScrollViewProxy
+    ) {
+        let isExpanding = !isCurrentlyExpanded
+        let updateExpansion = {
+            // 不删除等于默认值的 override：用户选择必须在 running→terminal 后继续优先。
+            workGroupExpansionOverrides[group.id] = isExpanding
+        }
+        if accessibilityReduceMotion {
+            updateExpansion()
+        } else {
+            withAnimation(.spring(response: 0.32, dampingFraction: 1)) {
+                updateExpansion()
+            }
+        }
+        guard isExpanding, isTimelineNearBottom else {
+            return
+        }
+        Task { @MainActor in
+            await Task.yield()
+            guard workGroupExpansionOverrides[group.id] == true else {
+                return
+            }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(group.id, anchor: .bottom)
             }
         }
     }

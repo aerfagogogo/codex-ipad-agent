@@ -226,10 +226,16 @@ extension ConversationDataFlowTests {
         )
 
         let runningItems = ConversationTimelineItemBuilder.items(from: [reasoning, command, final])
-        guard case .processGroup(let runningGroup) = runningItems.first else {
+        guard case .workGroup(let runningWorkGroup) = runningItems.first,
+              case .processGroup(let runningGroup) = runningWorkGroup.entries.first else {
             return XCTFail("相邻 reasoning/command 应组成过程组")
         }
-        XCTAssertEqual(runningGroup.status, .running, "显式 inProgress 不能被 final 提前标记完成")
+        XCTAssertEqual(runningGroup.status, .running, "内层过程组继续反映显式 turn lifecycle")
+        XCTAssertEqual(
+            runningWorkGroup.status,
+            .running,
+            "final 开始 streaming 时显式 inProgress 仍应保持外层展开，等待 completed lifecycle 再收口"
+        )
 
         let completedMessages = [reasoning, command, final].map { message -> ConversationMessage in
             var next = message
@@ -237,10 +243,27 @@ extension ConversationDataFlowTests {
             return next
         }
         let completedItems = ConversationTimelineItemBuilder.items(from: completedMessages)
-        guard case .processGroup(let completedGroup) = completedItems.first else {
+        guard case .workGroup(let completedWorkGroup) = completedItems.first,
+              case .processGroup(let completedGroup) = completedWorkGroup.entries.first else {
             return XCTFail("完成后仍应保留同一个过程组")
         }
         XCTAssertEqual(completedGroup.status, .completed)
+        XCTAssertEqual(completedWorkGroup.status, .completed)
+
+        let legacyMessages = [reasoning, command, final].map { message -> ConversationMessage in
+            var next = message
+            next.turnLifecycle = nil
+            return next
+        }
+        let legacyItems = ConversationTimelineItemBuilder.items(from: legacyMessages)
+        guard case .workGroup(let legacyWorkGroup) = legacyItems.first else {
+            return XCTFail("旧 runtime 输入仍应保留外层工作组")
+        }
+        XCTAssertEqual(
+            legacyWorkGroup.status,
+            .completed,
+            "缺少 lifecycle 的旧 runtime 仍应由 final 兜底完成，不能永久停在运行态"
+        )
     }
 
     func testOrderingConflictFallsBackToFirstSeenSlotsInsteadOfTimestamps() {

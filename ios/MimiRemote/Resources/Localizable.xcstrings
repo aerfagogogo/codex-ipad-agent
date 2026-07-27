@@ -31118,6 +31118,142 @@
         }
       }
     },
+    "ui.work_completed" : {
+      "comment" : "Fallback title for a completed work group when no reliable duration is available.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Work completed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作已完成"
+          }
+        }
+      }
+    },
+    "ui.work_failed" : {
+      "comment" : "Fallback title for a failed work group when no reliable duration is available.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Work failed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作失败"
+          }
+        }
+      }
+    },
+    "ui.work_failed_after_value" : {
+      "comment" : "Failed work group title with a compact duration.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Work failed after %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作失败 · %@"
+          }
+        }
+      }
+    },
+    "ui.work_in_progress" : {
+      "comment" : "Fallback title for a running work group when no reliable duration is available.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Working"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作中"
+          }
+        }
+      }
+    },
+    "ui.work_interrupted" : {
+      "comment" : "Fallback title for an interrupted work group when no reliable duration is available.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Work interrupted"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作已中断"
+          }
+        }
+      }
+    },
+    "ui.work_interrupted_after_value" : {
+      "comment" : "Interrupted work group title with a compact duration.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Work interrupted after %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作已中断 · %@"
+          }
+        }
+      }
+    },
+    "ui.worked_for_value" : {
+      "comment" : "Completed work group title with a compact duration.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Worked for %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已工作 %@"
+          }
+        }
+      }
+    },
+    "ui.working_for_value" : {
+      "comment" : "Running work group title with a compact duration.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Working for %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已工作 %@"
+          }
+        }
+      }
+    },
     "ui.working_directory_is_not_in_remote_allowlist_value" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
