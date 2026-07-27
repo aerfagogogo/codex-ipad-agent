@@ -138,6 +138,12 @@ grep -Fq 'MIMI_REQUIRE_MACOS_SIGNATURE: "1"' .github/workflows/release.yml \
   || fail "Release workflow 没有对已发布 Darwin 归档执行签名门禁。"
 grep -Fq 'runs-on: macos-26' .github/workflows/release.yml \
   || fail "Release workflow 没有使用支持当前 Mac deployment target 的 macos-26 runner。"
+rust_target_setup_count="$(
+  grep -Fc 'rustup target add aarch64-apple-darwin x86_64-apple-darwin' \
+    .github/workflows/release.yml
+)"
+[[ "$rust_target_setup_count" == "2" ]] \
+  || fail "Release workflow 的 verify/release job 必须安装 universal macOS Rust targets。"
 grep -Fq 'scripts/build-macos-installer.sh' .github/workflows/release.yml \
   || fail "Release workflow 没有构建 Mac DMG。"
 grep -Fq 'scripts/check-macos-installer.sh --require-notarization' .github/workflows/release.yml \
