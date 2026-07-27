@@ -694,7 +694,7 @@ final class HostStore {
 #if DEBUG
     static func preview(_ lifecycle: HostLifecycleState) -> HostStore {
         let check = AgentCheck(name: "codex", ok: true, level: "", message: "Codex CLI 可执行", fix: nil)
-        let doctor = AgentDoctorResults(ok: true, version: "0.1.0", listen: "100.64.0.8:8787", checks: [check])
+        let doctor = AgentDoctorResults(ok: true, version: "0.1.0", listen: "mimi-demo.local:8787", checks: [check])
         let status = AgentStatus(
             processOK: true,
             serviceOK: true,
@@ -702,14 +702,14 @@ final class HostStore {
             serviceError: nil,
             version: "0.1.0+mac.240",
             serverVersion: "0.1.0+mac.240",
-            endpoint: "http://100.64.0.8:8787",
+            endpoint: "http://mimi-demo.local:8787",
             configPath: "~/Library/Application Support/mimi-remote/config.json",
             projects: 12,
             doctorOK: true,
             doctor: doctor,
             pairExpires: nil,
             runtimeStatus: AgentRuntimeStatusSnapshot(
-                checkedAt: "2026-07-27T12:00:00Z",
+                checkedAt: ISO8601DateFormatter().string(from: Date()),
                 runtimes: [
                     AgentRuntimeStatus(
                         id: "codex",

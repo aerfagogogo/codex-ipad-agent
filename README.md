@@ -84,6 +84,48 @@ On iPhone, the hierarchy stays compact and touch-first. On iPad, the same native
 - Multiple Mac profiles keep separate tokens in Keychain; one active connection keeps the mental model simple.
 - Readiness checks, reconnection, diagnostics, and bounded log export help recover without returning to the desk.
 
+## Designed around context, not screen size
+
+Mimi Remote keeps the same project and session model across devices, but each surface follows the way that device is actually used. The iPad becomes a context-preserving workbench; the Mac stays a compact operational control surface instead of duplicating the mobile app.
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <strong>Projects are first-class</strong><br />
+      <sub>Project state, quick starts, and recent conversations share one continuous workspace.</sub>
+    </td>
+    <td width="50%" align="center">
+      <strong>Settings keep your place</strong><br />
+      <sub>Quota, connectivity, language, appearance, and permissions open over the current context.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-workspace.png" alt="Mimi Remote project workspace on an iPad Pro simulator" width="100%" />
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-settings.png" alt="Mimi Remote settings sheet over the current iPad workbench" width="100%" />
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="artifacts/app-screenshots/mac-menu-bar-debug-2026-07-28.png" alt="Mimi Remote Mac menu bar control surface with service, runtime, and quota status" width="340" />
+</p>
+
+<p align="center">
+  <sub>The 340-point Mac menu keeps host health, Codex and Claude runtime state, quota rings, pairing, diagnostics, and recovery actions one click away.</sub>
+</p>
+
+The hierarchy is intentional:
+
+- **Preserve context:** the iPad sidebar keeps projects and sessions visible while the detail area changes; settings use a sheet so the workbench does not disappear.
+- **Disclose complexity progressively:** common status and actions stay close to the task, while setup, pairing, diagnostics, and deeper preferences move into focused surfaces.
+- **Show state before action:** connection health, runtime readiness, remaining quota, and permission mode are visible before controls that can change or interrupt work.
+- **Use each platform natively:** compact touch hierarchy on iPhone, multi-column workbench on iPad, and a dense menu bar utility on Mac — not one layout stretched across three screens.
+
+The two iPad detail images were captured from the current Debug build on a reused iPad Pro simulator. The Mac image uses the same source tree with Debug-only seeded UI and the public `mimi-demo.local` hostname. The installed Mac service was not restarted or replaced. See the [screenshot manifest](artifacts/app-screenshots/manifest.md).
+
 ## Architecture
 
 ```mermaid

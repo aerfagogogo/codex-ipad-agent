@@ -88,6 +88,48 @@ iPhone 保持紧凑、适合触屏；到了 iPad，同一套原生 SwiftUI 界�
 
 当前不做云端账号、代码托管、公网中继、任意远程 Shell、后台无人值守删除或多用户共享。完整边界见 [项目现状](docs/project-status.md)。
 
+## 设计围绕上下文，不围绕屏幕尺寸
+
+Mimi Remote 在不同设备上沿用同一套项目与会话模型，但界面会顺着设备的真实使用方式变化：iPad 是保留上下文的工作台，Mac 是紧凑的运行控制面，不会把同一张页面机械复制到所有端。
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <strong>项目是一级对象</strong><br />
+      <sub>项目状态、快捷启动和最近会话组成一个连续工作区。</sub>
+    </td>
+    <td width="50%" align="center">
+      <strong>打开设置也不丢上下文</strong><br />
+      <sub>额度、连接、语言、外观和权限叠加在当前工作台上。</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-workspace.png" alt="iPad Pro 模拟器上的 Mimi Remote 项目工作区" width="100%" />
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="artifacts/app-screenshots/ipad-pro-simulator-2026-07-28-settings.png" alt="叠加在 iPad 当前工作台上的 Mimi Remote 设置面板" width="100%" />
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="artifacts/app-screenshots/mac-menu-bar-debug-2026-07-28.png" alt="同时展示服务、运行时与额度状态的 Mimi Remote Mac 菜单栏控制面" width="340" />
+</p>
+
+<p align="center">
+  <sub>340pt 的 Mac 菜单栏窗口把宿主健康状态、Codex / Claude 运行时、额度环、配对、诊断和恢复动作放在一次点击内。</sub>
+</p>
+
+这套层级有几个明确原则：
+
+- **保留上下文：**iPad 侧栏持续展示项目和会话，右侧内容按任务变化；设置使用 Sheet，工作台不会突然消失。
+- **渐进披露复杂度：**高频状态和动作靠近任务，首次设置、配对、诊断和深层偏好进入独立界面。
+- **先看状态，再做动作：**连接健康度、Runtime 就绪状态、剩余额度和权限模式会先于可能改变或中断任务的控制项出现。
+- **遵循各平台习惯：**iPhone 是紧凑触屏层级，iPad 是多栏工作台，Mac 是高密度菜单栏工具，而不是把一套布局拉伸到三块屏幕。
+
+两张 iPad 细节图来自当前 Debug 构建和复用的 iPad Pro 模拟器；Mac 图来自同一份源码的 Debug 专用种子界面，并使用公开演示域名 `mimi-demo.local`。采集过程没有重启或替换已安装的 Mac 服务。完整记录见 [截图清单](artifacts/app-screenshots/manifest.md)。
+
 ## 架构
 
 ```mermaid
