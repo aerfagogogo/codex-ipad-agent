@@ -33,7 +33,7 @@ fi
 
 go_version="$(GOTOOLCHAIN=local "$go_binary" env GOVERSION)"
 if [[ "$go_version" != go1.25.* ]]; then
-  echo "Mimi Remote Mac 构建失败：agentd 需要 Go 1.25，当前为 $go_version。" >&2
+  echo "Mimi Remote Mac 构建失败：agentd 需要 Go 1.25，当前为 ${go_version}。" >&2
   exit 1
 fi
 
@@ -48,7 +48,7 @@ for architecture in "${architectures[@]}"; do
     arm64) go_arch=arm64 ;;
     x86_64) go_arch=amd64 ;;
     *)
-      echo "Mimi Remote Mac 构建失败：不支持架构 $architecture。" >&2
+      echo "Mimi Remote Mac 构建失败：不支持架构 ${architecture}。" >&2
       exit 1
       ;;
   esac

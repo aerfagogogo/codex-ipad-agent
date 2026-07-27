@@ -41,6 +41,9 @@ type Router struct {
 	tailscalePathLookup tailscaleNetworkPathLookup
 	// upstreamReadiness 对高频 readyz 轮询做短 TTL + single-flight，避免每 300ms 都创建 WebSocket。
 	upstreamReadiness *appServerReadinessProbe
+	// runtimeStatus 只服务本机菜单栏。额度探测可能访问 OAuth/Keychain 和 provider，
+	// 必须后台 single-flight 刷新，不能阻塞 readiness 或并发创建无上限连接。
+	runtimeStatus *runtimeStatusSnapshotCache
 	// pairingClaims 只记录短期票据的签名和过期时间，不保存长期 Token。
 	// 状态仅需覆盖当前进程内的短期重放窗口，服务重启后丢失是可接受的 MVP 取舍。
 	pairingClaimsMu sync.Mutex
@@ -104,6 +107,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	}
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
+	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", r.healthz)
@@ -143,6 +147,7 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux.Handle("/api/git/pull-request", r.auth.Middleware(http.HandlerFunc(r.gitPullRequestHandler)))
 	mux.Handle("/api/git/pull-request/status", r.auth.Middleware(http.HandlerFunc(r.gitPullRequestStatusHandler)))
 	mux.Handle("/api/voice/transcribe", r.auth.Middleware(http.HandlerFunc(r.voiceTranscribeHandler)))
+	mux.Handle("/api/runtime/status", r.auth.Middleware(http.HandlerFunc(r.runtimeStatusHandler)))
 	mux.Handle("/api/app-server/config", r.auth.Middleware(http.HandlerFunc(r.appServerConfigHandler)))
 	mux.Handle("/api/app-server/history-media/", r.auth.Middleware(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/ws", r.auth.Middleware(http.HandlerFunc(r.appServerGatewayWS)))
@@ -157,6 +162,7 @@ func (r *Router) Shutdown() {
 	if r == nil {
 		return
 	}
+	r.runtimeStatus.Close()
 	r.claudeBridge.shutdown()
 }
 

@@ -14,6 +14,7 @@ final class HostStore {
     private(set) var recentLogs: [String] = []
     private(set) var appliedFixes: [String] = []
     private(set) var isBusy = false
+    private(set) var isRefreshingStatus = false
     private(set) var homebrewLoaded = false
     private(set) var launchesAtLogin = false
     var lastError: String?
@@ -29,6 +30,7 @@ final class HostStore {
     private let logs: AgentLogClient
     private var didBootstrap = false
     private var monitorTask: Task<Void, Never>?
+    private var runtimeStatusFollowUpTask: Task<Void, Never>?
 
     init(
         agent: AgentCommandClient,
@@ -169,7 +171,9 @@ final class HostStore {
     }
 
     func refresh() async {
-        guard !isBusy else { return }
+        guard !isBusy, !isRefreshingStatus else { return }
+        isRefreshingStatus = true
+        defer { isRefreshingStatus = false }
         switch owner {
         case .homebrew:
             await refreshHomebrewStatus()
@@ -186,6 +190,12 @@ final class HostStore {
             } else {
                 await startMacAgentIfNeeded()
             }
+        }
+        if owner == .macApp,
+           status?.runtimeStatus?.refreshing == true
+            || status?.runtimeStatus?.hasRetryableFailure == true
+        {
+            scheduleRuntimeStatusFollowUp()
         }
     }
 
@@ -438,6 +448,8 @@ final class HostStore {
         case .enabled:
             do {
                 apply(try await agent.status())
+            } catch is CancellationError {
+                return
             } catch {
                 fail(error)
             }
@@ -464,6 +476,8 @@ final class HostStore {
             } else {
                 lifecycle = .migrationRequired
             }
+        } catch is CancellationError {
+            return
         } catch {
             fail(error)
         }
@@ -555,6 +569,67 @@ final class HostStore {
         }
     }
 
+    private func scheduleRuntimeStatusFollowUp() {
+        guard runtimeStatusFollowUpTask == nil else { return }
+        runtimeStatusFollowUpTask = Task { [weak self] in
+            guard let self else { return }
+            defer { runtimeStatusFollowUpTask = nil }
+            // Provider 冷启动可能涉及 bridge 启动、OAuth 刷新和网络查询。
+            // 菜单先展示缓存/refreshing，再在后台有界轮询，不能重新阻塞 readiness。
+            // 首次 unavailable 还会在服务端 15 秒失败 TTL 后重试一次；48 轮
+            // 足够覆盖两次最慢 42 秒 provider 刷新，同时避免永久轮询。
+            var didRetryUnavailable = false
+            for _ in 0..<48 {
+                let delay: Duration
+                if isRefreshingStatus {
+                    delay = .seconds(2)
+                } else if let nextDelay = Self.runtimeStatusFollowUpDelay(
+                    snapshot: status?.runtimeStatus,
+                    didRetryUnavailable: didRetryUnavailable
+                ) {
+                    delay = nextDelay
+                } else {
+                    return
+                }
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, owner == .macApp, !isBusy else { return }
+                guard !isRefreshingStatus else { continue }
+
+                guard Self.runtimeStatusFollowUpDelay(
+                    snapshot: status?.runtimeStatus,
+                    didRetryUnavailable: didRetryUnavailable
+                ) != nil else {
+                    return
+                }
+                if status?.runtimeStatus?.refreshing != true,
+                   status?.runtimeStatus?.hasRetryableFailure == true
+                {
+                    didRetryUnavailable = true
+                }
+                isRefreshingStatus = true
+                await refreshMacAgentStatus()
+                isRefreshingStatus = false
+            }
+        }
+    }
+
+    nonisolated static func runtimeStatusFollowUpDelay(
+        snapshot: AgentRuntimeStatusSnapshot?,
+        didRetryUnavailable: Bool
+    ) -> Duration? {
+        if snapshot?.refreshing == true {
+            return .seconds(2)
+        }
+        if !didRetryUnavailable, snapshot?.hasRetryableFailure == true {
+            return .seconds(15)
+        }
+        return nil
+    }
+
     private func fail(_ error: Error) {
         lastError = error.localizedDescription
         lifecycle = .failed(error.localizedDescription)
@@ -575,7 +650,72 @@ final class HostStore {
             projects: 12,
             doctorOK: true,
             doctor: doctor,
-            pairExpires: nil
+            pairExpires: nil,
+            runtimeStatus: AgentRuntimeStatusSnapshot(
+                checkedAt: "2026-07-27T12:00:00Z",
+                runtimes: [
+                    AgentRuntimeStatus(
+                        id: "codex",
+                        title: "Codex",
+                        enabled: true,
+                        state: .connected,
+                        authMode: "chatgpt",
+                        planType: "plus",
+                        reason: nil,
+                        rateLimits: AgentRuntimeRateLimits(
+                            limitID: "codex",
+                            limitName: "Codex",
+                            planType: "plus",
+                            reachedType: nil,
+                            availability: "available",
+                            unavailableReason: nil,
+                            primary: AgentRuntimeRateLimitWindow(
+                                usedPercent: 62,
+                                windowDurationMins: 300,
+                                resetsAt: Int64(Date().addingTimeInterval(80 * 60).timeIntervalSince1970)
+                            ),
+                            secondary: AgentRuntimeRateLimitWindow(
+                                usedPercent: 31,
+                                windowDurationMins: 10_080,
+                                resetsAt: Int64(Date().addingTimeInterval(4 * 24 * 60 * 60).timeIntervalSince1970)
+                            ),
+                            hasCredits: true,
+                            creditsUnlimited: false,
+                            creditBalance: "12.34"
+                        )
+                    ),
+                    AgentRuntimeStatus(
+                        id: "claude",
+                        title: "Claude",
+                        enabled: true,
+                        state: .connected,
+                        authMode: "oauth",
+                        planType: "pro",
+                        reason: nil,
+                        rateLimits: AgentRuntimeRateLimits(
+                            limitID: "claude",
+                            limitName: "Claude",
+                            planType: "pro",
+                            reachedType: nil,
+                            availability: "available",
+                            unavailableReason: nil,
+                            primary: AgentRuntimeRateLimitWindow(
+                                usedPercent: 24,
+                                windowDurationMins: 300,
+                                resetsAt: Int64(Date().addingTimeInterval(3 * 60 * 60).timeIntervalSince1970)
+                            ),
+                            secondary: AgentRuntimeRateLimitWindow(
+                                usedPercent: 48,
+                                windowDurationMins: 10_080,
+                                resetsAt: Int64(Date().addingTimeInterval(5 * 24 * 60 * 60).timeIntervalSince1970)
+                            ),
+                            hasCredits: nil,
+                            creditsUnlimited: nil,
+                            creditBalance: nil
+                        )
+                    ),
+                ]
+            )
         )
         let agent = AgentCommandClient(
             configExists: { lifecycle != .notConfigured },
