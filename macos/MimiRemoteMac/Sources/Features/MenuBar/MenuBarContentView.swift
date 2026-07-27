@@ -7,13 +7,12 @@ struct MenuBarContentView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
     @State private var confirmsQuit = false
-    @State private var isRefreshing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             MenuStatusHeader(
                 lifecycle: store.lifecycle,
-                isRefreshing: isRefreshing || store.isBusy,
+                isRefreshing: store.isRefreshingStatus || store.isBusy,
                 refresh: refreshStatus
             )
 
@@ -24,6 +23,17 @@ struct MenuBarContentView: View {
 
                 MenuConnectionSummary(status: status, owner: store.owner)
                     .padding(.vertical, 9)
+
+                Divider()
+                    .opacity(0.45)
+
+                MenuRuntimeSummary(
+                    snapshot: status.runtimeStatus,
+                    serviceAvailable: status.serviceOK,
+                    owner: store.owner,
+                    lifecycle: store.lifecycle
+                )
+                .padding(.vertical, 9)
 
                 Divider()
                     .opacity(0.45)
@@ -133,12 +143,7 @@ struct MenuBarContentView: View {
     }
 
     private func refreshStatus() {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        Task {
-            await store.refresh()
-            isRefreshing = false
-        }
+        Task { await store.refresh() }
     }
 
     private func presentWindow(_ window: AppWindow) {
@@ -332,6 +337,401 @@ private struct MenuMetadataRow<Content: View>: View {
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct MenuRuntimeSummary: View {
+    let snapshot: AgentRuntimeStatusSnapshot?
+    let serviceAvailable: Bool
+    let owner: ServiceOwner
+    let lifecycle: HostLifecycleState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 5) {
+                Text("AI 运行时")
+                    .font(.caption2.weight(.semibold))
+                    .textCase(.uppercase)
+
+                Spacer(minLength: 4)
+
+                if snapshot?.refreshing == true {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityLabel("正在刷新运行时状态")
+                }
+
+                if let snapshotStatusText {
+                    Text(snapshotStatusText)
+                        .font(.caption2)
+                }
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 3)
+
+            MenuRuntimeRow(
+                runtime: runtime(id: "codex"),
+                fallbackTitle: "Codex",
+                systemImage: "chevron.left.forwardslash.chevron.right",
+                serviceAvailable: serviceAvailable,
+                isRefreshing: snapshot?.refreshing == true,
+                isStale: isStale,
+                missingDetail: missingDetail
+            )
+
+            MenuRuntimeRow(
+                runtime: runtime(id: "claude"),
+                fallbackTitle: "Claude",
+                systemImage: "sparkles",
+                serviceAvailable: serviceAvailable,
+                isRefreshing: snapshot?.refreshing == true,
+                isStale: isStale,
+                missingDetail: missingDetail
+            )
+        }
+    }
+
+    private func runtime(id: String) -> AgentRuntimeStatus? {
+        snapshot?.runtimes.first { $0.id == id }
+    }
+
+    private var isStale: Bool {
+        guard serviceAvailable, lifecycleAllowsFreshStatus else { return true }
+        return snapshot?.isExpired() == true
+    }
+
+    private var lifecycleAllowsFreshStatus: Bool {
+        switch lifecycle {
+        case .ready, .migrationRequired:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var missingDetail: String {
+        if owner == .homebrew {
+            return "升级或迁移到新版 Mac App 后可显示运行时状态。"
+        }
+        if !serviceAvailable {
+            return "Mac 服务不可用。"
+        }
+        return "运行时状态暂不可获取，请刷新或运行诊断。"
+    }
+
+    private var snapshotStatusText: String? {
+        if snapshot?.refreshing == true {
+            return snapshot?.checkedDate == nil ? "正在首次获取" : "后台刷新"
+        }
+        if isStale, snapshot != nil {
+            return "状态可能已过期"
+        }
+        if let checkedDate = snapshot?.checkedDate {
+            return "更新于 \(checkedDate.formatted(date: .omitted, time: .shortened))"
+        }
+        if owner == .homebrew {
+            return "需要升级"
+        }
+        return nil
+    }
+}
+
+private struct MenuRuntimeRow: View {
+    let runtime: AgentRuntimeStatus?
+    let fallbackTitle: String
+    let systemImage: String
+    let serviceAvailable: Bool
+    let isRefreshing: Bool
+    let isStale: Bool
+    let missingDetail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(stateColor)
+                .frame(width: 16, height: 19)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(runtime?.title ?? fallbackTitle)
+                        .font(.callout.weight(.semibold))
+
+                    Spacer(minLength: 4)
+
+                    Circle()
+                        .fill(stateColor)
+                        .frame(width: 6, height: 6)
+                        .accessibilityHidden(true)
+
+                    Text(stateTitle)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(stateColor)
+
+                    if let accountLabel {
+                        Text("· \(accountLabel)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !usageWindows.isEmpty {
+                    HStack(alignment: .top, spacing: 6) {
+                        ForEach(usageWindows) { item in
+                            MenuRuntimeQuotaWindow(item: item)
+                        }
+                    }
+                }
+
+                if let quotaNoticeText {
+                    Text(quotaNoticeText)
+                        .font(.caption2.weight(quotaIsExhausted ? .semibold : .regular))
+                        .foregroundStyle(quotaIsExhausted ? Color.red : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let creditSummary {
+                    Text(creditSummary)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if usageWindows.isEmpty, quotaNoticeText == nil, creditSummary == nil {
+                    Text(detailText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.horizontal, 3)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var usageWindows: [MenuRuntimeQuotaWindowItem] {
+        guard let limits = runtime?.rateLimits else { return [] }
+        let reached = limits.reachedType?.lowercased() ?? ""
+        var result: [MenuRuntimeQuotaWindowItem] = []
+        if let primary = limits.primary,
+           primary.usedPercent != nil || primary.resetsAt != nil || primary.windowDurationMins != nil
+        {
+            result.append(MenuRuntimeQuotaWindowItem(
+                id: "primary",
+                window: primary,
+                isExhausted: primary.isExhausted || reached.contains("primary")
+            ))
+        }
+        if let secondary = limits.secondary,
+           secondary.usedPercent != nil || secondary.resetsAt != nil || secondary.windowDurationMins != nil
+        {
+            result.append(MenuRuntimeQuotaWindowItem(
+                id: "secondary",
+                window: secondary,
+                isExhausted: secondary.isExhausted || reached.contains("secondary")
+            ))
+        }
+        return result
+    }
+
+    private var stateTitle: String {
+        if runtime?.state == .disabled { return "未启用" }
+        if isStale { return "状态已过期" }
+        if isRefreshing, runtime?.reason == "refresh_in_progress" {
+            return "正在刷新"
+        }
+        guard let runtime else {
+            return serviceAvailable ? "状态未知" : "不可用"
+        }
+        switch runtime.state {
+        case .connected: return "已连接"
+        case .available: return "运行时可用"
+        case .signedOut: return "未登录"
+        case .disabled: return "未启用"
+        case .unavailable: return "不可用"
+        }
+    }
+
+    private var accountLabel: String? {
+        if runtime?.authMode == "api_key" {
+            return "API Key"
+        }
+        if let plan = runtime?.effectivePlanType {
+            return formattedAccountValue(plan)
+        }
+        guard let authMode = runtime?.authMode else { return nil }
+        switch authMode {
+        case "api_key": return "API Key"
+        case "chatgpt": return "ChatGPT"
+        case "oauth": return "OAuth"
+        case "bedrock": return "Bedrock"
+        default: return formattedAccountValue(authMode)
+        }
+    }
+
+    private var detailText: String {
+        guard let runtime else {
+            return missingDetail
+        }
+        if runtime.reason == "refresh_in_progress" {
+            return "正在后台获取连接与额度状态…"
+        }
+        if runtime.authMode == "api_key",
+           runtime.state == .available || runtime.state == .connected
+        {
+            return "API Key 已配置（按量计费），将在首次请求时验证有效性。"
+        }
+        switch runtime.state {
+        case .disabled:
+            return "可在设置中启用 Claude 实验通道。"
+        case .signedOut:
+            return "请在这台 Mac 上完成登录。"
+        case .unavailable:
+            return "运行时暂不可用，请刷新或运行诊断。"
+        case .connected, .available:
+            return "尚未获取到额度数据。"
+        }
+    }
+
+    private var stateColor: Color {
+        if runtime?.state == .disabled { return .secondary }
+        if isStale { return .orange }
+        if isRefreshing, runtime?.reason == "refresh_in_progress" {
+            return .secondary
+        }
+        guard let runtime else {
+            return serviceAvailable ? .secondary : .red
+        }
+        switch runtime.state {
+        case .connected: return Color.mimiPrimary
+        case .available: return Color.blue
+        case .signedOut: return Color.orange
+        case .disabled: return Color.secondary
+        case .unavailable: return Color.red
+        }
+    }
+
+    private var quotaIsExhausted: Bool {
+        runtime?.rateLimits?.isExhausted == true
+    }
+
+    private var quotaNoticeText: String? {
+        guard let limits = runtime?.rateLimits else { return nil }
+        if limits.isExhausted {
+            return "额度已耗尽，等待窗口重置。"
+        }
+        switch limits.availability?.lowercased() {
+        case "partial":
+            return "仅显示已观测到的额度窗口。"
+        case "unavailable":
+            return "额度暂不可获取。"
+        default:
+            return nil
+        }
+    }
+
+    private var creditSummary: String? {
+        guard runtime?.authMode != "api_key", let limits = runtime?.rateLimits else {
+            return nil
+        }
+        if limits.creditsUnlimited == true {
+            return "Credits 无限"
+        }
+        if let balance = limits.creditBalance?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !balance.isEmpty
+        {
+            return "Credits 余额 \(balance)"
+        }
+        if limits.hasCredits == false {
+            return "Credits 未启用"
+        }
+        if limits.hasCredits == true {
+            return "Credits 可用"
+        }
+        return nil
+    }
+
+    private func formattedAccountValue(_ raw: String) -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return raw }
+        switch value.lowercased() {
+        case "plus": return "Plus"
+        case "pro": return "Pro"
+        case "team": return "Team"
+        case "business": return "Business"
+        case "enterprise": return "Enterprise"
+        default: return value
+        }
+    }
+}
+
+private struct MenuRuntimeQuotaWindowItem: Identifiable {
+    let id: String
+    let window: AgentRuntimeRateLimitWindow
+    let isExhausted: Bool
+}
+
+private struct MenuRuntimeQuotaWindow: View {
+    let item: MenuRuntimeQuotaWindowItem
+
+    private var window: AgentRuntimeRateLimitWindow {
+        item.window
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(window.durationLabel)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 2)
+                Text(valueText)
+                    .font(.caption2.monospacedDigit().weight(.medium))
+                    .foregroundStyle(item.isExhausted ? Color.red : Color.primary)
+            }
+
+            if item.isExhausted || window.remainingFraction != nil {
+                let progress = item.isExhausted ? 0 : (window.remainingFraction ?? 0)
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .tint(item.isExhausted ? Color.red : progressColor(progress))
+                    .accessibilityLabel("\(window.durationLabel)额度")
+                    .accessibilityValue(valueText)
+            }
+
+            if let resetDate = window.resetDate {
+                Text("\(resetText(resetDate)) 重置")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            item.isExhausted ? Color.red.opacity(0.07) : Color.primary.opacity(0.045),
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
+    }
+
+    private var valueText: String {
+        if item.isExhausted { return "已耗尽" }
+        return window.remainingPercentText.map { "剩余 \($0)" } ?? "等待刷新"
+    }
+
+    private func progressColor(_ remaining: Double) -> Color {
+        if remaining <= 0.05 { return .red }
+        if remaining <= 0.2 { return .orange }
+        return .mimiPrimary
+    }
+
+    private func resetText(_ date: Date) -> String {
+        if Calendar.current.isDateInToday(date) {
+            return date.formatted(date: .omitted, time: .shortened)
+        }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 }
 
