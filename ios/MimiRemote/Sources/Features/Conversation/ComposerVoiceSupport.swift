@@ -339,10 +339,10 @@ struct AdvancedTurnOptionsSheet: View {
                     TextField(L10n.text("ui.service_name"), text: optionalStringBinding(\.serviceName))
                 }
 
-                Section("Reasoning & Service Tier") {
+                Section(L10n.text("ui.reasoning_and_service_tier")) {
                     // 标准选择器只暴露四档；完整协议值集中在开发者高级选项中，
                     // 让 Low、Codex Max、auto 和 flex 仍可显式配置而不污染普通入口。
-                    Picker("Reasoning Effort", selection: $draft.reasoningEffort) {
+                    Picker(L10n.text("ui.reasoning_effort"), selection: $draft.reasoningEffort) {
                         Text(L10n.text("ui.default_option"))
                             .tag(Optional<CodexAppServerReasoningEffort>.none)
                         ForEach(CodexAppServerReasoningEffort.allCases) { effort in
@@ -351,12 +351,13 @@ struct AdvancedTurnOptionsSheet: View {
                         }
                     }
 
-                    Picker("Service Tier", selection: $draft.serviceTier) {
+                    Picker(L10n.text("ui.service_tier"), selection: $draft.serviceTier) {
                         Text(L10n.text("ui.default_option"))
                             .tag(Optional<String>.none)
-                        Text("auto").tag(Optional("auto"))
-                        Text("priority").tag(Optional("priority"))
-                        Text("flex").tag(Optional("flex"))
+                        // Service tier 是协议枚举值，展示时保持原值，不能参与本地化。
+                        Text(verbatim: "auto").tag(Optional("auto"))
+                        Text(verbatim: "priority").tag(Optional("priority"))
+                        Text(verbatim: "flex").tag(Optional("flex"))
                     }
                 }
 
