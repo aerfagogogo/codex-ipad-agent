@@ -91,21 +91,55 @@ iPhone 保持紧凑、适合触屏；到了 iPad，同一套原生 SwiftUI 界�
 ## 架构
 
 ```mermaid
-flowchart TD
-    A["Mimi Remote<br/>iPhone / iPad"] -->|"Tailscale / 同一局域网 · Bearer Token<br/>REST + WebSocket"| B["agentd<br/>Go control plane / 安全网关"]
-    B -->|"allowlist · cwd scope<br/>JSON-RPC policy"| C["Codex app-server"]
-    C --> D["Codex CLI 凭证与本机项目"]
-    B -->|"runtime=claude<br/>稳定 session + cursor"| E["常驻 alleycat-claude-bridge"]
-    E -->|"每个 thread 一个 stdio JSONL 进程"| F["Claude Code headless"]
+flowchart LR
+    subgraph Mobile["移动设备"]
+        App["Mimi Remote<br/>SwiftUI 工作台"]
+        Keychain["Keychain<br/>每个 Mac Profile 一份访问 Token"]
+        Keychain -.-> App
+    end
+
+    subgraph Mac["你的 Mac — 唯一控制面"]
+        Host["Mimi Remote Mac<br/>安装 · 配对 · Doctor · 服务生命周期"]
+        Agent["agentd<br/>认证 · REST API · WebSocket 网关 · 权限策略"]
+        Local["受限本地操作<br/>项目 · 文件 · Git · Worktree · Action"]
+        Codex["Codex app-server<br/>受管 loopback 进程"]
+        Bridge["alleycat-claude-bridge<br/>常驻 · 实验通道"]
+        Claude["Claude Code headless<br/>每个 thread 一个 stdio 进程"]
+        State["本机状态<br/>工作区 · 凭证 · 历史"]
+
+        Host -->|"启动与监控"| Agent
+        Agent -->|"校验后的本机 API"| Local
+        Agent -->|"过滤后的 JSON-RPC"| Codex
+        Agent -->|"稳定 session + cursor"| Bridge
+        Bridge -->|"stdio JSONL"| Claude
+        Local --> State
+        Codex --> State
+        Claude --> State
+    end
+
+    App -->|"Tailscale 或同一局域网<br/>Bearer Token · REST + WebSocket"| Agent
 ```
 
-安全边界：
+Mimi Remote 是原生客户端，不是另一台运行 Agent 的主机。所有远程请求都终止在你 Mac 上的 `agentd`；iOS 不会直接连接 Codex app-server、Claude Code、本机文件系统或项目维护者提供的云服务。
 
-- iOS 只保存访问 `agentd` 的外侧 Token，Token 存在 Keychain。
-- `agentd` 只允许配置中的项目、`browse_roots` 和受管 Worktree。
-- Codex app-server capability token 只保存在 Mac 的 loopback 环境。
-- 远程命令只允许执行配置中的 action，并带确认、超时和输出上限。
+系统有三条清晰的调用路径：
+
+1. **宿主生命周期：**Mimi Remote Mac 负责安装、配对、诊断、启动和监控 `agentd`，不经过每一条业务请求。命令行和 Linux 场景可以由 Homebrew 或 user-systemd 运行同一个 Go 服务。
+2. **受限本机能力：**项目发现、安全文件读取、Git、受管 Worktree、诊断、语音代理和配置 Action 都通过 `agentd` 的认证 REST API 完成，不需要绕经 Codex。
+3. **Agent 会话：**移动端只连接一个对外的 Codex-compatible JSON-RPC / WebSocket 网关。`agentd` 校验 runtime、method、由项目映射得到的工作目录、Payload 大小和连接预算，再把请求路由到主通道 Codex app-server 或实验通道 Claude bridge。
+
+Codex app-server 是由 `agentd` 管理的 loopback 进程，也是默认运行时。可选的常驻 Claude bridge 使用稳定 session key 和 replay cursor 承接移动端重连，并为每个活动 thread 管理一个 Claude Code headless stdio 进程。Provider 差异被限制在适配层内；移动端共用界面不代表两条通道功能完全一致。
+
+安全边界集中在 Mac：
+
+- 二维码只携带短期、单次使用的配对票据；换取到的长期 `agentd` Token 按 Mac Profile 保存到 Keychain。
+- app-server capability token 与 Provider 凭证不会离开 Mac；受管 app-server 只监听 loopback。
+- 客户端提交的项目 ID 必须通过配置中的项目 allowlist 解析；文件访问限制在项目根目录、`browse_roots` 和受管 Worktree。
+- Git 与 Worktree API 只暴露固定、经过参数校验的操作；通用命令必须预先配置为 Action，并受确认、超时、请求大小和输出上限约束。
+- 正常断线后通过 sequence / cursor 回放实时事件；超出回放窗口时读取本机权威历史，不会重新提交同一个 Turn。
 - 跨网络默认推荐 Tailscale；未安装时可在同一局域网直连。两种方式都不应把 `agentd` 暴露到公网。
+
+这套架构部署简单、边界可审计，但代价也很明确：Mac 必须保持唤醒并能从私有网络访问，`agentd` 与所选 Runtime 也必须健康。当前没有维护者运营的中继、云端状态同步或 APNs 后台执行链路。
 
 ### Claude Code 为什么需要单独 bridge
 
