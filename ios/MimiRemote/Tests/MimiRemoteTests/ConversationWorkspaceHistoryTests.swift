@@ -2875,7 +2875,10 @@ extension ConversationDataFlowTests {
         await manualRefreshTask.value
 
         XCTAssertEqual(store.selectedHistorySavingsNotice?.kind, .fullFailed)
-        XCTAssertTrue(store.statusMessage?.contains("完整历史加载失败") == true)
+        XCTAssertEqual(
+            store.statusMessage,
+            L10n.format("ui.full_history_loading_failed_value", MockError.timeout.localizedDescription)
+        )
         XCTAssertFalse(store.isRefreshingSelectedSession)
         XCTAssertEqual(conversationStore.messages(for: history.id).map(\.content), ["已缓存历史"])
     }

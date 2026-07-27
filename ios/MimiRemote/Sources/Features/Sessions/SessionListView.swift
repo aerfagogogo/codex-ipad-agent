@@ -307,6 +307,7 @@ struct SessionListView: View {
             )
             .contentShape(Rectangle())
             .onTapGesture { select(session) }
+            .accessibilityIdentifier("sessions.row.\(session.id)")
             .sessionRowActions(session)
             .listRowInsets(.init(top: 4, leading: 20, bottom: 4, trailing: 20))
             .listRowSeparator(.hidden)

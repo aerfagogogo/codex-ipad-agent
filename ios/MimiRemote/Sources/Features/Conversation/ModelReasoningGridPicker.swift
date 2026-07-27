@@ -207,6 +207,7 @@ struct ModelReasoningGridPicker: View {
         .padding(12)
         .frame(width: pickerWidth)
         .background(tokens.surface)
+        .accessibilityIdentifier("composer.modelPicker")
         .onChange(of: selection) { _, _ in
             guard dragPoint == nil else { return }
             previewSelection = nil

@@ -4,6 +4,9 @@ struct ConversationLayout: Equatable {
     // 560pt 以下的实际可用宽度无法稳定容纳带文字标签的主操作行。即使系统仍报
     // regular size class（某些 iPad 极窄分屏），也必须使用紧凑指标。
     static let compactComposerMaximumWidth: CGFloat = 560
+    // 紧凑工具栏不再依靠 ViewThatFits 同时构造两棵完整控件树。达到这个宽度后
+    // 才显示模型标题；更窄时仍通过 accessibilityValue 提供完整模型信息。
+    static let compactComposerModelTitleMinimumWidth: CGFloat = 380
 
     let horizontalInset: CGFloat
     let messageSideSpacer: CGFloat
@@ -29,6 +32,13 @@ struct ConversationLayout: Equatable {
             return true
         }
         return availableWidth.map { $0 < compactComposerMaximumWidth } ?? false
+    }
+
+    static func compactComposerShowsModelTitle(availableWidth: CGFloat?) -> Bool {
+        guard let availableWidth else {
+            return false
+        }
+        return availableWidth >= compactComposerModelTitleMinimumWidth
     }
 
     init(

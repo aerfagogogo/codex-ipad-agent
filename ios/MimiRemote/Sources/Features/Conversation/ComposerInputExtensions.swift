@@ -512,6 +512,7 @@ extension ComposerView {
         .keyboardShortcut(.return, modifiers: .command)
         .disabled(!enabled)
         .accessibilityLabel(isGoalMode ? L10n.text("ui.send_target_task") : (composerState.voiceDraftNeedsReview ? L10n.text("ui.confirm_sending_voice_draft") : L10n.text("ui.send")))
+        .accessibilityIdentifier("composer.send")
     }
 
     var permissionTitle: String {

@@ -791,10 +791,7 @@ struct ComposerView: View {
             .accessibilityLabel(L10n.text("ui.expand_input_box"))
             .accessibilityValue(collapsedPhoneComposerText)
 
-            ViewThatFits(in: .horizontal) {
-                compactPrimaryComposerToolbar(showsModelTitle: true)
-                compactPrimaryComposerToolbar(showsModelTitle: false)
-            }
+            compactPrimaryComposerToolbar(showsModelTitle: compactToolbarShowsModelTitle)
         }
         .padding(8)
         .frame(maxWidth: .infinity)
@@ -1012,11 +1009,7 @@ struct ComposerView: View {
     @ViewBuilder
     var primaryComposerToolbar: some View {
         if usesCompactComposerMetrics {
-            // 按真实内容宽度降级，长模型名、Fast 标记和大字号都无需猜设备阈值。
-            ViewThatFits(in: .horizontal) {
-                compactPrimaryComposerToolbar(showsModelTitle: true)
-                compactPrimaryComposerToolbar(showsModelTitle: false)
-            }
+            compactPrimaryComposerToolbar(showsModelTitle: compactToolbarShowsModelTitle)
         } else {
             HStack(spacing: 10) {
                 addContentButton
@@ -1031,28 +1024,45 @@ struct ComposerView: View {
         }
     }
 
+    var compactToolbarShowsModelTitle: Bool {
+        ConversationLayout.compactComposerShowsModelTitle(availableWidth: availableWidth)
+    }
+
     func compactPrimaryComposerToolbar(showsModelTitle: Bool) -> some View {
-        HStack(spacing: 8) {
-            compactLeadingComposerControls(showsModelTitle: showsModelTitle)
+        // 这些控件各自带有 Menu/Popover 和较深的 modifier 链。若继续把 opaque
+        // 返回类型直接拼成 TupleView，arm64 真机会在收集泛型元数据时动态扩张栈，
+        // 最终落到 __chkstk_darwin。类型擦除只限定在这条紧凑工具栏边界内。
+        let leadingControls = AnyView(compactLeadingComposerControls(showsModelTitle: showsModelTitle))
+        let optionsControl = AnyView(composerOptionsMenu)
+        let microphoneControl = AnyView(voiceMicControl)
+        let submitControl = AnyView(sendButton(showLabels: false))
+
+        return HStack(spacing: 8) {
+            leadingControls
             Spacer(minLength: 0)
-            composerOptionsMenu
-            voiceMicControl
-            sendButton(showLabels: false)
+            optionsControl
+            microphoneControl
+            submitControl
         }
         .frame(maxWidth: .infinity)
     }
 
-    @ViewBuilder
     func compactLeadingComposerControls(showsModelTitle: Bool) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let addControl = AnyView(addContentButton)
+        let modelControl = AnyView(modelPickerControl(showsTitle: showsModelTitle))
+        let deliveryControl = canChooseRunningFollowUpDelivery
+            ? AnyView(followUpDeliveryMenu)
+            : nil
 
         // 「添加」、模型和运行中追加方式都直接影响下一次发送，用一条连续胶囊表达关系；
-        // 每个子按钮仍保留各自 44pt 命中区和独立的 VoiceOver 动作。
-        HStack(spacing: 0) {
-            addContentButton
-            modelPickerControl(showsTitle: showsModelTitle)
-            if canChooseRunningFollowUpDelivery {
-                followUpDeliveryMenu
+        // 每个子按钮仍保留各自 44pt 命中区和独立的 VoiceOver 动作。这里同样先擦除
+        // 三个复杂子树，避免父 HStack 再次聚合其完整泛型类型。
+        return HStack(spacing: 0) {
+            addControl
+            modelControl
+            if let deliveryControl {
+                deliveryControl
             }
         }
         .background {
@@ -1076,12 +1086,14 @@ struct ComposerView: View {
             } label: {
                 Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
             }
+            .accessibilityIdentifier("composer.mode.plan")
 
             Button {
                 setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
             } label: {
                 Label(composerState.isGoalModeSelected ? L10n.text("ui.close_target_task") : L10n.text("ui.target_task"), systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
             }
+            .accessibilityIdentifier("composer.mode.goal")
 
             if canCollapsePhoneComposer {
                 Divider()
@@ -1099,7 +1111,19 @@ struct ComposerView: View {
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.session_options"))
+        .accessibilityValue(composerOptionsAccessibilityValue)
         .accessibilityHint(L10n.text("ui.adjust_build_settings_and_sending_mode"))
+        .accessibilityIdentifier("composer.options")
+    }
+
+    var composerOptionsAccessibilityValue: String {
+        if composerState.isPlanModeSelected {
+            return L10n.text("ui.planning_mode")
+        }
+        if composerState.isGoalModeSelected {
+            return L10n.text("ui.target_task")
+        }
+        return L10n.text("ui.normal")
     }
 
     var voiceMicControl: some View {
@@ -1113,6 +1137,7 @@ struct ComposerView: View {
             }
         )
         .layoutPriority(0)
+        .accessibilityIdentifier("composer.voice")
     }
 
     var voiceKeyboardShortcutButton: some View {
@@ -1178,6 +1203,7 @@ struct ComposerView: View {
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.add_content"))
+        .accessibilityIdentifier("composer.addContent")
         .help(L10n.text("ui.add_an_image_plugin_skill_or_shortcut_phrase"))
         .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
             AddContentPanel(
@@ -1472,6 +1498,7 @@ struct ComposerView: View {
         .accessibilityLabel(L10n.text("ui.switch_model_and_inference_strength"))
         .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
         .accessibilityHint(L10n.text("ui.double_click_to_select_you_can_also_drag"))
+        .accessibilityIdentifier("composer.model")
         .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
             ModelReasoningGridPicker(
                 options: modelOptionsForMenu,

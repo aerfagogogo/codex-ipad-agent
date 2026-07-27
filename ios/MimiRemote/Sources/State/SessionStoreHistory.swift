@@ -282,9 +282,11 @@ extension SessionStore {
                 // job 也不能让新代 full 恢复直接返回成功。
                 cancelHistoryLoadJob(existing, sessionID: session.id)
             } else if existing.loadMode == loadMode {
-                if force && existing.cachePolicy != .bypass {
-                    // 回前台/网络恢复必须读取“此刻”的权威历史。加入一个更早启动的
+                if recoveryGeneration != nil && force && existing.cachePolicy != .bypass {
+                    // 只有回前台/网络恢复需要读取“此刻”的权威历史：加入一个更早启动的
                     // reuseRecent job 可能拿到自主 turn 完成前的快照，因此直接换代。
+                    // 用户手动刷新没有恢复代次，应复用并提升已有 quiet job；否则会制造
+                    // 重复请求，且旧 waiter 可能吞掉本该呈现给用户的失败反馈。
                     cancelHistoryLoadJob(existing, sessionID: session.id)
                 } else {
                     // 已有同模式加载时直接等待同一个 job，避免切换/刷新制造重复大包请求。

@@ -5,6 +5,56 @@ import XCTest
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testCompactComposerModelTitleUsesDeterministicWidthPolicy() {
+        XCTAssertFalse(ConversationLayout.compactComposerShowsModelTitle(availableWidth: nil))
+        XCTAssertFalse(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 379))
+        XCTAssertTrue(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 380))
+        XCTAssertTrue(ConversationLayout.compactComposerShowsModelTitle(availableWidth: 520))
+    }
+
+    func testCompactComposerToolbarRendersWithoutGenericMetadataStackOverflow() throws {
+        let defaultsSuite = "CompactComposerToolbarTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+        defaults.removePersistentDomain(forName: defaultsSuite)
+        defer {
+            defaults.removePersistentDomain(forName: defaultsSuite)
+        }
+
+        let conversationStore = ConversationStore()
+        let sessionStore = SessionStore(
+            appStore: AppStore(defaults: defaults),
+            conversationStore: conversationStore,
+            logStore: LogStore()
+        )
+        let runningSession = makeSession(
+            id: "compact-toolbar-running",
+            projectID: "compact-toolbar-project",
+            title: "紧凑工具栏回归",
+            status: "running",
+            source: "codex",
+            activeTurnID: "compact-toolbar-turn"
+        )
+        sessionStore.sessionsByID[runningSession.id] = runningSession
+        sessionStore.selectedSessionID = runningSession.id
+        sessionStore.sessionControlStateByID[runningSession.id] = .takenOver
+        let themeStore = ThemeStore(defaults: defaults)
+        let view = ComposerView(availableWidth: 390)
+            .environmentObject(sessionStore)
+            .environmentObject(themeStore)
+            .environment(\.horizontalSizeClass, .compact)
+            .defaultAppStorage(defaults)
+            .frame(width: 390, height: 360)
+        let host = UIHostingController(rootView: view)
+
+        host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 360)
+        host.view.setNeedsLayout()
+        host.view.layoutIfNeeded()
+        let fittingSize = host.sizeThatFits(in: CGSize(width: 390, height: 360))
+
+        XCTAssertGreaterThan(host.view.bounds.width, 0)
+        XCTAssertGreaterThan(fittingSize.height, 0)
+    }
+
     func testComposerRetiredTextViewDropsLateInputMethodCallbacks() {
         var boundText = ""
         var focusRequestID: UUID?

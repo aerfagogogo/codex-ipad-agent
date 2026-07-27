@@ -5,21 +5,13 @@ import SnapshotTesting
 @testable import MimiRemote
 
 @MainActor
-final class ConversationSnapshotTests: XCTestCase {
-    // 快照只验证布局和样式，消息时间固定，避免每次运行因当前分钟变化产生视觉误报。
-    private let snapshotMessageDate = Date(timeIntervalSince1970: 1_782_879_660)
+class SimplifiedChineseSnapshotTestCase: XCTestCase {
     private var hadStoredAppLanguage = false
     private var previousAppLanguageRawValue: String?
     private var didOverrideAppLanguage = false
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        // 现有参考图按 iPad 渲染环境录制；Universal 后 iPhone 会使用不同 trait，
-        // 容易产生设备差异误报。iPhone 适配用模拟器 smoke 和后续专属基线覆盖。
-        try XCTSkipUnless(
-            UIDevice.current.userInterfaceIdiom == .pad,
-            "Snapshot 基线按 iPad 设备录制，iPhone 目标跳过这组视觉基线。"
-        )
         let defaults = UserDefaults.standard
         hadStoredAppLanguage = defaults.object(forKey: AppLanguage.preferenceKey) != nil
         previousAppLanguageRawValue = defaults.string(forKey: AppLanguage.preferenceKey)
@@ -38,6 +30,22 @@ final class ConversationSnapshotTests: XCTestCase {
             didOverrideAppLanguage = false
         }
         try super.tearDownWithError()
+    }
+}
+
+@MainActor
+final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
+    // 快照只验证布局和样式，消息时间固定，避免每次运行因当前分钟变化产生视觉误报。
+    private let snapshotMessageDate = Date(timeIntervalSince1970: 1_782_879_660)
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        // 现有参考图按 iPad 渲染环境录制；Universal 后 iPhone 会使用不同 trait，
+        // 容易产生设备差异误报。iPhone 适配用模拟器 smoke 和后续专属基线覆盖。
+        try XCTSkipUnless(
+            UIDevice.current.userInterfaceIdiom == .pad,
+            "Snapshot 基线按 iPad 设备录制，iPhone 目标跳过这组视觉基线。"
+        )
     }
 
     func testWorkspaceOpenCurrentDirectoryButton() {
@@ -1266,7 +1274,7 @@ final class ConversationSnapshotTests: XCTestCase {
 }
 
 @MainActor
-final class PendingApprovalCardSnapshotTests: XCTestCase {
+final class PendingApprovalCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
     private let longCommand = """
     echo "=== find agentd logs ==="; ls -lat /private/tmp/*agentd* /private/tmp/mimi* /tmp/*agentd* 2>/dev/null | head
     echo "=== app LaunchAgent log config ==="; plutil -p "/Applications/Mimi Remote Mac.app/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
@@ -1330,7 +1338,7 @@ final class PendingApprovalCardSnapshotTests: XCTestCase {
 }
 
 @MainActor
-final class PendingUserInputSheetSnapshotTests: XCTestCase {
+final class PendingUserInputSheetSnapshotTests: SimplifiedChineseSnapshotTestCase {
     func testInlineUserInputCardMatchesApprovalChromeOnIPad() {
         let request = AgentUserInputRequest(
             id: "inline-style-request",

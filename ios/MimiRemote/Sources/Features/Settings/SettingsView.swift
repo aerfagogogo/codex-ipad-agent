@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
     @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+    @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -31,13 +32,29 @@ struct SettingsView: View {
                 settingsContent(tokens: tokens, resolvedColorScheme: resolvedColorScheme)
             }
         }
+        // 扫码 Cover 固定挂在 SettingsView 根层。首次系统相机权限弹窗会触发 Form
+        // 重建，但不会再销毁负责呈现相机的宿主。
+        .fullScreenCover(
+            item: $qrScannerPresentation.intent,
+            onDismiss: qrScannerPresentation.didDismiss
+        ) { intent in
+            QRCodeScannerSheet(
+                onDismiss: qrScannerPresentation.dismiss,
+                onChooseManualConnection: {
+                    qrScannerPresentation.chooseManualConnection(for: intent)
+                },
+                onCode: { rawValue in
+                    await qrScannerPresentation.submit(rawValue, intent: intent)
+                }
+            )
+        }
     }
 
     @ViewBuilder
     private func settingsContent(tokens: ThemeTokens, resolvedColorScheme: ColorScheme) -> some View {
         Group {
             if isInitialSetup {
-                InitialPairingView()
+                InitialPairingView(qrScannerPresentation: qrScannerPresentation)
             } else {
                 settingsForm(tokens: tokens)
                     .frame(maxWidth: 720)
@@ -76,7 +93,7 @@ struct SettingsView: View {
         return Form {
             Section(L10n.text("ui.mac_connection")) {
                 NavigationLink {
-                    ConnectionManagementView()
+                    ConnectionManagementView(qrScannerPresentation: qrScannerPresentation)
                 } label: {
                     LabeledContent(
                         L10n.text("ui.status"),
@@ -84,6 +101,7 @@ struct SettingsView: View {
                             ?? (sessionStore.isNetworkUnavailable ? L10n.text("ui.network_is_unavailable") : appStore.connectionStatus.title)
                     )
                 }
+                .accessibilityIdentifier("settings.connectionManagement")
                 LabeledContent(L10n.text("ui.connection_address"), value: appStore.endpoint)
                 if appStore.isUsingLocalConnection {
                     LabeledContent(L10n.text("ui.connection_method"), value: L10n.text("ui.direct_connection_to_this_machine"))
@@ -311,6 +329,7 @@ private struct VoiceInputProviderRow: View {
                         .font(themeStore.uiFont(.footnote))
                         .foregroundStyle(tokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("settings.voiceInputProvider.\(provider.rawValue).description")
                 }
 
                 Spacer(minLength: 12)
@@ -355,10 +374,11 @@ private struct VoiceInputProviderRow: View {
 private struct ConnectionManagementView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
 
     var body: some View {
         Form {
-            InitialConnectionSettingsSections()
+            InitialConnectionSettingsSections(qrScannerPresentation: qrScannerPresentation)
         }
         .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
         .frame(maxWidth: 720)
@@ -1035,16 +1055,22 @@ private struct CodexCompactUsageWindow: View {
                             .font(themeStore.uiFont(.callout, weight: .semibold))
                             .monospacedDigit()
                             .foregroundStyle(tokens.primaryText)
+                            .fixedSize(horizontal: true, vertical: false)
                         Text(window.title)
                             .font(themeStore.uiFont(.caption))
                             .foregroundStyle(tokens.secondaryText)
                             .lineLimit(1)
+                            // 不允许标题靠省略号“勉强塞进”第一种布局；空间不足时让
+                            // ViewThatFits 选择下方的两行结构，完整展示“短窗口”等语义。
+                            .fixedSize(horizontal: true, vertical: false)
                     }
 
                     Text(window.resetText)
                         .font(themeStore.uiFont(.caption2))
                         .foregroundStyle(tokens.secondaryText)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .allowsTightening(true)
                 }
 
                 Spacer(minLength: 12)
@@ -1074,9 +1100,11 @@ private struct CodexCompactUsageWindow: View {
                         .font(themeStore.uiFont(.callout, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(tokens.primaryText)
+                        .fixedSize(horizontal: true, vertical: false)
                     Text(window.title)
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
 
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -1107,12 +1135,13 @@ private struct CodexCompactUsageWindow: View {
 private struct InitialPairingView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
-            InitialConnectionSettingsSections()
+            InitialConnectionSettingsSections(qrScannerPresentation: qrScannerPresentation)
         }
         .themedSettingsForm(tokens: tokens)
         // 连接是短表单而不是数据表；宽窗口里限制行长，按钮和输入框不会被拉成整屏。

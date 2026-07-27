@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 enum ConnectionQRCodeScanIntent: Equatable, Identifiable {
@@ -32,17 +33,94 @@ enum ConnectionQRCodeScanIntent: Equatable, Identifiable {
     }
 }
 
+@MainActor
+final class ConnectionQRCodeScannerPresentation: ObservableObject {
+    typealias SubmissionHandler = (
+        _ rawValue: String,
+        _ intent: ConnectionQRCodeScanIntent
+    ) async -> QRCodeScannerSubmissionResult
+
+    @Published var intent: ConnectionQRCodeScanIntent?
+    @Published private(set) var isRequestingCameraAuthorization = false
+
+    private var submissionHandler: SubmissionHandler?
+    private var manualConnectionHandler: ((ConnectionQRCodeScanIntent) -> Void)?
+    private var dismissalHandler: (() -> Void)?
+
+    func configure(
+        onSubmit: @escaping SubmissionHandler,
+        onChooseManualConnection: @escaping (ConnectionQRCodeScanIntent) -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
+        submissionHandler = onSubmit
+        manualConnectionHandler = onChooseManualConnection
+        dismissalHandler = onDismiss
+    }
+
+    func request(_ requestedIntent: ConnectionQRCodeScanIntent) {
+        guard !isRequestingCameraAuthorization else {
+            return
+        }
+
+        guard AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined else {
+            intent = requestedIntent
+            return
+        }
+
+        // 这里必须由 SettingsView 持有的引用对象承接回调。系统权限弹窗期间 Form
+        // 可能重建 Section；若回调只写 Section 自己的 @State，结果会落到已经失效的
+        // 视图实例上，首次扫码便不会继续展示 Sheet。
+        isRequestingCameraAuthorization = true
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] _ in
+            // 权限回调会早于系统弹窗的 dismiss 动画结束。若同一帧设置 sheet item，
+            // UIKit 会拒绝新的 presenter，但绑定已经变成非 nil，SwiftUI 之后也不会
+            // 再尝试。留出一个很短的系统过渡窗口，再提交唯一一次呈现状态。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+                guard let self else {
+                    return
+                }
+                self.isRequestingCameraAuthorization = false
+                if self.intent == nil {
+                    self.intent = requestedIntent
+                }
+            }
+        }
+    }
+
+    func dismiss() {
+        intent = nil
+    }
+
+    func chooseManualConnection(for intent: ConnectionQRCodeScanIntent) {
+        manualConnectionHandler?(intent)
+    }
+
+    func submit(
+        _ rawValue: String,
+        intent: ConnectionQRCodeScanIntent
+    ) async -> QRCodeScannerSubmissionResult {
+        guard let submissionHandler else {
+            return .rejected(L10n.text("ui.the_connection_was_not_completed_please_confirm_that"))
+        }
+        return await submissionHandler(rawValue, intent)
+    }
+
+    func didDismiss() {
+        dismissalHandler?()
+    }
+}
+
 // 首次连接流程按功能区拆出，主设置页只负责导航和页面编排。
 struct InitialConnectionSettingsSections: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
 
     @State private var endpoint = ""
     @State private var token = ""
     @State private var didLoadInitialConnection = false
-    @State private var presentedQRCodeScanner: ConnectionQRCodeScanIntent?
     @State private var pendingManualConnectionIntent: ConnectionQRCodeScanIntent?
     @State private var isSavingConnection = false
     @State private var isAddingConnectionProfile = false
@@ -93,7 +171,7 @@ struct InitialConnectionSettingsSections: View {
 #endif
                 if !appStore.isConfigured && !appStore.localAgentDetected {
                     MacInstallationSetupView(
-                        isScanDisabled: isSavingConnection,
+                        isScanDisabled: isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization,
                         onScan: beginScanningMac
                     )
                 } else {
@@ -106,7 +184,7 @@ struct InitialConnectionSettingsSections: View {
                     .buttonStyle(.borderedProminent)
                     .tint(tokens.primaryAction)
                     .controlSize(.large)
-                    .disabled(isSavingConnection)
+                    .disabled(isSavingConnection || qrScannerPresentation.isRequestingCameraAuthorization)
                     .accessibilityIdentifier("settings.connection.scanQRCode")
                 }
 
@@ -180,17 +258,9 @@ struct InitialConnectionSettingsSections: View {
             } footer: {
                 Text(connectionSectionFooter)
             }
-            // Form 会把透明 Group 展开成多个 Section。所有弹窗必须挂在这个始终存在的
-            // 具体 Section 上，确保已连接时新增的“已保存/状态”Section 不会生成多个 presenter。
-            .sheet(item: $presentedQRCodeScanner, onDismiss: finishQRCodeScannerPresentation) { intent in
-                QRCodeScannerSheet(onDismiss: {
-                    presentedQRCodeScanner = nil
-                }, onChooseManualConnection: {
-                    pendingManualConnectionIntent = intent
-                }) { rawValue in
-                    await applyScannedConnection(rawValue, intent: intent)
-                }
-            }
+            // 这里注册业务回调；真正的相机 Cover 由 SettingsView 根层呈现，避免
+            // 系统权限弹窗期间 Form.Section 重建后丢失 presenter。
+            .onAppear(perform: configureQRCodeScannerPresentation)
             .sheet(item: $profileRenameTarget) { profile in
                 ConnectionProfileRenameSheet(profile: profile) { displayName in
                     try appStore.renameConnectionProfile(id: profile.id, displayName: displayName)
@@ -277,6 +347,7 @@ struct InitialConnectionSettingsSections: View {
                 } label: {
                     Label(L10n.text("ui.debug_enter_the_workbench"), systemImage: "wrench.and.screwdriver")
                 }
+                .accessibilityIdentifier("settings.debugEnterWorkbench")
             }
 #endif
         }
@@ -853,14 +924,23 @@ struct InitialConnectionSettingsSections: View {
     }
 
     private func beginScanningMac() {
-        // 扫码呈现前只改一个 item-driven 状态。若同时改写表单结构，Form 会重建承载
-        // sheet 的 Section，首次呈现可能被 SwiftUI 当成 presenter 消失而立即关闭。
+        let intent: ConnectionQRCodeScanIntent = appStore.activeConnectionProfile == nil
+            ? .initialConnection
+            : .addConnectionProfile
         pendingManualConnectionIntent = nil
-        if appStore.activeConnectionProfile == nil {
-            presentedQRCodeScanner = .initialConnection
-        } else {
-            presentedQRCodeScanner = .addConnectionProfile
-        }
+        qrScannerPresentation.request(intent)
+    }
+
+    private func configureQRCodeScannerPresentation() {
+        qrScannerPresentation.configure(
+            onSubmit: { rawValue, intent in
+                await applyScannedConnection(rawValue, intent: intent)
+            },
+            onChooseManualConnection: { intent in
+                pendingManualConnectionIntent = intent
+            },
+            onDismiss: finishQRCodeScannerPresentation
+        )
     }
 
     private func beginRepairingCurrentProfile() {
@@ -869,7 +949,9 @@ struct InitialConnectionSettingsSections: View {
             return
         }
         pendingManualConnectionIntent = nil
-        presentedQRCodeScanner = .repairCurrentProfile(expectedProfileID: activeProfileID)
+        qrScannerPresentation.request(
+            .repairCurrentProfile(expectedProfileID: activeProfileID)
+        )
     }
 
     private func finishQRCodeScannerPresentation() {

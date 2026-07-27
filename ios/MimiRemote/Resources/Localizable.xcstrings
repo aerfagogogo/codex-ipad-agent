@@ -302,6 +302,7 @@
     },
     "ui.accessible" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -432,6 +433,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "动作不可用"
+          }
+        }
+      }
+    },
+    "ui.active_just_now" : {
+      "comment" : "Relative activity shown on a workspace card.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Active now"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刚刚活跃"
           }
         }
       }
@@ -932,6 +950,7 @@
     },
     "ui.after_opening_a_project_it_will_be_displayed" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -2038,6 +2057,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Application"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "应用"
+          }
+        }
+      }
+    },
+    "ui.apply" : {
+      "comment" : "Applies a custom workspace Emoji.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apply"
           }
         },
         "zh-Hans" : {
@@ -3156,6 +3192,7 @@
     },
     "ui.can_t_connect_to_mac_assistant" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -3337,6 +3374,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "变更"
+          }
+        }
+      }
+    },
+    "ui.change_workspace_icon_value" : {
+      "comment" : "Accessibility label for changing a workspace icon. First value is workspace name; second is current Emoji.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Change icon for %@, current icon %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更换 %@ 的图标，当前图标 %@"
           }
         }
       }
@@ -3583,6 +3637,7 @@
     },
     "ui.choose_a_workspace" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -4180,6 +4235,7 @@
     },
     "ui.close_shortcut_button" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -5237,6 +5293,7 @@
     },
     "ui.connecting_to_mac_assistant" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -6257,6 +6314,7 @@
     },
     "ui.currently_value" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -6268,6 +6326,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在%@…"
+          }
+        }
+      }
+    },
+    "ui.custom_emoji" : {
+      "comment" : "Title for entering a custom workspace Emoji.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Custom Emoji"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自定义 Emoji"
           }
         }
       }
@@ -6336,6 +6411,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "深浅色"
+          }
+        }
+      }
+    },
+    "ui.days_ago_value" : {
+      "comment" : "Relative workspace activity in days.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ d ago"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 天前"
           }
         }
       }
@@ -6536,6 +6628,7 @@
     },
     "ui.decision_sent" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8186,6 +8279,40 @@
         }
       }
     },
+    "ui.enter_one_emoji" : {
+      "comment" : "Placeholder for the custom workspace Emoji field.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter one Emoji"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入一个 Emoji"
+          }
+        }
+      }
+    },
+    "ui.enter_one_valid_emoji" : {
+      "comment" : "Validation message for the custom workspace Emoji field.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter one valid Emoji."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入一个有效的 Emoji"
+          }
+        }
+      }
+    },
     "ui.enter_path_manually" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -8495,6 +8622,7 @@
     },
     "ui.expand_shortcut_button" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -8683,6 +8811,7 @@
     },
     "ui.extremely_high" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -9876,6 +10005,23 @@
         }
       }
     },
+    "ui.git_branch_diverged" : {
+      "comment" : "Compact Git status for a branch that is both ahead and behind its upstream.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Diverged"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已分叉"
+          }
+        }
+      }
+    },
     "ui.git_change_panel" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -9906,6 +10052,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Git 变更"
+          }
+        }
+      }
+    },
+    "ui.git_changes_count_value" : {
+      "comment" : "Compact count of changed files on a workspace card.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ changes"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 个改动"
           }
         }
       }
@@ -9974,6 +10137,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Git 状态 · %@"
+          }
+        }
+      }
+    },
+    "ui.git_synced" : {
+      "comment" : "Compact Git status when a clean branch matches its upstream.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Synced"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已同步"
           }
         }
       }
@@ -10424,6 +10604,7 @@
     },
     "ui.highest" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -10609,6 +10790,23 @@
         }
       }
     },
+    "ui.hours_ago_value" : {
+      "comment" : "Relative workspace activity in hours.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ hr ago"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 小时前"
+          }
+        }
+      }
+    },
     "ui.hours_count" : {
       "localizations" : {
         "en" : {
@@ -10748,6 +10946,7 @@
     },
     "ui.if_you_have_just_launched_tailscale_or_mac" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -10969,6 +11168,7 @@
     },
     "ui.impact_items" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -11021,6 +11221,7 @@
     },
     "ui.in" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -11038,6 +11239,7 @@
     },
     "ui.in_conversation" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -11722,6 +11924,7 @@
     },
     "ui.join" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -11739,6 +11942,7 @@
     },
     "ui.join_conversation" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -11756,6 +11960,7 @@
     },
     "ui.join_conversation_page" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -11876,6 +12081,7 @@
     },
     "ui.latest_updates" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -12608,6 +12814,7 @@
     },
     "ui.lowest" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -12619,23 +12826,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "最低"
-          }
-        }
-      }
-    },
-    "ui.maximum" : {
-      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "maximum"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "最大"
           }
         }
       }
@@ -12795,6 +12985,7 @@
     },
     "ui.mac_preparation" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -12897,6 +13088,7 @@
     },
     "ui.manage_the_worktree_for_this_workspace_in_the" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -13095,6 +13287,24 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "ui.maximum" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "maximum"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最大"
           }
         }
       }
@@ -13492,6 +13702,7 @@
     },
     "ui.mimi" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -13605,6 +13816,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "我的"
+          }
+        }
+      }
+    },
+    "ui.minutes_ago_value" : {
+      "comment" : "Relative workspace activity in minutes.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ min ago"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 分钟前"
           }
         }
       }
@@ -13902,6 +14130,7 @@
     },
     "ui.moved_to_new_git_worktree" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14106,6 +14335,7 @@
     },
     "ui.need_to_retry_915015f1" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14463,6 +14693,7 @@
     },
     "ui.no_history_yet" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14939,6 +15170,7 @@
     },
     "ui.none" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14956,6 +15188,7 @@
     },
     "ui.normal" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -14967,6 +15200,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正常"
+          }
+        }
+      }
+    },
+    "ui.not_a_git_repository" : {
+      "comment" : "Compact workspace-card status for a folder outside Git.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not a Git repository"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "非 Git 项目"
           }
         }
       }
@@ -15399,6 +15649,7 @@
     },
     "ui.open_details" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -15553,6 +15804,7 @@
     },
     "ui.open_the_first_workspace" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -15981,6 +16233,7 @@
     },
     "ui.path_is_bound" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16117,6 +16370,7 @@
     },
     "ui.permission_status" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -16389,6 +16643,7 @@
     },
     "ui.please_check_mac_assistant_and_network_connections" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -17546,6 +17801,7 @@
     },
     "ui.quick" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -17933,23 +18189,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "最近会话"
-          }
-        }
-      }
-    },
-    "ui.twelve_hours_ago" : {
-      "comment" : "Label for the boundary before workspace sessions whose last activity was more than twelve hours ago.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "12 hours ago"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "12 小时前"
           }
         }
       }
@@ -18433,6 +18672,7 @@
     },
     "ui.refresh_session_list" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18518,6 +18758,7 @@
     },
     "ui.refresh_workspace" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18586,6 +18827,7 @@
     },
     "ui.refreshing_workspace" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -18977,6 +19219,7 @@
     },
     "ui.remove_from_conversation_page" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -19130,6 +19373,7 @@
     },
     "ui.request" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -19353,6 +19597,7 @@
     },
     "ui.restore_all_display" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -19814,6 +20059,7 @@
     },
     "ui.risk" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -20922,6 +21168,7 @@
     },
     "ui.select_to_view_session_worktree_and_permission_status" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -21620,6 +21867,7 @@
     },
     "ui.session_pages_show_all_workspaces" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -21637,6 +21885,7 @@
     },
     "ui.session_pages_show_workspace_selection" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -21790,6 +22039,7 @@
     },
     "ui.sessions_count" : {
       "comment" : "Plural count used in the localized iOS UI.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "variations" : {
@@ -21946,6 +22196,7 @@
     },
     "ui.show_details_on_the_right" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -22511,6 +22762,7 @@
     },
     "ui.start_mimi_assistant_on_mac_first" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -24893,6 +25145,7 @@
     },
     "ui.the_current_workspace_is_within_authorized_scope_and" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -25675,6 +25928,7 @@
     },
     "ui.the_recovery_session_page_shows_all_workspaces" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -25966,6 +26220,7 @@
     },
     "ui.the_session_is_still_created_and_continues_to" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26173,6 +26428,7 @@
     },
     "ui.the_workspace_has_not_been_opened_yet" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26190,6 +26446,7 @@
     },
     "ui.the_workspace_is_used_to_manage_the_development" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -26768,6 +27025,7 @@
     },
     "ui.this_workspace_might_have_been_moved_deleted_or" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -27617,8 +27875,26 @@
         }
       }
     },
+    "ui.twelve_hours_ago" : {
+      "comment" : "Label for the boundary before workspace sessions whose last activity was more than twelve hours ago.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "12 hours ago"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "12 小时前"
+          }
+        }
+      }
+    },
     "ui.type" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -28523,6 +28799,7 @@
     },
     "ui.value" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -30406,223 +30683,19 @@
         }
       }
     },
-    "ui.active_just_now" : {
-      "comment" : "Relative activity shown on a workspace card.",
+    "ui.workspace" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Active now"
+            "value" : "workspace"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "刚刚活跃"
-          }
-        }
-      }
-    },
-    "ui.apply" : {
-      "comment" : "Applies a custom workspace Emoji.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Apply"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "应用"
-          }
-        }
-      }
-    },
-    "ui.change_workspace_icon_value" : {
-      "comment" : "Accessibility label for changing a workspace icon. First value is workspace name; second is current Emoji.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Change icon for %@, current icon %@"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "更换 %@ 的图标，当前图标 %@"
-          }
-        }
-      }
-    },
-    "ui.custom_emoji" : {
-      "comment" : "Title for entering a custom workspace Emoji.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Custom Emoji"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "自定义 Emoji"
-          }
-        }
-      }
-    },
-    "ui.days_ago_value" : {
-      "comment" : "Relative workspace activity in days.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ d ago"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ 天前"
-          }
-        }
-      }
-    },
-    "ui.enter_one_emoji" : {
-      "comment" : "Placeholder for the custom workspace Emoji field.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Enter one Emoji"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "输入一个 Emoji"
-          }
-        }
-      }
-    },
-    "ui.enter_one_valid_emoji" : {
-      "comment" : "Validation message for the custom workspace Emoji field.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Enter one valid Emoji."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "请输入一个有效的 Emoji"
-          }
-        }
-      }
-    },
-    "ui.git_branch_diverged" : {
-      "comment" : "Compact Git status for a branch that is both ahead and behind its upstream.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Diverged"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已分叉"
-          }
-        }
-      }
-    },
-    "ui.git_changes_count_value" : {
-      "comment" : "Compact count of changed files on a workspace card.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ changes"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ 个改动"
-          }
-        }
-      }
-    },
-    "ui.git_synced" : {
-      "comment" : "Compact Git status when a clean branch matches its upstream.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Synced"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "已同步"
-          }
-        }
-      }
-    },
-    "ui.hours_ago_value" : {
-      "comment" : "Relative workspace activity in hours.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ hr ago"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ 小时前"
-          }
-        }
-      }
-    },
-    "ui.minutes_ago_value" : {
-      "comment" : "Relative workspace activity in minutes.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ min ago"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "%@ 分钟前"
-          }
-        }
-      }
-    },
-    "ui.not_a_git_repository" : {
-      "comment" : "Compact workspace-card status for a folder outside Git.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Not a Git repository"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "非 Git 项目"
+            "value" : "工作区"
           }
         }
       }
@@ -30644,40 +30717,6 @@
         }
       }
     },
-    "ui.workspace_icon" : {
-      "comment" : "Title for choosing a workspace Emoji icon.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Workspace icon"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "工作区图标"
-          }
-        }
-      }
-    },
-    "ui.workspace" : {
-      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "workspace"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "工作区"
-          }
-        }
-      }
-    },
     "ui.workspace_changes" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -30691,6 +30730,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "工作区改动"
+          }
+        }
+      }
+    },
+    "ui.workspace_icon" : {
+      "comment" : "Title for choosing a workspace Emoji icon.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Workspace icon"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "工作区图标"
           }
         }
       }
@@ -30748,6 +30804,7 @@
     },
     "ui.workspace_summary" : {
       "comment" : "Workspace summary composed from localized count fragments.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -30990,6 +31047,7 @@
     },
     "ui.worktrees_count" : {
       "comment" : "Plural count used in the localized iOS UI.",
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "variations" : {

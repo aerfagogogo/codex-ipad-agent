@@ -426,8 +426,10 @@ struct UnifiedWorkbenchShell: View {
                 synchronizeNavigation(for: layout)
             }
             .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
-                guard usesCompactNavigation else { return }
-                synchronizeNavigation(for: layout)
+                handleLayoutModeChange(
+                    usesCompactNavigation: usesCompactNavigation,
+                    layout: layout
+                )
             }
             .onChange(of: sessionStore.lastSelectionCommit) { _, commit in
                 guard let commit else { return }
@@ -461,6 +463,7 @@ struct UnifiedWorkbenchShell: View {
             }
             .tabItem {
                 Label(CompactWorkbenchTab.sessions.title, systemImage: CompactWorkbenchTab.sessions.systemImage)
+                    .accessibilityIdentifier("compactTab.sessions")
             }
             .tag(CompactWorkbenchTab.sessions)
 
@@ -472,6 +475,7 @@ struct UnifiedWorkbenchShell: View {
             }
             .tabItem {
                 Label(CompactWorkbenchTab.workspaces.title, systemImage: CompactWorkbenchTab.workspaces.systemImage)
+                    .accessibilityIdentifier("compactTab.workspaces")
             }
             .tag(CompactWorkbenchTab.workspaces)
 
@@ -484,6 +488,7 @@ struct UnifiedWorkbenchShell: View {
             }
             .tabItem {
                 Label(CompactWorkbenchTab.settings.title, systemImage: CompactWorkbenchTab.settings.systemImage)
+                    .accessibilityIdentifier("compactTab.settings")
             }
             .tag(CompactWorkbenchTab.settings)
         }
@@ -920,6 +925,29 @@ struct UnifiedWorkbenchShell: View {
 
     private func synchronizeNavigation(for layout: WorkbenchLayout) {
         applyNavigation(.synchronize(restorationRoute), layout: layout)
+    }
+
+    private func handleLayoutModeChange(
+        usesCompactNavigation: Bool,
+        layout: WorkbenchLayout
+    ) {
+        if usesCompactNavigation {
+            if presentedSheet == .settings {
+                // 横屏的 split layout 用 sheet 承载设置；回到紧凑布局时把同一页面
+                // 还原为设置 Tab，避免旋转后突然跳回会话并丢失用户刚选的内容。
+                presentedSheet = nil
+                applyNavigation(.compactTabChanged(.settings), layout: layout)
+            } else {
+                synchronizeNavigation(for: layout)
+            }
+            return
+        }
+
+        if navigationState.compactSelectedTab == .settings {
+            // split layout 没有“设置”详情 destination。旋转时继续以 sheet 呈现同一
+            // SettingsView，使表单状态和 @AppStorage 选择保持可见且可操作。
+            presentedSheet = .settings
+        }
     }
 
     private func handleSelectionCommit(
