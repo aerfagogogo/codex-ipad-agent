@@ -571,27 +571,10 @@ private struct MenuRuntimeRow: View {
     }
 
     private var detailText: String {
-        guard let runtime else {
-            return missingDetail
-        }
-        if runtime.reason == "refresh_in_progress" {
-            return "正在后台获取连接与额度状态…"
-        }
-        if runtime.authMode == "api_key",
-           runtime.state == .available || runtime.state == .connected
-        {
-            return "API Key 已配置（按量计费），将在首次请求时验证有效性。"
-        }
-        switch runtime.state {
-        case .disabled:
-            return "可在设置中启用 Claude 实验通道。"
-        case .signedOut:
-            return "请在这台 Mac 上完成登录。"
-        case .unavailable:
-            return "运行时暂不可用，请刷新或运行诊断。"
-        case .connected, .available:
-            return "尚未获取到额度数据。"
-        }
+        MenuRuntimePresentation.detailText(
+            for: runtime,
+            missingDetail: missingDetail
+        )
     }
 
     private var stateColor: Color {

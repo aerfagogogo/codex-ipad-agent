@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"sort"
@@ -353,10 +354,27 @@ func applyCodexAccount(status *runtimeAccountStatus, response runtimeAccountResp
 		}
 		return
 	}
-	status.State = runtimeStateConnected
-	status.Reason = ""
 	status.AuthMode = normalizeAuthMode(response.Account.Type)
 	status.PlanType = rawScalarString(response.Account.PlanType)
+	switch status.AuthMode {
+	case "chatgpt":
+		// 托管 ChatGPT 账户由 Codex 负责 OAuth 与刷新，account/read 返回账户
+		// 即可作为已登录证据。
+		status.State = runtimeStateConnected
+		status.Reason = ""
+	case "api_key":
+		// account/read 只证明 Key 已存入 Codex，不会主动验证 Key 是否有效。
+		status.State = runtimeStateAvailable
+		status.Reason = "api_key_configured_unverified"
+	case "bedrock":
+		// Bedrock credentialSource 只说明选中的凭据来源，AWS 凭据链可能仍不可用。
+		status.State = runtimeStateAvailable
+		status.Reason = "bedrock_credentials_configured_unverified"
+	default:
+		// 新增认证类型默认不宣称已连接；拿到实际认证证据后再提升状态。
+		status.State = runtimeStateAvailable
+		status.Reason = "account_configured_unverified"
+	}
 }
 
 func (r *Router) probeClaudeRuntime(ctx context.Context) runtimeAccountStatus {
@@ -583,21 +601,49 @@ func (c *runtimeWebSocketRPC) call(ctx context.Context, method string, params an
 		}
 		var frame struct {
 			ID     json.RawMessage     `json:"id"`
+			Method string              `json:"method"`
 			Result json.RawMessage     `json:"result"`
 			Error  *appserver.RPCError `json:"error"`
 		}
-		if json.Unmarshal(payload, &frame) != nil ||
-			strings.TrimSpace(string(frame.ID)) != strconv.FormatInt(id, 10) {
+		if json.Unmarshal(payload, &frame) != nil {
+			continue
+		}
+		if strings.TrimSpace(frame.Method) != "" {
+			// App Server 是双向 JSON-RPC。状态探针不拥有外部 Token 等宿主能力，
+			// 因此不能处理服务端 request；返回标准错误后继续等待原调用的响应，
+			// 避免相同 id 的服务端 request 被误判成成功 response。
+			if runtimeRPCFrameHasID(frame.ID) {
+				if err := c.write(ctx, map[string]any{
+					"id": frame.ID,
+					"error": map[string]any{
+						"code":    -32601,
+						"message": "runtime status client does not support server requests",
+					},
+				}); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if strings.TrimSpace(string(frame.ID)) != strconv.FormatInt(id, 10) {
 			continue
 		}
 		if frame.Error != nil {
 			return frame.Error
 		}
-		if result == nil || len(frame.Result) == 0 {
+		if len(frame.Result) == 0 {
+			return errors.New("app-server RPC 响应缺少 result 或 error")
+		}
+		if result == nil {
 			return nil
 		}
 		return json.Unmarshal(frame.Result, result)
 	}
+}
+
+func runtimeRPCFrameHasID(id json.RawMessage) bool {
+	value := strings.TrimSpace(string(id))
+	return value != "" && value != "null"
 }
 
 func (c *runtimeWebSocketRPC) notify(ctx context.Context, method string, params any) error {

@@ -58,6 +58,131 @@ func TestRuntimeStatusRequiresAuthAndReturnsSanitizedCodexSnapshot(t *testing.T)
 	}
 }
 
+func TestRuntimeStatusDoesNotTreatServerRequestAsRPCResponse(t *testing.T) {
+	var rejectedServerRequest atomic.Bool
+	upstreamURL, _, _ := fakeAppServerUpstream(t, func(conn *websocket.Conn, messageType int, payload []byte) {
+		var frame struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Error  *struct {
+				Code int `json:"code"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(payload, &frame); err != nil {
+			t.Errorf("无法解析 runtime status RPC frame：%v", err)
+			return
+		}
+		if frame.Method == "" {
+			if frame.Error != nil && frame.Error.Code == -32601 {
+				rejectedServerRequest.Store(true)
+			}
+			return
+		}
+
+		var result any
+		switch frame.Method {
+		case "initialize":
+			result = map[string]any{"userAgent": "fake-codex"}
+		case "initialized":
+			return
+		case "account/read":
+			// 双向 JSON-RPC 的 request/response id namespace 相互独立。
+			// 服务端 request 故意复用当前客户端 request id，验证客户端不会误判。
+			if err := conn.WriteJSON(map[string]any{
+				"id":     frame.ID,
+				"method": "account/chatgptAuthTokens/refresh",
+				"params": map[string]any{"reason": "unauthorized"},
+			}); err != nil {
+				t.Errorf("写入服务端 request 失败：%v", err)
+				return
+			}
+			result = map[string]any{
+				"account": map[string]any{
+					"type":     "chatgpt",
+					"planType": "plus",
+				},
+				"requiresOpenaiAuth": true,
+			}
+		case "account/rateLimits/read":
+			result = map[string]any{}
+		default:
+			t.Errorf("fake app-server 收到未知方法：%s", frame.Method)
+			return
+		}
+		response, err := json.Marshal(map[string]any{
+			"id":     frame.ID,
+			"result": result,
+		})
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := conn.WriteMessage(messageType, response); err != nil {
+			t.Errorf("fake app-server 写响应失败：%v", err)
+		}
+	})
+	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, nil)
+
+	_, response := readRuntimeStatusEventually(t, handler)
+	codex := response.Runtimes[0]
+	if codex.State != runtimeStateConnected || codex.AuthMode != "chatgpt" {
+		t.Fatalf("服务端 request 不能吞掉 account/read 响应：%+v", codex)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if rejectedServerRequest.Load() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("runtime status 客户端没有拒绝不支持的服务端 request")
+}
+
+func TestApplyCodexAccountDoesNotClaimUnverifiedCredentialsAreConnected(t *testing.T) {
+	testCases := []struct {
+		name       string
+		account    string
+		wantMode   string
+		wantReason string
+	}{
+		{
+			name:       "API key",
+			account:    `{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}`,
+			wantMode:   "api_key",
+			wantReason: "api_key_configured_unverified",
+		},
+		{
+			name:       "Bedrock",
+			account:    `{"account":{"type":"amazonBedrock","credentialSource":"awsManaged"},"requiresOpenaiAuth":false}`,
+			wantMode:   "bedrock",
+			wantReason: "bedrock_credentials_configured_unverified",
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var response runtimeAccountResponse
+			if err := json.Unmarshal([]byte(testCase.account), &response); err != nil {
+				t.Fatal(err)
+			}
+			status := runtimeAccountStatus{
+				ID:      "codex",
+				Title:   "Codex",
+				Enabled: true,
+				State:   runtimeStateUnavailable,
+			}
+
+			applyCodexAccount(&status, response)
+
+			if status.State != runtimeStateAvailable ||
+				status.AuthMode != testCase.wantMode ||
+				status.Reason != testCase.wantReason {
+				t.Fatalf("未验证凭据不能标记为 connected：%+v", status)
+			}
+		})
+	}
+}
+
 func TestRuntimeStatusUsesClaudeOAuthUsageAsAuthenticatedEvidence(t *testing.T) {
 	upstreamURL, _, _ := fakeAppServerUpstream(t, runtimeStatusCodexResponder(t))
 	bridgePath := writeTestBridge(t, `#!/bin/sh
@@ -279,7 +404,7 @@ func runtimeStatusCodexResponder(t *testing.T) func(*websocket.Conn, int, []byte
 					"email":    "owner@example.com",
 					"planType": "plus",
 				},
-				"requiresOpenAIAuth": true,
+				"requiresOpenaiAuth": true,
 			}
 		case "account/rateLimits/read":
 			result = map[string]any{
