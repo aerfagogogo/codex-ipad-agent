@@ -148,6 +148,10 @@ grep -Fq 'scripts/build-macos-installer.sh' .github/workflows/release.yml \
   || fail "Release workflow 没有构建 Mac DMG。"
 grep -Fq 'scripts/check-macos-installer.sh --require-notarization' .github/workflows/release.yml \
   || fail "Release workflow 没有校验 Developer ID 与 notarization。"
+grep -Fq 'com.gaixianggeng.mimi.mac.claude-bridge' scripts/build-macos-installer.sh \
+  || fail "Mac 安装包构建没有为内嵌 Claude bridge 设置稳定签名 identifier。"
+grep -Fq 'BRIDGE_PATH="$APP_PATH/Contents/Resources/alleycat-claude-bridge"' scripts/check-macos-installer.sh \
+  || fail "Mac 安装包门禁没有校验内嵌 Claude bridge。"
 grep -Fq 'gh release upload "$GITHUB_REF_NAME"' .github/workflows/release.yml \
   || fail "Release workflow 没有上传 Mac DMG 到 GitHub Release。"
 grep -Fq 'scripts/package-skill.sh' .github/workflows/release.yml \
