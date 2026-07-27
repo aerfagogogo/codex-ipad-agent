@@ -125,7 +125,7 @@ Claude bridge 位于本仓库 [`bridges/claude`](bridges/claude)，与 iOS 和 `
 - 已安装并登录 Codex CLI；
 - Mac 与 iPhone / iPad 位于同一私有网络；跨网络使用时建议加入同一个 Tailscale 网络。
 
-普通用户从 [GitHub Releases](https://github.com/gaixianggeng/mimi-remote/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和对应 SHA-256 文件，校验后打开 DMG，把 **Mimi Remote Mac** 拖到“应用程序”，再从菜单栏完成首次设置。App 已内置 `agentd` 和兼容的 Claude bridge，不要求 Homebrew、Go、Rust 或 Xcode。
+普通用户从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和对应 SHA-256 文件，校验后打开 DMG，把 **Mimi Remote Mac** 拖到“应用程序”，再从菜单栏完成首次设置。App 已内置 `agentd` 和兼容的 Claude bridge，不要求 Homebrew、Go、Rust 或 Xcode。
 
 已有 Homebrew 服务时，让 Mac App 执行接管；迁移过程会先跑 Doctor，失败时尝试恢复旧服务，并保留现有配置、Token 和配对关系。
 
@@ -163,7 +163,7 @@ Linux 使用 Release 归档中的 user-systemd 安装脚本，完整步骤见 [�
 如果希望由 Codex 按同一套权限最小化、可恢复流程完成安装、升级和诊断，可以让 `$skill-installer` 安装下面的 GitHub Skill 路径：
 
 ```text
-https://github.com/gaixianggeng/mimi-remote/tree/main/packaging/skill/install-mimi-remote
+https://github.com/gaixianggeng/codex-ipad-agent/tree/main/packaging/skill/install-mimi-remote
 ```
 
 每个 GitHub Release 也会附带 `install-mimi-remote.zip` 和对应 SHA-256 文件，便于固定版本下载与审计。
@@ -317,8 +317,8 @@ cargo test --locked -p alleycat-claude-bridge
 
 ## 仓库说明
 
-- 本仓库 `gaixianggeng/codex-ipad-agent`：完整开源源码，包括 iOS App、Go `agentd`、Claude bridge、测试、文档和本地发布脚本。
-- [gaixianggeng/mimi-remote](https://github.com/gaixianggeng/mimi-remote)：后端公开发布镜像，承载 Go Release 和 Homebrew 下载链路。
+- 本仓库 `gaixianggeng/codex-ipad-agent`：唯一的完整开源源码与新版本发布仓库，包括 iOS App、Mac App、Go `agentd`、Claude bridge、测试、文档和发布脚本。
+- [gaixianggeng/mimi-remote](https://github.com/gaixianggeng/mimi-remote)：只读历史发布归档，保留旧版本和既有下载地址。
 
 源码目录保持语言和职责清晰，同时避免为目录整齐大规模改写稳定构建路径：
 
@@ -328,7 +328,7 @@ cmd/agentd/ + internal/  Go 安全网关与 Codex / Claude 控制面
 bridges/claude/          Rust Claude Code 协议 bridge
 ```
 
-保留后端发布镜像是为了不破坏已有 Homebrew / Release URL；日常功能开发以本仓库为准，后端镜像由白名单脚本单向导出。
+新的 Mac、Go、Linux、Homebrew 和 Skill 产物统一由本仓库 Release 发布。旧仓库不再承载新版本，仅用于历史版本回滚和旧链接兼容。
 
 ## 常见问题（FAQ）
 

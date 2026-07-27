@@ -106,7 +106,7 @@ Requirements:
 - A Mac running macOS 26 or later, with Codex CLI installed and signed in.
 - The Mac and iPhone/iPad connected to the same private network. Tailscale is recommended for access across different networks but is optional for same-LAN use.
 
-For the normal setup path, download [`Mimi-Remote-Mac.dmg`](https://github.com/gaixianggeng/mimi-remote/releases/latest/download/Mimi-Remote-Mac.dmg) and its SHA-256 file, verify the checksum, open the DMG, drag **Mimi Remote Mac** to Applications, then finish first-run setup from the menu bar. The app includes `agentd` and the compatible Claude bridge; Homebrew, Go, Rust, and Xcode are not required for the Mac host.
+For the normal setup path, download [`Mimi-Remote-Mac.dmg`](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest/download/Mimi-Remote-Mac.dmg) and its SHA-256 file, verify the checksum, open the DMG, drag **Mimi Remote Mac** to Applications, then finish first-run setup from the menu bar. The app includes `agentd` and the compatible Claude bridge; Homebrew, Go, Rust, and Xcode are not required for the Mac host.
 
 For command-line installation, server use, or recovery:
 
@@ -142,7 +142,7 @@ For Linux installation and recovery steps, see [Install, upgrade, and rollback (
 To let Codex perform the same install, upgrade, diagnosis, and rollback workflow with the repository's safety constraints, install the standalone Skill from:
 
 ```text
-https://github.com/gaixianggeng/mimi-remote/tree/main/packaging/skill/install-mimi-remote
+https://github.com/gaixianggeng/codex-ipad-agent/tree/main/packaging/skill/install-mimi-remote
 ```
 
 Ask `$skill-installer` to install that GitHub path. Each GitHub Release also includes `install-mimi-remote.zip` and its SHA-256 file for an auditable, versioned copy.
@@ -283,7 +283,7 @@ cmd/agentd/ + internal/  Go safety gateway and Codex / Claude control plane
 bridges/claude/          Rust Claude Code protocol bridge
 ```
 
-This repository is the complete source repository. [`gaixianggeng/mimi-remote`](https://github.com/gaixianggeng/mimi-remote) remains a public backend-release mirror to preserve existing Go release and Homebrew download URLs.
+This repository is the complete source and release repository. New Mac, Go, Linux, Homebrew, and Skill artifacts are published here. [`gaixianggeng/mimi-remote`](https://github.com/gaixianggeng/mimi-remote) is retained as a read-only archive for historical releases and download compatibility.
 
 ## Contributing
 

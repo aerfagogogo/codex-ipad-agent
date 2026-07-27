@@ -109,8 +109,8 @@ release_target="$(awk '
   in_release && $1 == "name:" { name = $2 }
   END { print owner "/" name }
 ' .goreleaser.yml)"
-[[ "$release_target" == "gaixianggeng/mimi-remote" ]] \
-  || fail "GoReleaser release.github 必须固定为 gaixianggeng/mimi-remote。"
+[[ "$release_target" == "gaixianggeng/codex-ipad-agent" ]] \
+  || fail "GoReleaser release.github 必须固定为 gaixianggeng/codex-ipad-agent。"
 grep -Fqx '  mode: keep-existing' .goreleaser.yml \
   || fail "GoReleaser 必须保留已有 Release 说明，支持同 tag 恢复。"
 grep -Fqx '  replace_existing_artifacts: true' .goreleaser.yml \
