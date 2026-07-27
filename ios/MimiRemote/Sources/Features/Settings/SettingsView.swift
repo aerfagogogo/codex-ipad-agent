@@ -92,24 +92,22 @@ struct SettingsView: View {
         let claudeUsage = sessionStore.accountClaudeUsageWindowsDisplay
 
         return Form {
-            Section(L10n.text("ui.mac_connection")) {
-                LabeledContent {
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(appStore.endpoint)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        if appStore.isUsingLocalConnection {
-                            Text(L10n.text("ui.direct_connection_to_this_machine"))
-                                .font(themeStore.uiFont(.caption2))
-                                .foregroundStyle(tokens.secondaryText)
-                        }
-                    }
-                } label: {
-                    Text(L10n.text("ui.connection_address"))
+            Section {
+                CombinedUsageSettingsCard(
+                    codexDisplay: codexUsage,
+                    claudeDisplay: claudeUsage,
+                    includesClaude: sessionStore.hasClaudeRuntimeChannel
+                )
+            } header: {
+                HStack {
+                    Text(L10n.text("ui.token_quota"))
+                    Spacer()
+                    AIUsageRefreshButton(includesClaude: sessionStore.hasClaudeRuntimeChannel)
                 }
-                // 与偏好/高级的普通行使用同一紧凑基准；大字号时仍可自然扩展。
-                .frame(minHeight: 32)
+                .textCase(nil)
+            }
 
+            Section(L10n.text("ui.mac_connection")) {
                 VStack(spacing: 8) {
                     HStack(spacing: 10) {
                         Button {
@@ -157,21 +155,6 @@ struct SettingsView: View {
                     }
                 }
                 .frame(minHeight: 32)
-            }
-
-            Section {
-                CombinedUsageSettingsCard(
-                    codexDisplay: codexUsage,
-                    claudeDisplay: claudeUsage,
-                    includesClaude: sessionStore.hasClaudeRuntimeChannel
-                )
-            } header: {
-                HStack {
-                    Text(L10n.text("ui.ai_usage"))
-                    Spacer()
-                    AIUsageRefreshButton(includesClaude: sessionStore.hasClaudeRuntimeChannel)
-                }
-                .textCase(nil)
             }
 
             Section {
@@ -1001,7 +984,7 @@ private struct ConnectionSpeedMetricRow: View {
     }
 }
 
-/// 刷新入口属于“AI 用量”分区，而不是某一条额度数据；放在标题右侧可避免压缩卡片内容。
+/// 刷新入口属于“Token 额度”分区，而不是某一条额度数据；放在标题右侧可避免压缩卡片内容。
 private struct AIUsageRefreshButton: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var sessionStore: SessionStore

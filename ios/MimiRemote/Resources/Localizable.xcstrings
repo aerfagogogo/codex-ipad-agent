@@ -27746,6 +27746,23 @@
         }
       }
     },
+    "ui.token_quota" : {
+      "comment" : "Settings section title grouping the remaining token quota for supported AI runtimes.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token quota"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Token 额度"
+          }
+        }
+      }
+    },
     "ui.token_usage" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
