@@ -842,7 +842,8 @@ extension ConversationDataFlowTests {
         XCTAssertLessThanOrEqual(started.turnStartedAt, started.lastActivityAt)
         try await waitForSelectedActiveTurnID("turn-runtime", store: store)
 
-        try await Task.sleep(nanoseconds: 120_000_000)
+        // 运行时活动在 1 秒内合并高频事件，测试需要跨过该窗口再验证时间推进。
+        try await Task.sleep(nanoseconds: 1_050_000_000)
         sockets[0].emitEvent(.logDelta(
             LogDelta(text: "still working\n", stream: "stdout"),
             AgentEventMetadata(
