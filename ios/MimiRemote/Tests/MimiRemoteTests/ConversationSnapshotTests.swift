@@ -985,7 +985,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(L10n.text("ui.close_target_task"), "关闭目标模式")
     }
 
-    func testGoalTraySurfaceStyleUsesStrongerHierarchyWhenExpanded() {
+    func testGoalTraySurfaceStyleMatchesFlatComposerHierarchy() {
         let collapsed = ComposerStatusTraySurfaceStyle.resolve(
             isExpanded: false,
             scheme: .dark,
@@ -999,16 +999,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
         XCTAssertEqual(collapsed.materialStrength, .thin)
         XCTAssertEqual(expanded.materialStrength, .regular)
-        XCTAssertTrue((0.70...0.85).contains(collapsed.surfaceTintOpacity))
-        XCTAssertTrue((0.70...0.85).contains(expanded.surfaceTintOpacity))
-        XCTAssertGreaterThan(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
-
-        XCTAssertGreaterThan(expanded.innerSurfaceOpacity, expanded.surfaceTintOpacity)
-        XCTAssertGreaterThan(expanded.controlSurfaceOpacity, expanded.innerSurfaceOpacity)
-        XCTAssertGreaterThan(expanded.borderOpacity, collapsed.borderOpacity)
-        XCTAssertGreaterThan(expanded.accentBorderOpacity, collapsed.accentBorderOpacity)
-        XCTAssertGreaterThan(expanded.shadowOpacity, collapsed.shadowOpacity)
-        XCTAssertGreaterThan(expanded.shadowRadius, collapsed.shadowRadius)
+        XCTAssertEqual(collapsed.surfaceTintOpacity, 0.46)
+        XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
+        XCTAssertEqual(collapsed.borderOpacity, 0.58)
+        XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
     }
 
     func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
@@ -1021,8 +1015,7 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
 
             XCTAssertEqual(style.materialStrength, .opaque)
             XCTAssertEqual(style.surfaceTintOpacity, 1)
-            XCTAssertEqual(style.innerSurfaceOpacity, 1)
-            XCTAssertEqual(style.controlSurfaceOpacity, 1)
+            XCTAssertEqual(style.borderOpacity, 0.58)
         }
     }
 
@@ -1265,7 +1258,10 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             project: project,
             title: "优化会话列表",
             status: "completed",
-            preview: "Codex 会话"
+            preview: "Codex 会话",
+            context: SessionContextSnapshot(
+                git: SessionContextGitInfo(branch: "feature/session-git-branch-indicator")
+            )
         )
         let claude = makeSnapshotSession(
             id: "runtime-claude",
@@ -1446,7 +1442,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
         rateLimit: RateLimitSummary? = nil,
         pendingApproval: ApprovalSummary? = nil,
         goal: ThreadGoal? = nil,
-        runtimeProvider: String? = nil
+        runtimeProvider: String? = nil,
+        context: SessionContextSnapshot? = nil
     ) -> AgentSession {
         AgentSession(
             id: id,
@@ -1467,7 +1464,8 @@ final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
             usage: usage,
             rateLimit: rateLimit,
             pendingApproval: pendingApproval,
-            goal: goal
+            goal: goal,
+            context: context
         )
     }
 }

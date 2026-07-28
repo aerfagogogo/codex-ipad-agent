@@ -177,16 +177,17 @@ struct WorkspaceRootView: View {
             }
         }
         .task(id: appStore.activeHostScope) {
-            appearanceStore.migrateLegacyValueIfNeeded(
-                profileID: appStore.activeHostScope.profileID,
-                endpoint: appStore.endpoint,
-                profiles: appStore.connectionProfiles
-            )
+            migrateLegacyWorkspaceAppearance()
             synchronizeSelection()
             // 每次进入工作区都做轻量目录同步，同时执行旧版自动候选数据清理；
             // 该请求不改变当前会话和 WebSocket，上层选择保持稳定。
             await refreshCatalog()
             synchronizeSelection()
+        }
+        .onChange(of: appStore.connectionProfiles) { _, _ in
+            // 这里只重试本地偏好迁移，不重新请求目录。删除或修改重复 endpoint 后，
+            // 当前 Profile 一旦成为唯一匹配，就应立即恢复旧版自定义 emoji。
+            migrateLegacyWorkspaceAppearance()
         }
         .task {
             // 两个新建入口先稳定渲染；Claude 通道能力独立在后台刷新，不能让网络往返
@@ -240,6 +241,14 @@ struct WorkspaceRootView: View {
             Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
         }
         .background(tokens.background.ignoresSafeArea())
+    }
+
+    private func migrateLegacyWorkspaceAppearance() {
+        appearanceStore.migrateLegacyValueIfNeeded(
+            profileID: appStore.activeHostScope.profileID,
+            endpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
     }
 
     private func navigationContent(tokens: ThemeTokens) -> some View {
@@ -651,7 +660,7 @@ private struct WorkspaceLibraryCard: View {
             if isSelected {
                 Image(systemName: "checkmark.circle.fill")
                     .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.primaryAction)
+                    .foregroundStyle(tokens.accent)
                     .frame(width: 32, height: 32)
                     .padding(.top, 10)
                     .padding(.trailing, 8)
@@ -737,7 +746,11 @@ private struct WorkspaceLibraryCard: View {
             }
 
             Divider()
-                .overlay(tokens.border.opacity(0.56))
+                .overlay(
+                    isSelected
+                        ? tokens.primaryText.opacity(0.14)
+                        : tokens.border.opacity(0.56)
+                )
 
             TimelineView(.periodic(from: .now, by: 60)) { _ in
                 // TimelineView 只负责按分钟触发刷新；时间来源可在视觉测试中固定，
@@ -747,13 +760,15 @@ private struct WorkspaceLibraryCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 138, alignment: .topLeading)
-        .background(isSelected ? tokens.selectionFill : tokens.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(
+            isSelected ? tokens.workspaceCardSelectionFill : tokens.surface,
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(
-                    isSelected ? tokens.primaryAction : tokens.border.opacity(0.72),
-                    lineWidth: isSelected ? 2 : 1
-                )
+            if !isSelected {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(tokens.border.opacity(0.72), lineWidth: 1)
+            }
         }
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .animation(
@@ -940,7 +955,7 @@ private struct WorkspaceCardStatus {
     func color(tokens: ThemeTokens) -> Color {
         switch tone {
         case .accent:
-            return tokens.primaryAction
+            return tokens.accent
         case .success:
             return tokens.success
         case .warning:

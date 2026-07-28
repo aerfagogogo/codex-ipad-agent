@@ -343,6 +343,46 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(accumulator.text, "检查项目并补测试")
     }
 
+    func testVoiceAudioSessionCoordinatorSerializesLifecycleAndIgnoresStaleCleanup() async throws {
+        let backend = RecordingVoiceAudioSessionBackend()
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+
+        try await coordinator.prewarm()
+        let firstActivation = try await coordinator.activate()
+        let secondActivation = try await coordinator.activate()
+        await coordinator.deactivate(firstActivation)
+
+        // 第一轮清理晚到时不能关闭第二轮刚激活的会话。
+        XCTAssertEqual(
+            backend.operations,
+            [.prepare, .prepare, .activate, .prepare, .activate]
+        )
+
+        await coordinator.deactivate(secondActivation)
+        XCTAssertEqual(
+            backend.operations,
+            [.prepare, .prepare, .activate, .prepare, .activate, .deactivate]
+        )
+        XCTAssertFalse(backend.wasCalledOnMainThread)
+    }
+
+    func testVoiceAudioSessionCoordinatorPropagatesActivationFailure() async {
+        let backend = RecordingVoiceAudioSessionBackend(failingOperation: .activate)
+        let coordinator = VoiceAudioSessionCoordinator(backend: backend)
+
+        do {
+            _ = try await coordinator.activate()
+            XCTFail("Expected activation failure")
+        } catch let error as RecordingVoiceAudioSessionBackend.TestError {
+            XCTAssertEqual(error, .requestedFailure(.activate))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertEqual(backend.operations, [.prepare, .activate])
+        XCTAssertFalse(backend.wasCalledOnMainThread)
+    }
+
     func testComposerStateVoiceDraftRequiresReviewUntilSubmitted() throws {
         var composerState = ComposerState()
         XCTAssertFalse(composerState.voiceDraftNeedsReview)
@@ -2769,4 +2809,116 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(migratedAfterResolution.pinnedSessionIDs, ["legacy-session"])
     }
 
+    func testDeletingAmbiguousProfileImmediatelyMigratesCurrentRecentWorkspaces() async throws {
+        let suiteName = "RecentWorkspaceStoreTests.DeleteAmbiguousProfile.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let endpoint = "http://shared-mac.local:8787"
+        let current = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: endpoint,
+            lastSuccessfulAt: nil
+        )
+        let duplicate = ConnectionProfile(
+            id: "mac-b",
+            displayName: "Mac B",
+            endpoint: endpoint + "/",
+            lastSuccessfulAt: nil
+        )
+        defaults.set(
+            try JSONEncoder().encode([current, duplicate]),
+            forKey: "agentd.connectionProfiles.v1"
+        )
+        defaults.set(current.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(current.endpoint, forKey: "agentd.endpoint")
+
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        keychain.setData(Data("token-b".utf8), account: "agentd-profile.mac-b")
+        let appStore = AppStore(
+            defaults: defaults,
+            tokenStore: TokenStore(keychain: keychain)
+        )
+        let workspace = AgentWorkspace(
+            id: "legacy-project",
+            name: "旧工作区",
+            path: "/legacy/project"
+        )
+        let recentWorkspaceStore = makeRecentWorkspaceStore(
+            workspaces: [workspace],
+            endpoint: endpoint
+        )
+        let sessionStore = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            recentWorkspaceStore: recentWorkspaceStore,
+            clientFactory: {
+                MockSessionStoreClient(projects: [], sessions: [])
+            }
+        )
+
+        sessionStore.reloadRecentWorkspaces()
+        XCTAssertTrue(sessionStore.recentWorkspaces.isEmpty)
+
+        try await sessionStore.deleteConnectionProfile(id: duplicate.id)
+
+        XCTAssertEqual(sessionStore.recentWorkspaces.map(\.id), [workspace.id])
+        XCTAssertEqual(recentWorkspaceStore.load(profileID: current.id).map(\.id), [workspace.id])
+    }
+
+}
+
+private final class RecordingVoiceAudioSessionBackend: VoiceAudioSessionBackend, @unchecked Sendable {
+    enum Operation: Equatable {
+        case prepare
+        case activate
+        case deactivate
+    }
+
+    enum TestError: Error, Equatable {
+        case requestedFailure(Operation)
+    }
+
+    private let lock = NSLock()
+    private let failingOperation: Operation?
+    private var storedOperations: [Operation] = []
+    private var storedWasCalledOnMainThread = false
+
+    init(failingOperation: Operation? = nil) {
+        self.failingOperation = failingOperation
+    }
+
+    var operations: [Operation] {
+        lock.withLock { storedOperations }
+    }
+
+    var wasCalledOnMainThread: Bool {
+        lock.withLock { storedWasCalledOnMainThread }
+    }
+
+    func prepareForRecording() throws {
+        try record(.prepare)
+    }
+
+    func activateForRecording() throws {
+        try record(.activate)
+    }
+
+    func deactivateRecording() throws {
+        try record(.deactivate)
+    }
+
+    private func record(_ operation: Operation) throws {
+        try lock.withLock {
+            storedOperations.append(operation)
+            storedWasCalledOnMainThread = storedWasCalledOnMainThread || Thread.isMainThread
+            if failingOperation == operation {
+                throw TestError.requestedFailure(operation)
+            }
+        }
+    }
 }

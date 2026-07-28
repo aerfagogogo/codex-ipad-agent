@@ -150,6 +150,45 @@ extension SessionStore {
         setStatusMessage(L10n.text("ui.debug_ui_sample_loaded"))
         setProjectsIfChanged([mimiDemo.project, sampleApp.project])
         setRecentWorkspacesIfChanged([mimiDemo, sampleApp])
+        // 固定能力数据让真机 UI 回归可以离线验证两个 Skill 入口的多选/取消；
+        // 仅存在于 Debug 内存种子，不读取用户目录，也不会写回服务端。
+        capabilityList = CapabilityListResponse(
+            path: mimiDemo.path,
+            skills: [
+                SkillCapability(
+                    name: "imagegen",
+                    description: "Generate and edit visual assets.",
+                    scope: "system",
+                    path: "/Users/demo/.codex/skills/.system/imagegen/SKILL.md",
+                    enabled: true,
+                    displayName: "Image Generation",
+                    shortDescription: L10n.text("ui.debug_image_generation_skill_description"),
+                    brandColor: "#7D65D8"
+                ),
+                SkillCapability(
+                    name: "swiftui-ui-patterns",
+                    description: "Build native SwiftUI interfaces.",
+                    scope: "repo",
+                    path: "/Users/demo/.codex/plugins/swiftui-ui-patterns/SKILL.md",
+                    enabled: true,
+                    displayName: "SwiftUI Patterns",
+                    shortDescription: L10n.text("ui.debug_swiftui_patterns_skill_description"),
+                    brandColor: "#D47B45"
+                ),
+                SkillCapability(
+                    name: "ios-debugger-agent",
+                    description: "Run and inspect an iOS app.",
+                    scope: "plugin",
+                    path: "/Users/demo/.codex/plugins/ios-debugger-agent/SKILL.md",
+                    enabled: true,
+                    displayName: "iOS Debugger",
+                    shortDescription: L10n.text("ui.debug_ios_debugger_skill_description"),
+                    brandColor: "#4089D6"
+                )
+            ],
+            mcpServers: [],
+            plugins: []
+        )
         sessionWorkspaceIDs = nil
         setExpandedProjectIDs([mimiDemo.id])
         replaceSessionsIfChanged(with: sessions, projectID: nil)

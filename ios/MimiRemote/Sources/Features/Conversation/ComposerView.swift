@@ -31,7 +31,7 @@ struct ComposerView: View {
     @State var cameraAttachmentPickerRequest: CameraAttachmentPickerRequest?
     @State var cameraAttachmentAccessIssue: CameraAttachmentAccessIssue?
     @State var isRequestingCameraAuthorization = false
-    @State var fileImporterRequest: FileImporterRequest?
+    @State var fileImporterPresentation = FileImporterPresentationState()
     @State var pendingAddContentAction: PendingAddContentAction?
     @State var showsAddContentPanel = false
     @State var showsSkillPicker = false
@@ -177,20 +177,11 @@ struct ComposerView: View {
             .ignoresSafeArea()
         }
         .fileImporter(
-            isPresented: Binding(
-                get: { fileImporterRequest != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        fileImporterRequest = nil
-                    }
-                }
-            ),
+            isPresented: $fileImporterPresentation.isPresented,
             allowedContentTypes: [.item],
             allowsMultipleSelection: false
         ) { result in
-            let request = fileImporterRequest
-            fileImporterRequest = nil
-            guard let request else {
+            guard let request = fileImporterPresentation.consumeRequest() else {
                 return
             }
             handleSelectedFile(result, targetScope: request.targetScope)
@@ -250,6 +241,10 @@ struct ComposerView: View {
             // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
             sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
         }
+        .onChange(of: composerState.modelSelectionSnapshot()) { _, snapshot in
+            // 模型偏好独立于正文保存；空输入、发送成功和视图重建都不能清掉会话选择。
+            sessionStore.saveComposerModelSelection(snapshot, for: activeComposerDraftScope)
+        }
         .onChange(of: sessionStore.latestFileUploadCompletion) { _, completion in
             guard let completion,
                   completion.targetScope == activeComposerDraftScope,
@@ -262,11 +257,19 @@ struct ComposerView: View {
             composerState.addAttachment(.uploadedFile(completion.attachment))
         }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
+            // 会话 scope 的 onChange 可能稍晚到达。此时仍显示旧 Composer，不能先用新
+            // runtime 改写并保存旧会话的模型；scope 切换完成后会统一恢复并校验。
+            guard activeComposerDraftScope == currentComposerDraftScope else {
+                return
+            }
             clampModelSelectionToSelectedSessionRuntime()
             clampPermissionSelectionToSelectedSessionRuntime()
         }
         .onChange(of: modelOptionsForMenu) { _, _ in
             // model/list 刷新后能力元数据可能变化；立即清理当前模型已不支持的推理强度。
+            guard activeComposerDraftScope == currentComposerDraftScope else {
+                return
+            }
             clampModelSelectionToSelectedSessionRuntime()
         }
         .onChange(of: canUseGuidedFollowUp) { _, canGuide in
@@ -303,6 +306,10 @@ struct ComposerView: View {
         .onDisappear {
             synchronizeComposerTextBeforeDraftScopeChange()
             sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
+            sessionStore.saveComposerModelSelection(
+                composerState.modelSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
             cancelVoiceInteraction(clearStatus: true)
             activeSkillQuery = nil
         }
@@ -435,12 +442,16 @@ struct ComposerView: View {
         )
         synchronizeComposerTextBeforeDraftScopeChange()
         let outgoingDraft = composerState.draftSnapshot()
+        let outgoingModelSelection = composerState.modelSelectionSnapshot()
         sessionStore.saveComposerDraft(outgoingDraft, for: previousScope)
+        sessionStore.saveComposerModelSelection(outgoingModelSelection, for: previousScope)
         if isOptimisticHandoff {
             // local:* 只是创建接口返回前的临时身份。服务端 ID 回来时迁移当前可见草稿，
-            // 避免用户正在输入的追加指令被新 scope 的空草稿覆盖。
+            // 避免用户正在输入的追加指令和模型选择被新 scope 的默认值覆盖。
             sessionStore.saveComposerDraft(outgoingDraft, for: nextScope)
+            sessionStore.saveComposerModelSelection(outgoingModelSelection, for: nextScope)
             sessionStore.removeComposerDraft(for: previousScope)
+            sessionStore.removeComposerModelSelection(for: previousScope)
         }
         cancelVoiceInteraction(clearStatus: true)
 
@@ -450,6 +461,8 @@ struct ComposerView: View {
         composerState.setSendMode(restoredSendMode)
         persistComposerSendMode(restoredSendMode, for: nextScope)
         composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
+        restoreComposerModelSelection(for: nextScope)
+        clampModelSelectionToSelectedSessionRuntime()
         composerTextExternalRevision += 1
         guidedFollowUpEnabled = false
         measuredComposerTextHeight = 0
@@ -473,6 +486,19 @@ struct ComposerView: View {
 
     func persistComposerSendMode(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
         sessionStore.saveComposerSendMode(mode, for: scope)
+    }
+
+    func restoreComposerModelSelection(for scope: ComposerDraftScopeKey) {
+        if let snapshot = sessionStore.composerModelSelection(for: scope) {
+            composerState.restoreModelSelectionSnapshot(snapshot)
+            return
+        }
+
+        let runtimeProvider = selectedSessionRuntimeProviderForModelMenu
+            ?? normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider)
+        composerState.updateTurnOptions { options in
+            applyPreferredDefaultModel(runtimeProvider: runtimeProvider, to: &options)
+        }
     }
 
     func resetComposerSendModeAfterSubmit() {
@@ -908,9 +934,10 @@ struct ComposerView: View {
     }
 
     func expandedPhoneComposerContent(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: composerCardSpacing) {
-            composerTextArea(tokens: tokens)
-            skillAutocompletePanel
+        let skillSuggestions = filteredSkillSuggestions
+        return VStack(alignment: .leading, spacing: composerCardSpacing) {
+            composerTextArea(tokens: tokens, skillSuggestions: skillSuggestions)
+            skillAutocompletePanel(skills: skillSuggestions)
             voiceReviewNotice
         }
         // 卡片外缘在两态都固定为 8pt；编辑区额外补 4pt，使正文仍与原先
@@ -921,14 +948,15 @@ struct ComposerView: View {
 
     func composerCard(tokens: ThemeTokens) -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        let skillSuggestions = filteredSkillSuggestions
         return VStack(alignment: .leading, spacing: composerCardSpacing) {
             // iPad、iPad mini 与 Catalyst 有稳定的横向空间，直接展示发送上下文；
             // iPhone 则统一收进底部「+」，不再保留需要二次展开的“快捷”状态。
             if !isPhoneComposer {
                 composerContextControlsRow
             }
-            composerTextArea(tokens: tokens)
-            skillAutocompletePanel
+            composerTextArea(tokens: tokens, skillSuggestions: skillSuggestions)
+            skillAutocompletePanel(skills: skillSuggestions)
             voiceReviewNotice
             primaryComposerToolbar
         }
@@ -960,7 +988,7 @@ struct ComposerView: View {
         }
     }
 
-    func composerTextArea(tokens: ThemeTokens) -> some View {
+    func composerTextArea(tokens: ThemeTokens, skillSuggestions: [SkillCapability]) -> some View {
         ZStack(alignment: .topLeading) {
             ComposerTextView(
                 text: composerDraftBinding,
@@ -990,7 +1018,7 @@ struct ComposerView: View {
                         endHoldToTalk()
                     }
                 },
-                skillAutocompleteActive: activeSkillQuery != nil && !filteredSkillSuggestions.isEmpty,
+                skillAutocompleteActive: activeSkillQuery != nil && !skillSuggestions.isEmpty,
                 onSkillQueryChange: { query in
                     if query != activeSkillQuery {
                         activeSkillQuery = query
@@ -1034,11 +1062,11 @@ struct ComposerView: View {
     }
 
     @ViewBuilder
-    var skillAutocompletePanel: some View {
-        if activeSkillQuery != nil, !filteredSkillSuggestions.isEmpty {
+    func skillAutocompletePanel(skills: [SkillCapability]) -> some View {
+        if activeSkillQuery != nil, !skills.isEmpty {
             SkillAutocompletePanel(
-                skills: filteredSkillSuggestions,
-                selectedIndex: min(selectedSkillSuggestionIndex, filteredSkillSuggestions.count - 1),
+                skills: skills,
+                selectedIndex: min(selectedSkillSuggestionIndex, skills.count - 1),
                 onSelect: { skill in
                     selectSkillFromAutocomplete(skill)
                 }
@@ -1061,16 +1089,18 @@ struct ComposerView: View {
     }
 
     func moveSkillSuggestion(by offset: Int) {
-        guard !filteredSkillSuggestions.isEmpty else { return }
-        let count = filteredSkillSuggestions.count
+        let suggestions = filteredSkillSuggestions
+        guard !suggestions.isEmpty else { return }
+        let count = suggestions.count
         selectedSkillSuggestionIndex = (selectedSkillSuggestionIndex + offset + count) % count
         UISelectionFeedbackGenerator().selectionChanged()
     }
 
     func commitSelectedSkillSuggestion() {
-        guard !filteredSkillSuggestions.isEmpty else { return }
-        let index = min(selectedSkillSuggestionIndex, filteredSkillSuggestions.count - 1)
-        selectSkillFromAutocomplete(filteredSkillSuggestions[index])
+        let suggestions = filteredSkillSuggestions
+        guard !suggestions.isEmpty else { return }
+        let index = min(selectedSkillSuggestionIndex, suggestions.count - 1)
+        selectSkillFromAutocomplete(suggestions[index])
     }
 
     func selectSkillFromAutocomplete(_ skill: SkillCapability) {
@@ -1145,48 +1175,60 @@ struct ComposerView: View {
     }
 
     func compactPrimaryComposerToolbar(showsModelTitle: Bool) -> some View {
-        // 这些控件各自带有 Menu/Popover 和较深的 modifier 链。若继续把 opaque
-        // 返回类型直接拼成 TupleView，arm64 真机会在收集泛型元数据时动态扩张栈，
-        // 最终落到 __chkstk_darwin。类型擦除只限定在这条紧凑工具栏边界内。
-        let leadingControls = AnyView(compactLeadingComposerControls(showsModelTitle: showsModelTitle))
-        let optionsControl = AnyView(composerOptionsMenu)
-        let microphoneControl = AnyView(voiceMicControl)
-        let submitControl = AnyView(sendButton(showLabels: false))
-
-        return HStack(spacing: 8) {
-            leadingControls
-            Spacer(minLength: 0)
-            optionsControl
-            microphoneControl
-            submitControl
-        }
-        .frame(maxWidth: .infinity)
+        CompactComposerToolbarShell(
+            leadingControls: compactLeadingControlsBox(showsModelTitle: showsModelTitle),
+            optionsControl: compactOptionsControlBox(),
+            microphoneControl: compactMicrophoneControlBox(),
+            submitControl: compactSubmitControlBox()
+        )
     }
 
-    func compactLeadingComposerControls(showsModelTitle: Bool) -> some View {
+    @inline(never)
+    func compactLeadingControlsBox(showsModelTitle: Bool) -> AnyView {
         let tokens = themeStore.tokens(for: colorScheme)
-        let addControl = AnyView(addContentButton)
-        let modelControl = AnyView(modelPickerControl(showsTitle: showsModelTitle))
         let deliveryControl = canChooseRunningFollowUpDelivery
-            ? AnyView(followUpDeliveryMenu)
+            ? compactDeliveryControlBox()
             : nil
+        return AnyView(
+            CompactComposerLeadingControlsShell(
+                addControl: compactAddContentControlBox(),
+                modelControl: compactModelControlBox(showsTitle: showsModelTitle),
+                deliveryControl: deliveryControl,
+                backgroundColor: tokens.background
+            )
+        )
+    }
 
-        // 「添加」、模型和运行中追加方式都直接影响下一次发送，用一条连续胶囊表达关系；
-        // 每个子按钮仍保留各自 44pt 命中区和独立的 VoiceOver 动作。这里同样先擦除
-        // 三个复杂子树，避免父 HStack 再次聚合其完整泛型类型。
-        return HStack(spacing: 0) {
-            addControl
-            modelControl
-            if let deliveryControl {
-                deliveryControl
-            }
-        }
-        .background {
-            Capsule()
-                .fill(tokens.background)
-                .padding(.vertical, 4)
-        }
-        .fixedSize(horizontal: true, vertical: false)
+    // 每个复杂控件单独进入一个不可内联的栈帧；返回后父层只保留小型 AnyView，
+    // 这是对真机泛型元数据栈溢出的边界修复，不用于普通组件的类型兼容。
+    @inline(never)
+    func compactAddContentControlBox() -> AnyView {
+        AnyView(addContentButton)
+    }
+
+    @inline(never)
+    func compactModelControlBox(showsTitle: Bool) -> AnyView {
+        AnyView(modelPickerControl(showsTitle: showsTitle))
+    }
+
+    @inline(never)
+    func compactDeliveryControlBox() -> AnyView {
+        AnyView(followUpDeliveryMenu)
+    }
+
+    @inline(never)
+    func compactOptionsControlBox() -> AnyView {
+        AnyView(composerOptionsMenu)
+    }
+
+    @inline(never)
+    func compactMicrophoneControlBox() -> AnyView {
+        AnyView(voiceMicControl)
+    }
+
+    @inline(never)
+    func compactSubmitControlBox() -> AnyView {
+        AnyView(sendButton(showLabels: false))
     }
 
     var composerOptionsMenu: some View {
@@ -1319,7 +1361,8 @@ struct ComposerView: View {
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.select_skill"))
-            .accessibilityValue(selectedSkillPaths.isEmpty ? L10n.text("ui.not_selected") : L10n.plural("ui.skills_selected_count", count: selectedSkillPaths.count))
+        .accessibilityValue(selectedSkillPaths.isEmpty ? L10n.text("ui.not_selected") : L10n.plural("ui.skills_selected_count", count: selectedSkillPaths.count))
+        .accessibilityIdentifier("composer.skill")
         .help(L10n.text("ui.select_skill_or_type_in_the_input_box"))
         .popover(isPresented: $showsSkillPicker, arrowEdge: .bottom) {
             SkillPickerPanel(
@@ -1335,7 +1378,12 @@ struct ComposerView: View {
                 },
                 onManualAdd: {
                     showsSkillPicker = false
-                    showsManualSkillInputSheet = true
+                    DispatchQueue.main.async {
+                        showsManualSkillInputSheet = true
+                    }
+                },
+                onDone: {
+                    showsSkillPicker = false
                 }
             )
             .environmentObject(themeStore)
@@ -1475,6 +1523,7 @@ struct ComposerView: View {
             .accessibilityLabel(L10n.text("ui.append_mode_on_the_fly"))
             .accessibilityValue(isGuidedSelected ? L10n.text("ui.lead_current_reply") : L10n.text("ui.queue_for_next_round"))
             .accessibilityHint(L10n.text("ui.tap_to_toggle_queuing_or_directing_current_replies"))
+            .accessibilityIdentifier("composer.followUpDelivery")
         }
     }
 
@@ -1810,24 +1859,6 @@ struct ComposerView: View {
         .transition(.scale(scale: 0.9).combined(with: .opacity))
     }
 
-    var modelOptionsForMenu: [CodexAppServerModelOption] {
-        let source = sessionStore.appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : sessionStore.appServerModelOptions
-        let options = source.filter { !$0.hidden }
-        guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
-            return options
-        }
-        let scoped = options.filter { option in
-            normalizedRuntimeProvider(option.runtimeProvider) == runtimeProvider
-        }
-        if scoped.isEmpty, runtimeProvider == "claude" {
-            return CodexAppServerModelOption.builtInClaudeFallback
-        }
-        if scoped.isEmpty, runtimeProvider == "codex" {
-            return CodexAppServerModelOption.builtInFallback
-        }
-        return scoped.isEmpty ? options : scoped
-    }
-
     func applyDefaultPermissionMode() {
         let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
         composerState.applyPermissionMode(safePermissionMode(stored))
@@ -1850,8 +1881,11 @@ struct ComposerView: View {
     }
 
     func safePermissionMode(_ mode: ComposerPermissionMode) -> ComposerPermissionMode {
+        // Claude 不支持“完全访问”，也不持久化自己的默认；当共享默认落在 fullAccess 时，
+        // 降级到“自动批准低风险操作”作为 Claude 的安全默认，而不是每轮都请求审批。
+        // autoApprove 仍是安全档（workspaceWrite + auto_review），绝不映射 bypassPermissions。
         selectedSessionRuntimeProviderForModelMenu == "claude" && mode == .fullAccess
-            ? .requestApproval
+            ? .autoApprove
             : mode
     }
 
@@ -1861,137 +1895,6 @@ struct ComposerView: View {
             return
         }
         composerState.applyPermissionMode(safeMode)
-    }
-
-    var selectedModelSummaryTitle: String {
-        guard let model = composerState.turnOptions.model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty else {
-            return defaultModelSummaryTitle
-        }
-        if let option = modelOptionsForMenu.first(where: { item in
-            item.model == model &&
-                item.runtimeProvider == composerState.turnOptions.runtimeProvider &&
-                (composerState.turnOptions.modelProvider == nil || item.provider == composerState.turnOptions.modelProvider)
-        }) {
-            return developerModeEnabled ? option.menuTitle : option.title
-        }
-        if developerModeEnabled, let provider = composerState.turnOptions.modelProvider?.trimmingCharacters(in: .whitespacesAndNewlines), !provider.isEmpty {
-            return "\(model) · \(provider)"
-        }
-        return model
-    }
-
-    var defaultModelSummaryTitle: String {
-        guard let option = modelOptionsForMenu.first(where: \.isDefault) ?? modelOptionsForMenu.first else {
-            return L10n.text("ui.default_model")
-        }
-        return developerModeEnabled ? option.menuTitle : option.title
-    }
-
-    var selectedSessionRuntimeProviderForModelMenu: String? {
-        guard let session = sessionStore.selectedSession else {
-            return nil
-        }
-        if session.source == "local", session.runtimeProvider == nil {
-            return nil
-        }
-        return normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
-    }
-
-    func clampModelSelectionToSelectedSessionRuntime() {
-        guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
-            return
-        }
-        let runtimeChanged = normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider) != runtimeProvider
-        let normalizedEffort: CodexAppServerReasoningEffort?
-        if developerModeEnabled {
-            normalizedEffort = composerState.turnOptions.reasoningEffort.flatMap { effort in
-                supportsReasoningEffort(effort, modelID: effectiveModelID) ? effort : nil
-            }
-        } else {
-            let option = modelOption(matching: effectiveModelID)
-            normalizedEffort = ModelReasoningGridCatalog.normalizedVisibleEffort(
-                option: option,
-                current: composerState.turnOptions.reasoningEffort,
-                layout: modelReasoningGridLayout
-            )
-        }
-        let unsupportedEffort = composerState.turnOptions.reasoningEffort != normalizedEffort
-        let unsupportedServiceTier = runtimeProvider == "claude"
-            && composerState.turnOptions.serviceTier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-
-        guard runtimeChanged || unsupportedEffort || unsupportedServiceTier else {
-            return
-        }
-        composerState.updateTurnOptions { options in
-            if runtimeChanged {
-                options.runtimeProvider = payloadRuntimeProviderForSelectedSessionLock()
-                options.model = nil
-                options.modelProvider = nil
-                options.reasoningEffort = nil
-                if !developerModeEnabled {
-                    normalizeModelControlsForStandardComposer(&options)
-                }
-            } else if unsupportedEffort {
-                options.reasoningEffort = normalizedEffort
-            }
-            if runtimeProvider == "claude" {
-                options.serviceTier = nil
-            }
-        }
-    }
-
-    func supportsReasoningEffort(
-        _ effort: CodexAppServerReasoningEffort,
-        modelID: String?
-    ) -> Bool {
-        let option = modelOption(matching: modelID)
-        guard let option else {
-            // 未知/自定义模型继续走开发者模式原有能力，不能因本地目录不认识就擅自降级。
-            return true
-        }
-        return ModelReasoningGridCatalog.supports(
-            effort,
-            option: option,
-            kind: modelReasoningGridLayout.kind
-        )
-    }
-
-    func normalizeModelControlsForStandardComposer(
-        _ options: inout CodexAppServerTurnOptions
-    ) {
-        let modelID = ModelReasoningGridCatalog.effectiveModelID(
-            selectedModelID: options.model,
-            options: modelOptionsForMenu
-        )
-        let option = modelOption(matching: modelID)
-        options.reasoningEffort = ModelReasoningGridCatalog.normalizedVisibleEffort(
-            option: option,
-            current: options.reasoningEffort,
-            layout: modelReasoningGridLayout
-        )
-        // 普通模式只有 Fast 会写 priority；auto/flex 仅属于开发者高级选项。
-        options.serviceTier = ModelReasoningGridCatalog.normalizedStandardServiceTier(
-            options.serviceTier,
-            runtimeProvider: options.runtimeProvider
-        )
-    }
-
-    func modelOption(matching modelID: String?) -> CodexAppServerModelOption? {
-        guard let modelID else { return nil }
-        return modelOptionsForMenu.first {
-            $0.model.caseInsensitiveCompare(modelID) == .orderedSame
-        } ?? modelReasoningGridLayout.model(matching: modelID)
-    }
-
-    func payloadRuntimeProviderForSelectedSessionLock() -> String? {
-        guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
-            return nil
-        }
-        return runtimeProvider == "codex" ? nil : runtimeProvider
-    }
-
-    func normalizedRuntimeProvider(_ rawValue: String?) -> String {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue)
     }
 
 }
