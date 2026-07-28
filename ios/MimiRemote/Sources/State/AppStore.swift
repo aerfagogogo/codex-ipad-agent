@@ -242,6 +242,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var activeConnectionProfileID: String?
     @Published private(set) var connectionGeneration = 0
     @Published private(set) var activeHostState: ActiveHostState
+    @Published private(set) var isCredentialMemorySuspended = false
     @Published var token: String
     @Published var connectionStatus: ConnectionStatus = .idle
     @Published private(set) var connectionTermination: ConnectionTerminationStatus?
@@ -475,6 +476,9 @@ final class AppStore: ObservableObject {
     /// Profile 元数据仍在，回前台只恢复当前 Profile，不会触碰其它 Mac。
     func suspendCredentialsForBackground() {
         credentialLifecycleGeneration &+= 1
+        // 先标记“临时挂起”再清空 Token，让根视图继续保留当前会话；
+        // 否则 SwiftUI 会把短暂的空 Token 误判成从未配对并切到初始设置页。
+        isCredentialMemorySuspended = true
         let runtimeBundle = activeRuntimeBundle
         activeRuntimeBundle = nil
         activeRuntimeIdentity = nil
@@ -492,22 +496,34 @@ final class AppStore: ObservableObject {
         let lifecycleGeneration = credentialLifecycleGeneration
         let suspensionTask = credentialSuspensionTask
         await suspensionTask?.value
-        if credentialLifecycleGeneration == lifecycleGeneration {
-            credentialSuspensionTask = nil
-        }
-        guard let profileID = activeConnectionProfileID,
-              connectionProfiles.contains(where: { $0.id == profileID }) else {
-            return
-        }
-        let restoredToken = try await credentialVault.token(for: profileID)
-        guard !restoredToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw ConnectionProfileError.missingToken
-        }
-        // await 期间若发生连接提交，旧 Profile 的 Token 不得覆盖新主机。
-        guard activeConnectionProfileID == profileID else {
+        guard credentialLifecycleGeneration == lifecycleGeneration else {
             throw CancellationError()
         }
-        token = restoredToken
+        credentialSuspensionTask = nil
+        guard let profileID = activeConnectionProfileID,
+              connectionProfiles.contains(where: { $0.id == profileID }) else {
+            isCredentialMemorySuspended = false
+            return
+        }
+        do {
+            let restoredToken = try await credentialVault.token(for: profileID)
+            guard !restoredToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ConnectionProfileError.missingToken
+            }
+            // await 期间若再次进入后台或切换连接，旧 Token 不得重新出现在内存中。
+            guard credentialLifecycleGeneration == lifecycleGeneration,
+                  activeConnectionProfileID == profileID else {
+                throw CancellationError()
+            }
+            token = restoredToken
+            isCredentialMemorySuspended = false
+        } catch {
+            // 真正的凭据读取失败仍应退出工作台；新的后台代次则继续保留挂起状态。
+            if credentialLifecycleGeneration == lifecycleGeneration {
+                isCredentialMemorySuspended = false
+            }
+            throw error
+        }
     }
 
     var requiresRePairing: Bool {
@@ -523,6 +539,13 @@ final class AppStore: ObservableObject {
 
     var canEnterWorkbench: Bool {
         if isConfigured {
+            return true
+        }
+        // 后台主动清空的只是敏感内存，不代表配对关系失效。保留根工作台可让
+        // App 切换器继续显示离开前的会话，同时不把 Token 留在内存或继续联网。
+        if isCredentialMemorySuspended,
+           activeConnectionProfile != nil,
+           !endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return true
         }
 #if DEBUG

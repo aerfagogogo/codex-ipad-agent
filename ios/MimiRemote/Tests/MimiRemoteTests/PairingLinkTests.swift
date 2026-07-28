@@ -199,6 +199,42 @@ final class PairingLinkTests: XCTestCase {
         XCTAssertEqual(keychain.deleteCallCount, 0)
     }
 
+    func testBackgroundCredentialSuspensionKeepsWorkbenchUntilForegroundRestore() async throws {
+        let suiteName = "PairingLinkTests.BackgroundCredentialSuspension.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "当前 Mac",
+            endpoint: "http://100.64.0.10:8787",
+            lastSuccessfulAt: nil
+        )
+        defaults.set(try JSONEncoder().encode([profile]), forKey: "agentd.connectionProfiles.v1")
+        defaults.set(profile.id, forKey: "agentd.activeConnectionProfileID.v1")
+        defaults.set(profile.endpoint, forKey: "agentd.endpoint")
+        let keychain = TestKeychainOperations()
+        keychain.setData(Data("token-a".utf8), account: "agentd-profile.mac-a")
+        let store = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: keychain))
+
+        XCTAssertTrue(store.isConfigured)
+        XCTAssertTrue(store.canEnterWorkbench)
+
+        store.suspendCredentialsForBackground()
+
+        XCTAssertEqual(store.token, "", "后台仍需清空公开内存 Token")
+        XCTAssertFalse(store.isConfigured)
+        XCTAssertTrue(store.isCredentialMemorySuspended)
+        XCTAssertTrue(store.canEnterWorkbench, "后台缩略图应保留离开前的工作台或会话")
+
+        try await store.restoreCredentialsForForeground()
+
+        XCTAssertEqual(store.token, "token-a")
+        XCTAssertFalse(store.isCredentialMemorySuspended)
+        XCTAssertTrue(store.isConfigured)
+        XCTAssertTrue(store.canEnterWorkbench)
+    }
+
     func testCommittingNewProfileKeepsPreviousTokenAndPersistsMetadataOnly() async throws {
         let suiteName = "PairingLinkTests.AddProfile.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
