@@ -25,6 +25,7 @@ struct VoiceMicButton: View {
                     Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                 }
             }
+            .font(themeStore.uiFont(size: 16, weight: .semibold))
             // 空闲态和其它工具按钮保持中性；录音、准备和转写才使用主题紫表达活动状态。
             .foregroundStyle(
                 isRecording || isPreparing || isTranscribing

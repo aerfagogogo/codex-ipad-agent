@@ -122,6 +122,10 @@ struct ComposerDraftCache {
                 result += url.utf8.count
             case .localImage(let path, _):
                 result += path.utf8.count
+            case .uploadedFile(let file):
+                result += file.name.utf8.count
+                result += file.extractedText.utf8.count
+                result += file.pageImageDataURLs.reduce(0) { $0 + $1.utf8.count }
             case .skill(let name, let path), .mention(let name, let path):
                 result += name.utf8.count + path.utf8.count
             }

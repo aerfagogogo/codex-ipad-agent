@@ -37,6 +37,7 @@ type Router struct {
 	upgrader       websocket.Upgrader
 	monitor        *relayMonitor
 	historyMedia   *appServerHistoryMediaStore
+	fileUploads    *fileUploadStore
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
@@ -125,6 +126,7 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 		},
 		monitor:                     newRelayMonitor(),
 		historyMedia:                newAppServerHistoryMediaStore(),
+		fileUploads:                 newFileUploadStore(defaultFileUploadRoot()),
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		managedWorktrees:            map[string]managedWorktree{},
@@ -157,6 +159,8 @@ func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects
 	mux.Handle("/api/workspaces/resolve", r.auth.Middleware(http.HandlerFunc(r.workspaceResolveHandler)))
 	mux.Handle("/api/directories/list", r.auth.Middleware(http.HandlerFunc(r.directoryListHandler)))
 	mux.Handle("/api/files/read", r.auth.Middleware(http.HandlerFunc(r.fileReadHandler)))
+	mux.Handle("/api/file-uploads", r.auth.Middleware(http.HandlerFunc(r.fileUploadHandler)))
+	mux.Handle("/api/file-uploads/", r.auth.Middleware(http.HandlerFunc(r.fileUploadHandler)))
 	mux.Handle("/api/worktrees/list", r.auth.Middleware(http.HandlerFunc(r.worktreeListHandler)))
 	mux.Handle("/api/worktrees/branches", r.auth.Middleware(http.HandlerFunc(r.worktreeBranchListHandler)))
 	mux.Handle("/api/worktrees/create", r.auth.Middleware(http.HandlerFunc(r.worktreeCreateHandler)))
@@ -327,6 +331,7 @@ func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
 		"name":            "agentd",
 		"version":         r.version,
 		"installation_id": r.installationID,
+		"capabilities":    []string{"file_upload_v1"},
 	})
 }
 

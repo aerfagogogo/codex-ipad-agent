@@ -29,7 +29,7 @@ Mimi Remote 直接连接用户手动输入或扫码导入的 `agentd`。`agentd`
 
 #### 系统权限
 
-- 相机：仅在用户打开扫码页时读取配对二维码。
+- 相机：仅在用户打开配对扫码页，或在消息输入框中明确选择“相机”时使用。拍摄的照片会先在设备上重新编码并作为消息附件处理，不会自动保存到系统照片图库，也不会在后台使用相机。
 - 麦克风与语音识别：仅在用户主动录入语音时使用。用户可以选择设备端或 Codex 转写。设备端模式使用系统 SpeechAnalyzer 实时处理；系统可能下载并维护语言模型，但录音不会发送到模型提供方。Codex 模式会把录音发送到用户配置的主机，再由 `agentd` 使用用户自己的 Codex 登录态请求转写；相关处理受用户与服务提供方之间的条款约束。Mimi Remote 开发者不接收这些录音。
 - 照片与文件：仅处理用户通过系统选择器明确选择的内容；内容随后按用户指令发送到其 Mac 上的运行时。
 
@@ -77,7 +77,7 @@ Connections may use a local network, a private network such as Tailscale, or an 
 
 #### System permissions
 
-- Camera: used only while you open the QR pairing scanner.
+- Camera: used only while you open the QR pairing scanner or explicitly choose Camera in the message composer. Captured photos are re-encoded on device and handled as message attachments. They are not automatically saved to your photo library, and the camera is not used in the background.
 - Microphone and speech recognition: used only when you actively dictate text. You can choose on-device or Codex transcription. On-device mode uses the system SpeechAnalyzer framework in real time; the system may download and maintain language models, but recordings are not sent to a model provider. Codex mode sends the recording to the host you configured, where `agentd` uses your own Codex session to request transcription under the terms between you and the service provider. The developer of Mimi Remote does not receive these recordings.
 - Photos and files: only items you explicitly choose through system pickers are processed, then sent to the runtime on your Mac as you direct.
 

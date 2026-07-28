@@ -281,6 +281,11 @@ enum ConversationImageSource: Hashable, Identifiable {
             return markdown(url)
         case .localImage(let path, _):
             return .localPath(path.trimmingCharacters(in: .whitespacesAndNewlines))
+        case .uploadedFile(let file):
+            guard let firstPage = file.pageImageDataURLs.first else {
+                return nil
+            }
+            return markdown(firstPage)
         case .text, .skill, .mention:
             return nil
         }

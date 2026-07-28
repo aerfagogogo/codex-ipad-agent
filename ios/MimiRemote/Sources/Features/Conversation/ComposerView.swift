@@ -14,13 +14,6 @@ enum VoiceTranscriptionDefaults {
     }
 }
 
-struct ModelPickerContentDetent: CustomPresentationDetent {
-    static func height(in context: Context) -> CGFloat? {
-        // 选择器的实际内容约 350pt；横屏或窄窗口由 maxDetentValue 自动收紧。
-        min(372, context.maxDetentValue)
-    }
-}
-
 struct ComposerView: View {
     // 相关实现按职责分布在 Composer* 扩展文件中；这些成员保持 module-internal，
     // 仅用于跨文件扩展协作，不构成对外 API。
@@ -35,6 +28,11 @@ struct ComposerView: View {
     @State var composerTextExternalRevision = 0
     @StateObject var voiceInput = VoiceInputController()
     @State var photoLibraryPickerRequest: PhotoLibraryPickerRequest?
+    @State var cameraAttachmentPickerRequest: CameraAttachmentPickerRequest?
+    @State var cameraAttachmentAccessIssue: CameraAttachmentAccessIssue?
+    @State var isRequestingCameraAuthorization = false
+    @State var fileImporterRequest: FileImporterRequest?
+    @State var pendingAddContentAction: PendingAddContentAction?
     @State var showsAddContentPanel = false
     @State var showsSkillPicker = false
     @State var showsModelGridPicker = false
@@ -97,6 +95,8 @@ struct ComposerView: View {
             voiceErrorMessage
             voiceNoticeMessage
             attachmentErrorNotice
+            FileUploadJobsStrip(store: sessionStore.fileUploadStore, scope: activeComposerDraftScope)
+                .environmentObject(themeStore)
             attachmentStrip
             composerStatusRow
             composerInputRow(tokens: tokens)
@@ -170,6 +170,59 @@ struct ComposerView: View {
             }
             .ignoresSafeArea()
         }
+        .fullScreenCover(item: $cameraAttachmentPickerRequest) { request in
+            CameraAttachmentPicker { result in
+                handleCameraAttachmentCapture(result, targetScope: request.targetScope)
+            }
+            .ignoresSafeArea()
+        }
+        .fileImporter(
+            isPresented: Binding(
+                get: { fileImporterRequest != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        fileImporterRequest = nil
+                    }
+                }
+            ),
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: false
+        ) { result in
+            let request = fileImporterRequest
+            fileImporterRequest = nil
+            guard let request else {
+                return
+            }
+            handleSelectedFile(result, targetScope: request.targetScope)
+        }
+        .confirmationDialog(
+            cameraAttachmentAccessIssue?.title ?? "",
+            isPresented: Binding(
+                get: { cameraAttachmentAccessIssue != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        cameraAttachmentAccessIssue = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible,
+            presenting: cameraAttachmentAccessIssue
+        ) { issue in
+            Button(L10n.text("ui.choose_photos")) {
+                choosePhotosAfterCameraIssue(issue)
+            }
+            if issue.canOpenSettings {
+                Button(L10n.text("ui.open_settings")) {
+                    cameraAttachmentAccessIssue = nil
+                    openCameraPrivacySettings()
+                }
+            }
+            Button(L10n.text("ui.cancel"), role: .cancel) {
+                cameraAttachmentAccessIssue = nil
+            }
+        } message: { issue in
+            Text(issue.message)
+        }
         .onChange(of: developerModeEnabled) { _, enabled in
             guard !enabled else {
                 return
@@ -196,6 +249,17 @@ struct ComposerView: View {
         .onChange(of: composerState.draftSnapshot()) { _, snapshot in
             // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
             sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
+        }
+        .onChange(of: sessionStore.latestFileUploadCompletion) { _, completion in
+            guard let completion,
+                  completion.targetScope == activeComposerDraftScope,
+                  !composerState.attachments.contains(where: {
+                      $0.id == "uploadedFile:\(completion.attachment.uploadID)"
+                  })
+            else {
+                return
+            }
+            composerState.addAttachment(.uploadedFile(completion.attachment))
         }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
             clampModelSelectionToSelectedSessionRuntime()
@@ -247,6 +311,17 @@ struct ComposerView: View {
     @discardableResult
     func submitDraft() -> Bool {
         guard synchronizeComposerTextBeforeSubmit() else {
+            return false
+        }
+        guard !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope) else {
+            attachmentErrorMessage = L10n.text("ui.wait_for_file_upload_to_complete")
+            return false
+        }
+        let pendingPayload = CodexAppServerTurnPayload(
+            input: CodexAppServerTurnPayload.defaultInput(for: composerState.draft) + composerState.attachments
+        )
+        guard pendingPayload.encodedAppServerInputByteCount <= CodexAppServerTurnPayload.maximumEncodedInputBytes else {
+            attachmentErrorMessage = L10n.text("ui.message_attachments_are_too_large")
             return false
         }
         if composerState.isGoalModeSelected {
@@ -494,6 +569,7 @@ struct ComposerView: View {
         return sessionStore.canSendInSelectedSession
             && hasComposerContentForSubmit
             && !sessionStore.isLoading
+            && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
     }
 
     var canSubmitGoalDraft: Bool {
@@ -501,6 +577,7 @@ struct ComposerView: View {
             && hasNonWhitespaceComposerTextForSubmit
             && !sessionStore.isLoading
             && !sessionStore.isUpdatingThreadGoal
+            && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
     }
 
     var hasNonWhitespaceComposerTextForSubmit: Bool {
@@ -763,43 +840,35 @@ struct ComposerView: View {
 
     func composerInputRow(tokens: ThemeTokens) -> some View {
         Group {
-            if usesCollapsedPhoneComposer {
-                collapsedPhoneComposerCard(tokens: tokens)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
+            if isPhoneComposer {
+                phoneComposerCard(tokens: tokens)
             } else {
                 composerCard(tokens: tokens)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
             }
         }
         .layoutPriority(1)
         .animation(composerMotionAnimation, value: usesCollapsedPhoneComposer)
     }
 
-    func collapsedPhoneComposerCard(tokens: ThemeTokens) -> some View {
+    /// iPhone 的收起态和编辑态共用同一个卡片与工具栏。过去在两棵完整 View 树之间
+    /// 切换，即使按钮的声明尺寸相同，SwiftUI 仍会把它们当成退出/进入元素并参与缩放，
+    /// 视觉上就像聚焦后整排图标突然变大。现在只替换上方内容区，底部工具栏身份稳定。
+    func phoneComposerCard(tokens: ThemeTokens) -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
         return VStack(alignment: .leading, spacing: 8) {
-            Button(action: expandPhoneComposer) {
-                HStack(spacing: 8) {
-                    Text(collapsedPhoneComposerText)
-                        .font(themeStore.uiFont(.body))
-                        .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Image(systemName: "chevron.up")
-                        .font(themeStore.uiFont(.caption2, weight: .bold))
-                        .foregroundStyle(tokens.tertiaryText)
+            Group {
+                if usesCollapsedPhoneComposer {
+                    collapsedPhoneComposerContent(tokens: tokens)
+                        .transition(.opacity)
+                } else {
+                    expandedPhoneComposerContent(tokens: tokens)
+                        .transition(.opacity)
                 }
-                .padding(.horizontal, 10)
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-            .accessibilityLabel(L10n.text("ui.expand_input_box"))
-            .accessibilityValue(collapsedPhoneComposerText)
 
+            // 工具栏始终位于同一个父视图和源码位置，展开输入区时只向上生长，
+            // 不重新插入按钮，也不对按钮做 scale transition。
             compactPrimaryComposerToolbar(showsModelTitle: compactToolbarShowsModelTitle)
         }
         .padding(8)
@@ -810,6 +879,43 @@ struct ComposerView: View {
         .overlay {
             shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
         }
+        .tint(tokens.accent)
+    }
+
+    func collapsedPhoneComposerContent(tokens: ThemeTokens) -> some View {
+        Button(action: expandPhoneComposer) {
+            HStack(spacing: 8) {
+                Text(collapsedPhoneComposerText)
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.up")
+                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .foregroundStyle(tokens.tertiaryText)
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.expand_input_box"))
+        .accessibilityValue(collapsedPhoneComposerText)
+        .accessibilityIdentifier("composer.expand")
+    }
+
+    func expandedPhoneComposerContent(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: composerCardSpacing) {
+            composerTextArea(tokens: tokens)
+            skillAutocompletePanel
+            voiceReviewNotice
+        }
+        // 卡片外缘在两态都固定为 8pt；编辑区额外补 4pt，使正文仍与原先
+        // 12pt 的阅读边距一致，而工具栏不会因聚焦改变位置或视觉尺寸。
+        .padding(.horizontal, 4)
+        .padding(.top, 4)
     }
 
     func composerCard(tokens: ThemeTokens) -> some View {
@@ -1199,59 +1305,6 @@ struct ComposerView: View {
         .accessibilityHidden(true)
     }
 
-    @ViewBuilder
-    var addContentButton: some View {
-        Button {
-            showsAddContentPanel.toggle()
-        } label: {
-            composerToolbarControlLabel(
-                title: nil,
-                systemImage: "plus",
-                accessibilityLabel: L10n.text("ui.add_content")
-            )
-        }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.add_content"))
-        .accessibilityIdentifier("composer.addContent")
-        .help(L10n.text("ui.add_an_image_plugin_skill_or_shortcut_phrase"))
-        .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
-            AddContentPanel(
-                skillShortcuts: enabledSkillShortcuts,
-                pluginShortcuts: installedPluginShortcuts,
-                capabilityErrorMessage: sessionStore.capabilityErrorMessage,
-                isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
-                showsPermissionSettings: isPhoneComposer,
-                permissionModes: availablePermissionModes,
-                selectedPermissionMode: composerState.permissionMode,
-                onPickPhotos: {
-                    presentPhotoLibraryPicker()
-                },
-                onSkillShortcut: { skill in
-                    addSkillAttachment(skill)
-                },
-                onPluginShortcut: { plugin in
-                    composerState.insertPluginMention(plugin.presentationName)
-                    clearVoiceTransientStatus()
-                    showsAddContentPanel = false
-                    UISelectionFeedbackGenerator().selectionChanged()
-                },
-                onRefreshCapabilities: {
-                    Task { await sessionStore.refreshCapabilities(forceReload: true) }
-                },
-                onPermissionMode: { mode in
-                    setPermissionMode(mode)
-                },
-                onShortcut: { shortcut in
-                    composerState.insertShortcut(shortcut)
-                    clearVoiceTransientStatus()
-                    showsAddContentPanel = false
-                }
-            )
-            .environmentObject(themeStore)
-            .presentationCompactAdaptation(.sheet)
-        }
-    }
-
     var skillPickerButton: some View {
         Button {
             showsSkillPicker.toggle()
@@ -1391,7 +1444,7 @@ struct ComposerView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: isGuidedSelected ? "text.bubble.fill" : "clock")
-                        .font(themeStore.uiFont(size: 15, weight: .bold))
+                        .font(themeStore.uiFont(size: 16, weight: .bold))
                     if !usesCompactComposerMetrics {
                         Text(isGuidedSelected ? L10n.text("ui.guide") : L10n.text("ui.queue"))
                             .font(themeStore.uiFont(.callout, weight: .semibold))
@@ -1550,7 +1603,10 @@ struct ComposerView: View {
             )
             .environmentObject(themeStore)
             .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
-            .presentationDetents([.custom(ModelPickerContentDetent.self)])
+            // Picker 自身按实际模型行数提供 184/236/288pt 的标准内容高度；
+            // iOS 26 的 fitted presentation 直接贴合该高度，Claude 不会再继承
+            // Codex 三行 + 快速按钮的固定空白。
+            .presentationSizing(.fitted)
             .presentationDragIndicator(.visible)
             .presentationBackground(themeStore.tokens(for: colorScheme).surface)
         }

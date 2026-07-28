@@ -740,6 +740,10 @@ func TestVersionAndDoctorEndpointsRequireBearerAndKeepMobileResponseContracts(t 
 	if versionBody["name"] != "agentd" || versionBody["version"] != "test" || versionBody["installation_id"] != testInstallationID {
 		t.Fatalf("version 响应必须保留移动端所需字段：%v", versionBody)
 	}
+	capabilities, ok := versionBody["capabilities"].([]any)
+	if !ok || len(capabilities) != 1 || capabilities[0] != "file_upload_v1" {
+		t.Fatalf("version 应声明移动端文件上传能力：%v", versionBody)
+	}
 
 	doctor := httptest.NewRecorder()
 	server.handler.ServeHTTP(doctor, authedRequest(t, http.MethodGet, "/api/doctor", nil))

@@ -1462,6 +1462,23 @@
         }
       }
     },
+    "ui.allow_camera_access_in_settings_or_choose_a_photo" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Allow camera access in Settings to take a photo, or choose one from your photo library."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请在系统设置中允许相机访问，或改为从照片图库选择。"
+          }
+        }
+      }
+    },
     "ui.already_archived_locally_remote_archiving_failed_value" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -3262,6 +3279,108 @@
         }
       }
     },
+    "ui.camera" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相机"
+          }
+        }
+      }
+    },
+    "ui.camera_access_is_restricted_choose_a_photo_instead" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera access is restricted on this device. Choose an existing photo instead."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此设备限制了相机访问，请改为选择已有照片。"
+          }
+        }
+      }
+    },
+    "ui.camera_access_needed" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera access needed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要相机权限"
+          }
+        }
+      }
+    },
+    "ui.camera_access_restricted" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera access restricted"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相机访问受限"
+          }
+        }
+      }
+    },
+    "ui.camera_is_not_available_choose_a_photo_instead" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A camera is not available on this device. Choose an existing photo instead."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此设备没有可用相机，请改为选择已有照片。"
+          }
+        }
+      }
+    },
+    "ui.camera_unavailable" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Camera unavailable"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "相机不可用"
+          }
+        }
+      }
+    },
     "ui.cancel" : {
       "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
       "localizations" : {
@@ -3669,6 +3788,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "选择一个工作区"
+          }
+        }
+      }
+    },
+    "ui.choose_photos" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Choose Photos"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择照片"
           }
         }
       }
@@ -9221,6 +9357,278 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "文件"
+          }
+        }
+      }
+    },
+    "ui.current_mac_version_does_not_support_file_upload" : {
+      "comment" : "Shown when the connected Mac companion does not advertise mobile file upload support.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The current Mac version does not support file uploads. Update Mimi Remote Mac and agentd to the latest version, then try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前 Mac 端版本不支持文件上传，请更新 Mimi Remote Mac 和 agentd 到最新版后重试。"
+          }
+        }
+      }
+    },
+    "ui.file_cannot_be_empty" : {
+      "comment" : "Shown when the selected file contains no data.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The file cannot be empty."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件不能为空。"
+          }
+        }
+      }
+    },
+    "ui.file_cannot_exceed_20_mib" : {
+      "comment" : "Shown when the selected file exceeds the mobile upload limit.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A file cannot exceed 20 MiB."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "单个文件不能超过 20 MiB。"
+          }
+        }
+      }
+    },
+    "ui.file_could_not_be_read" : {
+      "comment" : "Shown when the selected file cannot be accessed or copied.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The selected file could not be read."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法读取所选文件。"
+          }
+        }
+      }
+    },
+    "ui.file_upload_failed" : {
+      "comment" : "Fallback status for a failed file upload.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "File upload failed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文件上传失败"
+          }
+        }
+      }
+    },
+    "ui.message_attachments_are_too_large" : {
+      "comment" : "Shown when the attachment context for one message exceeds the protocol limit.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachments in this message are too large. Remove a file or use a smaller file."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "本条消息的附件内容过大，请移除文件或改用更小的文件。"
+          }
+        }
+      }
+    },
+    "ui.only_one_file_can_be_added_to_each_message" : {
+      "comment" : "Shown when the user attempts to add a second file to one composer draft.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Only one file can be added to each message."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "每条消息只能添加一个文件。"
+          }
+        }
+      }
+    },
+    "ui.only_pdf_text_and_source_files_are_supported" : {
+      "comment" : "Shown when a user selects an unsupported mobile file type.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Only PDF, text, and source-code files are supported."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目前仅支持 PDF、文本和源代码文件。"
+          }
+        }
+      }
+    },
+    "ui.pdf_file_could_not_be_parsed" : {
+      "comment" : "Shown when PDFKit cannot open the selected PDF.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The selected PDF could not be parsed."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法解析所选 PDF。"
+          }
+        }
+      }
+    },
+    "ui.preparing_file" : {
+      "comment" : "File upload status while creating a safe local staging copy and preview.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preparing file…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在准备文件…"
+          }
+        }
+      }
+    },
+    "ui.select_a_workspace_before_adding_files" : {
+      "comment" : "Shown when a file is selected without an active composer workspace.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select a workspace before adding files."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先选择工作区，再添加文件。"
+          }
+        }
+      }
+    },
+    "ui.select_pdf_text_or_source_file" : {
+      "comment" : "Subtitle for the file picker action in the add-content panel.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select a PDF, text, or source-code file"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择 PDF、文本或源代码文件"
+          }
+        }
+      }
+    },
+    "ui.text_file_must_be_utf8" : {
+      "comment" : "Shown when a selected text or source-code file is not valid UTF-8.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Text and source-code files must use UTF-8 encoding."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文本和源代码文件必须使用 UTF-8 编码。"
+          }
+        }
+      }
+    },
+    "ui.upload_progress" : {
+      "comment" : "Accessibility label for mobile file upload progress.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Upload progress"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上传进度"
+          }
+        }
+      }
+    },
+    "ui.uploading_file" : {
+      "comment" : "File upload status while transferring the file to the Mac.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uploading file…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在上传文件…"
+          }
+        }
+      }
+    },
+    "ui.wait_for_file_upload_to_complete" : {
+      "comment" : "Shown when the user sends while a file is still preparing or uploading.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wait for the file upload to complete before sending."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请等待文件上传完成后再发送。"
           }
         }
       }
@@ -24286,6 +24694,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法判断"
+          }
+        }
+      }
+    },
+    "ui.take_a_photo_to_attach_to_the_message" : {
+      "comment" : "User-facing UI text. Keep this stable semantic key; never use catalog values for protocol fields or log parsing.",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Take a photo to attach to the message"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拍摄照片并附加到消息"
           }
         }
       }

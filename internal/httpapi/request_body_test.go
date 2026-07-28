@@ -26,6 +26,9 @@ func TestAPIRequestBodyLimitsAreTieredForPairingAndVoice(t *testing.T) {
 	if got := requestBodyLimitForPath("/api/voice/transcribe"); got != voiceRequestBodyMaxBytes || got <= defaultAPIRequestBodyMaxBytes {
 		t.Fatalf("voice 应使用独立大 body 上限：%d", got)
 	}
+	if got := requestBodyLimitForPath("/api/file-uploads"); got != fileUploadRequestBodyMaxBytes || fileUploadRequestBodyMaxBytes != 20<<20 {
+		t.Fatalf("文件上传应使用 20 MiB 独立上限：%d", got)
+	}
 	// 12 MiB 原始音频的完整 base64 字符串必须仍能装进 voice JSON envelope。
 	encodedAudioBytes := int64(base64.StdEncoding.EncodedLen(int(voiceTranscriptionMaxBytes)))
 	jsonEnvelopeBytes := int64(len(`{"audio_base64":""}`))

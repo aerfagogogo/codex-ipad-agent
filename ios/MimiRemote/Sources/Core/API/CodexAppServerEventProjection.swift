@@ -1106,16 +1106,16 @@ extension CodexAppServerSessionRuntime {
         let processTimestampIsFallback = itemCreatedAt == nil && itemCompletedAt == nil && estimatedAt != nil
         switch type {
         case "userMessage":
-            let inputs = userMessageInputs(from: item)
+            let inputs = MimiFileContextCodec.collapsingExpandedInputs(userMessageInputs(from: item))
             let text = userMessageText(from: inputs).trimmingCharacters(in: .whitespacesAndNewlines)
-            let hasImageInput = containsImageInput(inputs)
-            guard !text.isEmpty || hasImageInput else {
+            let hasRichInput = containsRichInput(inputs)
+            guard !text.isEmpty || hasRichInput else {
                 return nil
             }
             guard text.isEmpty || isVisibleUserHistoryMessage(text) else {
                 return nil
             }
-            let turnPayload = hasImageInput ? CodexAppServerTurnPayload(input: inputs) : nil
+            let turnPayload = hasRichInput ? CodexAppServerTurnPayload(input: inputs) : nil
             let content = text.isEmpty ? (turnPayload?.previewText ?? "") : text
             guard !content.isEmpty else {
                 return nil
@@ -1357,10 +1357,10 @@ extension CodexAppServerSessionRuntime {
         .joined(separator: "\n")
     }
 
-    func containsImageInput(_ inputs: [CodexAppServerUserInput]) -> Bool {
+    func containsRichInput(_ inputs: [CodexAppServerUserInput]) -> Bool {
         inputs.contains { input in
             switch input {
-            case .image, .localImage:
+            case .image, .localImage, .uploadedFile:
                 return true
             case .text, .skill, .mention:
                 return false

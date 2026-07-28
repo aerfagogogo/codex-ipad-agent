@@ -55,7 +55,7 @@
 		</dict>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Allow Mimi Remote to scan a pairing QR code.</string>
+	<string>Allow Mimi Remote to scan pairing QR codes and take photos you choose to attach to messages.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>

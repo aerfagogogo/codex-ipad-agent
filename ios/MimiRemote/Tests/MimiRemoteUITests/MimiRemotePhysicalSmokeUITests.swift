@@ -102,20 +102,7 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
     }
 
     func testComposerPlanGoalAndModelMenusSurviveRotationWithoutCrash() throws {
-        let options = app.descendant(identifier: "composer.options")
-        if !options.waitForExistence(timeout: 4) {
-            try enterWorkbenchIfNeeded()
-            let sessionRows = app.descendants(matching: .any)
-                .matching(NSPredicate(format: "identifier BEGINSWITH %@", "sessions.row."))
-            guard sessionRows.firstMatch.waitForExistence(timeout: 25) else {
-                throw XCTSkip("当前设备没有可打开的历史会话，跳过 Composer 真机状态回归")
-            }
-            sessionRows.firstMatch.tap()
-            XCTAssertTrue(
-                options.waitForExistence(timeout: 25),
-                "打开样例会话后应进入 Composer"
-            )
-        }
+        try openComposerIfNeeded()
 
         try selectMode(identifier: "composer.mode.plan")
         rotate(to: .landscapeLeft)
@@ -135,6 +122,76 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         )
         dismissPresentedMenuOrPopover()
         XCTAssertEqual(app.state, .runningForeground, "完成紧凑工具栏操作后 App 应保持前台运行")
+    }
+
+    func testComposerCameraAttachmentCanPresentAndCancel() throws {
+        try openComposerIfNeeded()
+
+        let addContent = app.descendant(identifier: "composer.addContent")
+        XCTAssertTrue(addContent.waitForExistence(timeout: 10), "Composer 应保留原位置的加号入口")
+        assertMinimumTouchTarget(addContent, named: "加号")
+        addContent.tap()
+
+        let file = app.descendant(identifier: "composer.addContent.file")
+        let camera = app.descendant(identifier: "composer.addContent.camera")
+        let photos = app.descendant(identifier: "composer.addContent.photos")
+        XCTAssertTrue(file.waitForExistence(timeout: 8), "添加内容面板应展示文件入口")
+        XCTAssertTrue(camera.waitForExistence(timeout: 8), "添加内容面板应展示适合触控的相机入口")
+        XCTAssertTrue(photos.waitForExistence(timeout: 8), "添加内容面板应展示照片入口")
+        assertMinimumTouchTarget(file, named: "文件入口")
+        assertMinimumTouchTarget(camera, named: "相机入口")
+        assertMinimumTouchTarget(photos, named: "照片入口")
+
+        installCameraPermissionMonitor()
+        camera.tap()
+        handleCameraPermissionIfPresented()
+
+        let choosePhotos = firstExistingButton(labels: ["Choose Photos", "选择照片"], timeout: 2)
+        if choosePhotos != nil {
+            throw XCTSkip("当前设备已拒绝或限制相机权限；已验证降级提示，跳过系统相机取消操作")
+        }
+
+        let picker = app.descendant(identifier: "composer.cameraAttachmentPicker")
+        let cancel = firstExistingButton(labels: ["Cancel", "取消"], timeout: 15)
+        let pickerIsPresented = picker.exists || cancel != nil
+
+        XCTAssertTrue(pickerIsPresented, "点击相机后应稳定展示系统相机界面")
+        guard let cancel else {
+            XCTFail("系统相机界面应提供取消按钮")
+            return
+        }
+        cancel.tap()
+
+        XCTAssertTrue(
+            addContent.waitForExistence(timeout: 12),
+            "取消拍摄后应回到 Composer，且加号位置保持不变"
+        )
+        XCTAssertEqual(app.state, .runningForeground, "取消拍摄后 App 应保持前台运行")
+    }
+
+    func testComposerFileImporterCanPresentAndCancel() throws {
+        try openComposerIfNeeded()
+
+        let addContent = app.descendant(identifier: "composer.addContent")
+        XCTAssertTrue(addContent.waitForExistence(timeout: 10), "Composer 应保留原位置的加号入口")
+        addContent.tap()
+
+        let file = app.descendant(identifier: "composer.addContent.file")
+        XCTAssertTrue(file.waitForExistence(timeout: 8), "添加内容面板应展示文件入口")
+        assertMinimumTouchTarget(file, named: "文件入口")
+        file.tap()
+
+        guard let cancel = firstExistingButton(labels: ["Cancel", "取消"], timeout: 15) else {
+            XCTFail("系统文件选择器应提供取消按钮")
+            return
+        }
+        cancel.tap()
+
+        XCTAssertTrue(
+            addContent.waitForExistence(timeout: 12),
+            "取消文件选择后应回到 Composer，且加号位置保持不变"
+        )
+        XCTAssertEqual(app.state, .runningForeground, "取消文件选择后 App 应保持前台运行")
     }
 
     private func presentQRScanner() throws {
@@ -211,6 +268,36 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
             return
         }
         button.tap()
+    }
+
+    private func assertMinimumTouchTarget(
+        _ element: XCUIElement,
+        named name: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        // 真机读取的是系统最终命中矩形，可同时覆盖 SwiftUI 内容形状和平台适配结果。
+        XCTAssertGreaterThanOrEqual(element.frame.width, 44, "\(name)宽度应至少为 44pt", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(element.frame.height, 44, "\(name)高度应至少为 44pt", file: file, line: line)
+    }
+
+    private func openComposerIfNeeded() throws {
+        let options = app.descendant(identifier: "composer.options")
+        if options.waitForExistence(timeout: 4) {
+            return
+        }
+
+        try enterWorkbenchIfNeeded()
+        let sessionRows = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "sessions.row."))
+        guard sessionRows.firstMatch.waitForExistence(timeout: 25) else {
+            throw XCTSkip("当前设备没有可打开的样例会话，跳过 Composer 真机状态回归")
+        }
+        sessionRows.firstMatch.tap()
+        XCTAssertTrue(
+            options.waitForExistence(timeout: 25),
+            "打开样例会话后应进入 Composer"
+        )
     }
 
     private func enterWorkbenchIfNeeded() throws {
@@ -325,6 +412,22 @@ final class MimiRemotePhysicalSmokeUITests: XCTestCase {
         app.windows.firstMatch
             .coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.08))
             .tap()
+    }
+
+    private func firstExistingButton(
+        labels: [String],
+        timeout: TimeInterval
+    ) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if let button = labels
+                .map({ app.buttons[$0] })
+                .first(where: \.exists) {
+                return button
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        } while Date() < deadline
+        return nil
     }
 
     private var workbenchSettingsEntry: XCUIElement {

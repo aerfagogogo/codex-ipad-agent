@@ -9,17 +9,34 @@ struct VersionResponse: Codable {
     let name: String
     let version: String
     let installationID: String?
+    let capabilities: [String]
+
+    init(
+        name: String,
+        version: String,
+        installationID: String? = nil,
+        capabilities: [String] = []
+    ) {
+        self.name = name
+        self.version = version
+        self.installationID = installationID
+        self.capabilities = capabilities
+    }
 
     enum CodingKeys: String, CodingKey {
         case name
         case version
         case installationID = "installation_id"
+        case capabilities
     }
 
-    init(name: String, version: String, installationID: String? = nil) {
-        self.name = name
-        self.version = version
-        self.installationID = installationID
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.version = try container.decode(String.self, forKey: .version)
+        self.installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
+        // 旧 agentd 没有 capabilities。解码必须成功，具体功能入口再给出明确升级提示。
+        self.capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
     }
 }
 

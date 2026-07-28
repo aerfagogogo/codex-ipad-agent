@@ -7,6 +7,12 @@ struct MissingRunningSessionState: Equatable {
     var consecutiveRefreshMisses: Int
 }
 
+struct FileUploadCompletionEvent: Equatable {
+    let id = UUID()
+    let attachment: UploadedFileAttachment
+    let targetScope: ComposerDraftScopeKey
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
     @Published var projects: [AgentProject] = [] {
@@ -129,6 +135,7 @@ final class SessionStore: ObservableObject {
     @Published var queuedTurnStorageErrorMessage: String?
     /// 只驱动主机选择器和写操作禁用态，不承载探活结果，避免状态圆点刷新整棵工作台。
     @Published private(set) var connectionSwitchTargetProfileID: String?
+    @Published private(set) var latestFileUploadCompletion: FileUploadCompletionEvent?
 
     var isConnectionSwitchInProgress: Bool {
         connectionSwitchTargetProfileID != nil
@@ -157,9 +164,33 @@ final class SessionStore: ObservableObject {
     let queuedTurnStore: any QueuedTurnPersisting
     let terminalStreamStore = TerminalStreamStore()
     let hostWarmSnapshotCache = HostWarmSnapshotCache()
+    // 文件上传任务跨 ComposerView 重建持续存在，避免旋转、Split View 或切会话时丢失进度。
+    let fileUploadStore: FileUploadStore
     // 草稿跟随 SessionStore 生命周期，避免窗口 resize 或详情页重建时随 ComposerView 的 @State 一起丢失。
     // 不使用 @Published，防止每次键入都触发整个工作台刷新。
     var composerDraftCache = ComposerDraftCache()
+
+    func storeCompletedFileUpload(_ attachment: UploadedFileAttachment, for scope: ComposerDraftScopeKey) {
+        guard scope != .none else {
+            return
+        }
+        var snapshot = composerDraftCache.snapshot(for: scope)
+        guard !snapshot.attachments.contains(where: { $0.id == "uploadedFile:\(attachment.uploadID)" }) else {
+            return
+        }
+        snapshot.attachments.append(.uploadedFile(attachment))
+        composerDraftCache.save(snapshot, for: scope)
+        latestFileUploadCompletion = FileUploadCompletionEvent(
+            attachment: attachment,
+            targetScope: scope
+        )
+    }
+
+    func clearFileUploadsForConnectionChange() {
+        fileUploadStore.cancelAll()
+        latestFileUploadCompletion = nil
+    }
+
     // Goal / Plan 选择同样需要跨横竖屏 View 重建，但不应持久化到下次启动。
     // 保持非 @Published，ComposerView 自己维持当前可见状态，避免放大刷新范围。
     var composerSendModeCache = ComposerSendModeCache()
@@ -310,6 +341,7 @@ final class SessionStore: ObservableObject {
         sessionReminderScheduler: (any SessionReminderScheduling)? = nil,
         sessionReminderNow: @escaping () -> Date = Date.init,
         runtimeCompletionNotificationsEnabled: Bool = false,
+        fileUploadStore: FileUploadStore? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)? = nil,
@@ -331,6 +363,7 @@ final class SessionStore: ObservableObject {
         self.appStore = appStore
         self.conversationStore = conversationStore
         self.logStore = logStore
+        self.fileUploadStore = fileUploadStore ?? FileUploadStore()
         self.contextStore = contextStore ?? SessionContextStore()
         let initialProfileID = appStore.activeHostScope.profileID
         // 三个高频内存 Store 共用全局预算，但所有读写必须先绑定当前 Profile namespace。

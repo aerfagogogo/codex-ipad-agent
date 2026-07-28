@@ -22,7 +22,9 @@ struct ComposerToolbarControlLabel: View {
 
         HStack(spacing: 6) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 14, weight: .semibold))
+                // 收起态和编辑态共用同一套中等视觉尺寸；44pt 命中区保持不变。
+                // 16pt 是原先次操作 14pt 与主操作 17pt 之间的稳定中值。
+                .font(themeStore.uiFont(size: 16, weight: .semibold))
             if let title {
                 Text(title)
                     .lineLimit(1)
@@ -60,6 +62,78 @@ struct ComposerToolbarControlLabel: View {
 
 // ComposerView 的输入、语音和附件动作集中在这里；状态仍由主 View 持有，避免新增镜像 ViewModel。
 extension ComposerView {
+    @ViewBuilder
+    var addContentButton: some View {
+        Button {
+            showsAddContentPanel.toggle()
+        } label: {
+            composerToolbarControlLabel(
+                title: nil,
+                systemImage: "plus",
+                accessibilityLabel: L10n.text("ui.add_content")
+            )
+        }
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.add_content"))
+        .accessibilityIdentifier("composer.addContent")
+        .help(L10n.text("ui.add_an_image_plugin_skill_or_shortcut_phrase"))
+        .disabled(isRequestingCameraAuthorization)
+        .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
+            AddContentPanel(
+                skillShortcuts: enabledSkillShortcuts,
+                pluginShortcuts: installedPluginShortcuts,
+                capabilityErrorMessage: sessionStore.capabilityErrorMessage,
+                isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
+                showsPermissionSettings: isPhoneComposer,
+                permissionModes: availablePermissionModes,
+                selectedPermissionMode: composerState.permissionMode,
+                showsCameraAction: showsCameraAttachmentAction,
+                onPickFile: {
+                    presentFileImporter()
+                },
+                onCapturePhoto: {
+                    presentCameraAttachmentPicker()
+                },
+                onPickPhotos: {
+                    presentPhotoLibraryPicker()
+                },
+                onSkillShortcut: { skill in
+                    addSkillAttachment(skill)
+                },
+                onPluginShortcut: { plugin in
+                    composerState.insertPluginMention(plugin.presentationName)
+                    clearVoiceTransientStatus()
+                    showsAddContentPanel = false
+                    UISelectionFeedbackGenerator().selectionChanged()
+                },
+                onRefreshCapabilities: {
+                    Task { await sessionStore.refreshCapabilities(forceReload: true) }
+                },
+                onPermissionMode: { mode in
+                    setPermissionMode(mode)
+                },
+                onShortcut: { shortcut in
+                    composerState.insertShortcut(shortcut)
+                    clearVoiceTransientStatus()
+                    showsAddContentPanel = false
+                }
+            )
+            .environmentObject(themeStore)
+            .onDisappear {
+                consumePendingAddContentAction()
+            }
+            .presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
+        }
+    }
+
+    var showsCameraAttachmentAction: Bool {
+#if targetEnvironment(macCatalyst)
+        false
+#else
+        true
+#endif
+    }
+
     var runningControls: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         return HStack(spacing: 8) {
@@ -478,7 +552,7 @@ extension ComposerView {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: symbol)
-                    .font(themeStore.uiFont(size: 17, weight: .bold))
+                    .font(themeStore.uiFont(size: 16, weight: .bold))
                 if showLabels {
                     Text(title)
                         .font(themeStore.uiFont(.callout, weight: .semibold))
@@ -980,6 +1054,11 @@ extension ComposerView {
 
     func presentPhotoLibraryPicker() {
         let targetScope = activeComposerDraftScope
+        guard targetScope != .none else {
+            attachmentErrorMessage = L10n.text("ui.select_a_workspace_before_adding_files")
+            showsAddContentPanel = false
+            return
+        }
         let availableCount = remainingImageAttachmentCapacity(for: targetScope)
         guard availableCount > 0 else {
             attachmentErrorMessage = L10n.format("ui.at_most_images_can_be_added_to_each", Self.maximumImageAttachmentCount)
@@ -987,16 +1066,278 @@ extension ComposerView {
             return
         }
 
-        showsAddContentPanel = false
-        let request = PhotoLibraryPickerRequest(
-            selectionLimit: availableCount,
-            targetScope: targetScope
+        pendingAddContentAction = .photos(
+            targetScope: targetScope,
+            selectionLimit: availableCount
         )
-        Task { @MainActor in
-            // 等承载入口的 popover 完成收起后再展示系统照片库，避免 iPad 上两个 presentation 竞争。
-            await Task.yield()
-            photoLibraryPickerRequest = request
+        showsAddContentPanel = false
+    }
+
+    func presentCameraAttachmentPicker() {
+        let targetScope = activeComposerDraftScope
+        guard targetScope != .none else {
+            attachmentErrorMessage = L10n.text("ui.select_a_workspace_before_adding_files")
+            showsAddContentPanel = false
+            return
         }
+        guard remainingImageAttachmentCapacity(for: targetScope) > 0 else {
+            attachmentErrorMessage = L10n.format("ui.at_most_images_can_be_added_to_each", Self.maximumImageAttachmentCount)
+            showsAddContentPanel = false
+            return
+        }
+
+        pendingAddContentAction = .camera(targetScope: targetScope)
+        showsAddContentPanel = false
+    }
+
+    func presentFileImporter() {
+        let targetScope = activeComposerDraftScope
+        guard targetScope != .none else {
+            attachmentErrorMessage = L10n.text("ui.select_a_workspace_before_adding_files")
+            showsAddContentPanel = false
+            return
+        }
+        guard !hasFileAttachment(for: targetScope),
+              sessionStore.fileUploadStore.jobs(for: targetScope).isEmpty
+        else {
+            attachmentErrorMessage = L10n.text("ui.only_one_file_can_be_added_to_each_message")
+            showsAddContentPanel = false
+            return
+        }
+        pendingAddContentAction = .files(targetScope: targetScope)
+        showsAddContentPanel = false
+    }
+
+    @MainActor
+    func consumePendingAddContentAction() {
+        guard let action = pendingAddContentAction,
+              photoLibraryPickerRequest == nil,
+              cameraAttachmentPickerRequest == nil,
+              cameraAttachmentAccessIssue == nil,
+              fileImporterRequest == nil,
+              !isRequestingCameraAuthorization
+        else {
+            return
+        }
+        pendingAddContentAction = nil
+        switch action {
+        case .camera(let targetScope):
+            beginCameraAttachmentCapture(for: targetScope)
+        case .photos(let targetScope, let selectionLimit):
+            photoLibraryPickerRequest = PhotoLibraryPickerRequest(
+                selectionLimit: selectionLimit,
+                targetScope: targetScope
+            )
+        case .files(let targetScope):
+            Task {
+                do {
+                    try await sessionStore.fileUploadStore.ensureServerSupportsFileUpload(
+                        endpoint: sessionStore.appStore.connectionEndpoint,
+                        token: sessionStore.appStore.token
+                    )
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    fileImporterRequest = FileImporterRequest(targetScope: targetScope)
+                } catch {
+                    attachmentErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func beginCameraAttachmentCapture(for targetScope: ComposerDraftScopeKey) {
+        guard targetScope != .none,
+              remainingImageAttachmentCapacity(for: targetScope) > 0
+        else {
+            attachmentErrorMessage = targetScope == .none
+                ? L10n.text("ui.select_a_workspace_before_adding_files")
+                : L10n.format("ui.at_most_images_can_be_added_to_each", Self.maximumImageAttachmentCount)
+            return
+        }
+
+        switch CameraAttachmentAccess.currentAvailability {
+        case .ready:
+            cameraAttachmentPickerRequest = CameraAttachmentPickerRequest(targetScope: targetScope)
+        case .needsAuthorization:
+            requestCameraAttachmentAuthorization(for: targetScope)
+        case .denied:
+            cameraAttachmentAccessIssue = CameraAttachmentAccessIssue(
+                kind: .denied,
+                targetScope: targetScope
+            )
+        case .restricted:
+            cameraAttachmentAccessIssue = CameraAttachmentAccessIssue(
+                kind: .restricted,
+                targetScope: targetScope
+            )
+        case .unavailable:
+            cameraAttachmentAccessIssue = CameraAttachmentAccessIssue(
+                kind: .unavailable,
+                targetScope: targetScope
+            )
+        }
+    }
+
+    @MainActor
+    func requestCameraAttachmentAuthorization(for targetScope: ComposerDraftScopeKey) {
+        guard !isRequestingCameraAuthorization else {
+            return
+        }
+        isRequestingCameraAuthorization = true
+
+        Task { @MainActor in
+            _ = await CameraAttachmentAccess.requestAccess()
+            // TCC 的回调会早于权限弹窗完全退场；等待系统过渡结束后再呈现全屏相机。
+            try? await Task.sleep(for: .milliseconds(550))
+            isRequestingCameraAuthorization = false
+
+            guard photoLibraryPickerRequest == nil,
+                  cameraAttachmentPickerRequest == nil,
+                  cameraAttachmentAccessIssue == nil,
+                  fileImporterRequest == nil
+            else {
+                return
+            }
+
+            switch CameraAttachmentAccess.currentAvailability {
+            case .ready:
+                cameraAttachmentPickerRequest = CameraAttachmentPickerRequest(targetScope: targetScope)
+            case .denied, .needsAuthorization:
+                cameraAttachmentAccessIssue = CameraAttachmentAccessIssue(
+                    kind: .denied,
+                    targetScope: targetScope
+                )
+            case .restricted:
+                cameraAttachmentAccessIssue = CameraAttachmentAccessIssue(
+                    kind: .restricted,
+                    targetScope: targetScope
+                )
+            case .unavailable:
+                cameraAttachmentAccessIssue = CameraAttachmentAccessIssue(
+                    kind: .unavailable,
+                    targetScope: targetScope
+                )
+            }
+        }
+    }
+
+    @MainActor
+    func handleCameraAttachmentCapture(
+        _ result: Result<Data?, Error>,
+        targetScope: ComposerDraftScopeKey
+    ) {
+        cameraAttachmentPickerRequest = nil
+
+        switch result {
+        case .success(nil):
+            return
+        case .failure(let error):
+            attachmentErrorMessage = userFacingAttachmentError(error)
+        case .success(.some(let data)):
+            Task {
+                do {
+                    let prepared = try await Task.detached(priority: .userInitiated) {
+                        try ImageAttachmentEncoder.prepare(data)
+                    }.value
+                    let input = CodexAppServerUserInput.image(url: prepared.dataURL, detail: .auto)
+                    let addedCount = addPreparedImageAttachments([input], to: targetScope)
+                    updateBatchAttachmentNotice(
+                        addedCount: addedCount,
+                        failedCount: 0,
+                        skippedCount: max(0, 1 - addedCount),
+                        firstError: nil
+                    )
+                } catch {
+                    attachmentErrorMessage = userFacingAttachmentError(error)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func choosePhotosAfterCameraIssue(_ issue: CameraAttachmentAccessIssue) {
+        cameraAttachmentAccessIssue = nil
+
+        Task { @MainActor in
+            // confirmationDialog 仍在执行关闭动画；稍后再交给 PHPicker，避免 presenter 冲突。
+            try? await Task.sleep(for: .milliseconds(350))
+            guard photoLibraryPickerRequest == nil,
+                  cameraAttachmentPickerRequest == nil,
+                  fileImporterRequest == nil
+            else {
+                return
+            }
+
+            let availableCount = remainingImageAttachmentCapacity(for: issue.targetScope)
+            guard issue.targetScope != .none, availableCount > 0 else {
+                attachmentErrorMessage = issue.targetScope == .none
+                    ? L10n.text("ui.select_a_workspace_before_adding_files")
+                    : L10n.format("ui.at_most_images_can_be_added_to_each", Self.maximumImageAttachmentCount)
+                return
+            }
+            photoLibraryPickerRequest = PhotoLibraryPickerRequest(
+                selectionLimit: availableCount,
+                targetScope: issue.targetScope
+            )
+        }
+    }
+
+    @MainActor
+    func openCameraPrivacySettings() {
+        guard let url = URL(string: UIApplication.openSettingsURLString) else {
+            return
+        }
+        UIApplication.shared.open(url)
+    }
+
+    func handleSelectedFile(
+        _ result: Result<[URL], Error>,
+        targetScope: ComposerDraftScopeKey
+    ) {
+        switch result {
+        case .failure(let error):
+            let nsError = error as NSError
+            guard nsError.code != NSUserCancelledError else {
+                return
+            }
+            attachmentErrorMessage = error.localizedDescription
+        case .success(let urls):
+            guard let url = urls.first else {
+                return
+            }
+            guard FileAttachmentPreparer.isSupportedFilename(url.lastPathComponent) else {
+                attachmentErrorMessage = L10n.text("ui.only_pdf_text_and_source_files_are_supported")
+                return
+            }
+            attachmentErrorMessage = nil
+            sessionStore.fileUploadStore.start(
+                selectedURL: url,
+                targetScope: targetScope,
+                endpoint: sessionStore.appStore.connectionEndpoint,
+                token: sessionStore.appStore.token
+            ) { [weak sessionStore] attachment, scope in
+                sessionStore?.storeCompletedFileUpload(attachment, for: scope)
+            }
+        }
+    }
+
+    func hasFileAttachment(for scope: ComposerDraftScopeKey) -> Bool {
+        func containsFile(_ attachments: [CodexAppServerUserInput]) -> Bool {
+            attachments.contains { input in
+                if case .uploadedFile = input {
+                    return true
+                }
+                return false
+            }
+        }
+        // 上传完成时 SessionStore 会先写稳定草稿，再发布 completion 给当前 View。
+        // 同时检查两处可关闭这一个发布帧内再次选择第二个文件的竞态。
+        if scope == activeComposerDraftScope, containsFile(composerState.attachments) {
+            return true
+        }
+        return containsFile(sessionStore.composerDraft(for: scope).attachments)
     }
 
     func loadPhotoAttachments(
@@ -1095,7 +1436,7 @@ extension ComposerView {
             switch input {
             case .image, .localImage:
                 count += 1
-            case .text, .skill, .mention:
+            case .text, .uploadedFile, .skill, .mention:
                 break
             }
         }
@@ -1125,7 +1466,7 @@ extension ComposerView {
 
     func canPreviewAttachment(_ item: CodexAppServerUserInput) -> Bool {
         switch item {
-        case .image, .localImage:
+        case .image, .localImage, .uploadedFile:
             return true
         case .text, .skill, .mention:
             return false
@@ -1141,6 +1482,8 @@ extension ComposerView {
         switch item {
         case .image, .localImage:
             return "photo"
+        case .uploadedFile:
+            return "doc"
         case .skill:
             return "wand.and.stars"
         case .mention:

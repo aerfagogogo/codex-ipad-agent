@@ -326,6 +326,7 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
     case text(String, textElements: [CodexAppServerJSONValue] = [])
     case image(url: String, detail: CodexAppServerImageDetail? = nil)
     case localImage(path: String, detail: CodexAppServerImageDetail? = nil)
+    case uploadedFile(UploadedFileAttachment)
     case skill(name: String, path: String)
     case mention(name: String, path: String)
 
@@ -337,6 +338,7 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
         case path
         case name
         case detail
+        case file
     }
 
     var id: String {
@@ -347,6 +349,8 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
             return "image:\(Self.stableDigest(url))"
         case .localImage(let path, _):
             return "localImage:\(path)"
+        case .uploadedFile(let file):
+            return "uploadedFile:\(file.uploadID)"
         case .skill(let name, let path):
             return "skill:\(name):\(path)"
         case .mention(let name, let path):
@@ -382,6 +386,8 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
             return L10n.text("ui.image_attachment")
         case .localImage(let path, _):
             return L10n.format("ui.image_value", URL(fileURLWithPath: path).lastPathComponent)
+        case .uploadedFile(let file):
+            return file.name
         case .skill(let name, _):
             return "[$\(name)]"
         case .mention(let name, _):
@@ -415,6 +421,10 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
                 object["detail"] = .string(detail.rawValue)
             }
             return .object(object)
+        case .uploadedFile(let file):
+            // uploadedFile 是移动端本地持久化类型；真正发往 app-server 时由
+            // appServerJSONValues 展开为 text + image，绝不发送未知协议类型。
+            return MimiFileContextCodec.contextInput(for: file).jsonValue
         case .skill(let name, let path):
             return .object([
                 "type": .string("skill"),
@@ -427,6 +437,15 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
                 "name": .string(name),
                 "path": .string(path)
             ])
+        }
+    }
+
+    var appServerJSONValues: [CodexAppServerJSONValue] {
+        switch self {
+        case .uploadedFile(let file):
+            return MimiFileContextCodec.expandedInputs(for: file).map(\.jsonValue)
+        default:
+            return [jsonValue]
         }
     }
 
@@ -449,6 +468,8 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
                 path: try container.decode(String.self, forKey: .path),
                 detail: try container.decodeIfPresent(CodexAppServerImageDetail.self, forKey: .detail)
             )
+        case "uploadedFile":
+            self = .uploadedFile(try container.decode(UploadedFileAttachment.self, forKey: .file))
         case "skill":
             self = .skill(
                 name: try container.decode(String.self, forKey: .name),
@@ -483,6 +504,9 @@ enum CodexAppServerUserInput: Codable, Hashable, Identifiable {
             try container.encode("localImage", forKey: .type)
             try container.encode(path, forKey: .path)
             try container.encodeIfPresent(detail, forKey: .detail)
+        case .uploadedFile(let file):
+            try container.encode("uploadedFile", forKey: .type)
+            try container.encode(file, forKey: .file)
         case .skill(let name, let path):
             try container.encode("skill", forKey: .type)
             try container.encode(name, forKey: .name)
@@ -866,6 +890,8 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
 }
 
 struct CodexAppServerTurnPayload: Codable, Hashable {
+    static let maximumEncodedInputBytes = 12 << 20
+
     var input: [CodexAppServerUserInput]
     var options: CodexAppServerTurnOptions
 
@@ -908,7 +934,11 @@ struct CodexAppServerTurnPayload: Codable, Hashable {
     }
 
     var appServerInput: CodexAppServerJSONValue {
-        .array(input.map(\.jsonValue))
+        .array(input.flatMap(\.appServerJSONValues))
+    }
+
+    var encodedAppServerInputByteCount: Int {
+        (try? JSONEncoder().encode(appServerInput).count) ?? Int.max
     }
 
     func retainedAfterAcceptedSend() -> CodexAppServerTurnPayload? {

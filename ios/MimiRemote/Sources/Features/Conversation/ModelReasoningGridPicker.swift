@@ -11,6 +11,23 @@ enum ModelReasoningGridKind: Equatable {
     case claude
 }
 
+enum ModelReasoningGridMetrics {
+    static let contentPadding: CGFloat = 12
+    static let headerHeight: CGFloat = 44
+    static let sectionSpacing: CGFloat = 8
+    static let effortHeaderHeight: CGFloat = 56
+    static let modelRowHeight: CGFloat = 52
+
+    static func standardContentHeight(modelRowCount: Int) -> CGFloat {
+        let visibleRowCount = max(modelRowCount, 0)
+        return contentPadding * 2
+            + headerHeight
+            + sectionSpacing
+            + effortHeaderHeight
+            + CGFloat(visibleRowCount) * modelRowHeight
+    }
+}
+
 struct ModelReasoningGridLayout: Equatable {
     let kind: ModelReasoningGridKind
     let models: [CodexAppServerModelOption]
@@ -23,6 +40,10 @@ struct ModelReasoningGridLayout: Equatable {
 
     var effortColumnCount: Int {
         efforts.count
+    }
+
+    var standardContentHeight: CGFloat {
+        ModelReasoningGridMetrics.standardContentHeight(modelRowCount: modelRowCount)
     }
 
     func model(matching modelID: String?) -> CodexAppServerModelOption? {
@@ -270,7 +291,7 @@ struct ModelReasoningGridPicker: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: ModelReasoningGridMetrics.sectionSpacing) {
                 ModelReasoningPickerHeader(
                     options: visibleOptions,
                     layout: layout,
@@ -300,7 +321,7 @@ struct ModelReasoningGridPicker: View {
                     )
                 }
             }
-            .padding(12)
+            .padding(ModelReasoningGridMetrics.contentPadding)
         }
         .scrollBounceBehavior(.basedOnSize)
         .frame(
@@ -308,7 +329,9 @@ struct ModelReasoningGridPicker: View {
             idealWidth: 400,
             maxWidth: horizontalSizeClass == .compact ? .infinity : 420
         )
-        .frame(maxHeight: 372)
+        // 标准字号用实际模型行数决定内容高度，避免两行 Claude 仍占用三行 Codex 的空间。
+        // 辅助功能字号不锁定高度，由外层 presentation 在可用空间内增长并保留滚动。
+        .frame(height: dynamicTypeSize.isAccessibilitySize ? nil : layout.standardContentHeight)
         .background(tokens.surface)
         .accessibilityIdentifier("composer.modelPicker")
     }
@@ -373,9 +396,9 @@ private struct ModelReasoningPickerHeader: View {
             .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
             .accessibilityLabel(L10n.text("ui.all_models"))
 
-            Spacer(minLength: 8)
-
             if layout.showsFastMode {
+                Spacer(minLength: 8)
+
                 Toggle(isOn: fastModeBinding) {
                     HStack(spacing: 5) {
                         Image(systemName: isFastMode ? "bolt.fill" : "bolt")
@@ -405,7 +428,7 @@ private struct ModelReasoningPickerHeader: View {
                 .accessibilityHint(L10n.text("ui.after_turning_it_on_the_priority_service_speed"))
             }
         }
-        .frame(minHeight: 44)
+        .frame(minHeight: ModelReasoningGridMetrics.headerHeight)
     }
 
     @ViewBuilder
@@ -509,8 +532,6 @@ private struct ModelReasoningStandardGrid: View {
     @State private var gestureRevision = 0
 
     private let modelLabelWidth: CGFloat = 84
-    private let effortHeaderHeight: CGFloat = 56
-    private let modelRowHeight: CGFloat = 52
     private let dragCancellationMargin: CGFloat = 12
 
     var body: some View {
@@ -531,7 +552,7 @@ private struct ModelReasoningStandardGrid: View {
     private func effortHeaders(tokens: ThemeTokens) -> some View {
         HStack(spacing: 8) {
             Color.clear
-                .frame(width: modelLabelWidth, height: effortHeaderHeight)
+                .frame(width: modelLabelWidth, height: ModelReasoningGridMetrics.effortHeaderHeight)
             HStack(spacing: 0) {
                 ForEach(layout.efforts) { effort in
                     Text(ModelReasoningGridCatalog.effortTitle(effort))
@@ -539,7 +560,10 @@ private struct ModelReasoningStandardGrid: View {
                         .foregroundStyle(activeSelection.effort == effort ? tokens.accent : tokens.primaryText)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity, minHeight: effortHeaderHeight)
+                        .frame(
+                            maxWidth: .infinity,
+                            minHeight: ModelReasoningGridMetrics.effortHeaderHeight
+                        )
                 }
             }
         }
@@ -554,7 +578,7 @@ private struct ModelReasoningStandardGrid: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.trailing)
                     .frame(width: modelLabelWidth, alignment: .trailing)
-                    .frame(minHeight: modelRowHeight)
+                    .frame(minHeight: ModelReasoningGridMetrics.modelRowHeight)
             }
         }
     }
@@ -599,7 +623,7 @@ private struct ModelReasoningStandardGrid: View {
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .simultaneousGesture(dragGesture(size: size))
         }
-        .frame(height: CGFloat(layout.modelRowCount) * modelRowHeight)
+        .frame(height: CGFloat(layout.modelRowCount) * ModelReasoningGridMetrics.modelRowHeight)
     }
 
     private func gridCell(

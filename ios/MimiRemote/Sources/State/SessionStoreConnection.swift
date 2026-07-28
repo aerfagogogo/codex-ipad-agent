@@ -1728,6 +1728,7 @@ extension SessionStore {
             sessionSearchQuery = ""
         }
         // endpoint 切换后 session/project ID 可能重复；旧 Mac 的草稿不能恢复到新连接。
+        clearFileUploadsForConnectionChange()
         composerDraftCache.removeAll()
         composerSendModeCache.removeAll()
         stopAllQueuedSessionMonitoring()

@@ -1461,7 +1461,8 @@ private struct AIUsageRingsControl: View {
         HStack(spacing: 7) {
             Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
                 .font(.system(size: 12, weight: .semibold))
-            Text("\(name): \(display.creditText)")
+            // name 与 creditText 已分别完成本地化；按原文组合，避免 Xcode 抽取裸 `%@: %@` key。
+            Text(verbatim: "\(name): \(display.creditText)")
                 .font(themeStore.uiFont(.caption, weight: .medium))
                 .lineLimit(2)
         }

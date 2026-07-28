@@ -1299,6 +1299,9 @@ final class ConversationStore: ObservableObject {
                 payloadBytes += url.utf8.count
             case .localImage(let path, _):
                 payloadBytes += path.utf8.count
+            case .uploadedFile(let file):
+                payloadBytes += file.name.utf8.count + file.extractedText.utf8.count
+                payloadBytes += file.pageImageDataURLs.reduce(0) { $0 + $1.utf8.count }
             case .skill(let name, let path), .mention(let name, let path):
                 payloadBytes += name.utf8.count + path.utf8.count
             }

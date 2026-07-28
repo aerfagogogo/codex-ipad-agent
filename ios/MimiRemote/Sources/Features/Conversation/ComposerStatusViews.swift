@@ -104,6 +104,8 @@ struct QueuedTurnEditorSheet: View {
         switch item {
         case .image, .localImage:
             return "photo"
+        case .uploadedFile:
+            return "doc"
         case .skill:
             return "wand.and.stars"
         case .mention:

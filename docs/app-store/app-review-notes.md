@@ -46,7 +46,7 @@ Please use manual connection instead of QR pairing because normal QR tickets are
 
 ## Permissions
 
-- Camera: scanning a pairing QR code.
+- Camera: scanning a pairing QR code, or taking a photo the user explicitly chooses to attach to a message. Captured photos are not saved to the photo library.
 - Microphone and speech recognition: optional user-initiated dictation.
 - Local network: connecting to a user-configured host.
 

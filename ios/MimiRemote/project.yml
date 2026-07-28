@@ -92,7 +92,8 @@ targets:
       - path: Tests
         excludes:
           - MimiRemoteTests/ConversationSnapshotTests.swift
-          # UI 测试由独立 target 编译，不能同时落入 unit-test bundle。
+          # UI 测试只能由 MimiRemoteUITests Target 承载；否则普通单测会在没有
+          # XCUIApplication 配置的环境里启动并崩溃。
           - MimiRemoteUITests
           - MimiRemoteUITests/**
       - path: Tests/MimiRemoteTests/ConversationSnapshotTests.swift
@@ -148,3 +149,4 @@ schemes:
     test:
       targets:
         - MimiRemoteUITests
+      basedOnDependencyAnalysis: false

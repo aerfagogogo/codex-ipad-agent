@@ -68,6 +68,40 @@ final class SkillModelPickerSnapshotTests: SimplifiedChineseSnapshotTestCase {
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.max), "Max")
         XCTAssertEqual(ModelReasoningGridCatalog.effortTitle(.ultra), "Ultra")
         XCTAssertFalse(claudeLayout.showsFastMode)
+        XCTAssertEqual(claudeLayout.standardContentHeight, 288)
+    }
+
+    func testModelPickerContentHeightTracksVisibleModelRows() {
+        let oneModel = [
+            CodexAppServerModelOption(id: "model-1", title: "Model 1")
+        ]
+        let twoModels = oneModel + [
+            CodexAppServerModelOption(id: "model-2", title: "Model 2")
+        ]
+        let threeModels = twoModels + [
+            CodexAppServerModelOption(id: "model-3", title: "Model 3")
+        ]
+
+        let codexOneRow = ModelReasoningGridCatalog.layout(
+            runtimeProvider: "codex",
+            options: oneModel
+        )
+        let codexThreeRows = ModelReasoningGridCatalog.layout(
+            runtimeProvider: "codex",
+            options: threeModels
+        )
+        let claudeTwoRows = ModelReasoningGridCatalog.layout(
+            runtimeProvider: "claude",
+            options: twoModels
+        )
+
+        XCTAssertEqual(codexOneRow.standardContentHeight, 184)
+        XCTAssertEqual(claudeTwoRows.standardContentHeight, 236)
+        XCTAssertEqual(codexThreeRows.standardContentHeight, 288)
+        XCTAssertTrue(codexOneRow.showsFastMode)
+        XCTAssertFalse(claudeTwoRows.showsFastMode)
+        XCTAssertEqual(codexOneRow.efforts.last, .ultra)
+        XCTAssertEqual(claudeTwoRows.efforts.last, .max)
     }
 
     func testSkillCardsAndModelGridDarkAppearance() throws {

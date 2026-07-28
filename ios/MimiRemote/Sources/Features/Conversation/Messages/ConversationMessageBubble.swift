@@ -257,7 +257,7 @@ struct ConversationMessageContent: View {
     private var shouldRenderStructuredUserPayload: Bool {
         message.role == .user
             && message.kind == .message
-            && (!payloadSkillItems.isEmpty || !payloadMentionItems.isEmpty)
+            && (!payloadSkillItems.isEmpty || !payloadMentionItems.isEmpty || !payloadFileItems.isEmpty)
     }
 
     private func structuredUserContent(style: MarkdownStyle) -> some View {
@@ -279,7 +279,7 @@ struct ConversationMessageContent: View {
             return payloadText
         }
         var text = message.content
-        for item in payloadSkillItems + payloadMentionItems {
+        for item in payloadSkillItems + payloadMentionItems + payloadFileItems {
             text = text.replacingOccurrences(of: item.previewText, with: "")
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -298,6 +298,34 @@ struct ConversationMessageContent: View {
                     usesUserBubbleContrast: themeStore.tokens(for: colorScheme).resolvedScheme == .dark
                 )
                 .environmentObject(themeStore)
+            }
+        }
+
+        ForEach(payloadFileItems) { item in
+            if case .uploadedFile(let file) = item {
+                HStack(spacing: 10) {
+                    Image(systemName: "doc")
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .frame(width: 36, height: 36)
+                        .background(
+                            themeStore.tokens(for: colorScheme).selectionFill,
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(file.name)
+                            .font(style.bodyFont.weight(.semibold))
+                            .lineLimit(2)
+                        Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
+                            .font(style.captionFont)
+                            .foregroundStyle(style.secondaryColor)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(10)
+                .background(
+                    themeStore.tokens(for: colorScheme).elevatedSurface,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
             }
         }
 
@@ -392,7 +420,7 @@ struct ConversationMessageContent: View {
             switch item {
             case .mention:
                 return item.previewText
-            case .text, .image, .localImage, .skill:
+            case .text, .image, .localImage, .uploadedFile, .skill:
                 return nil
             }
         }
@@ -410,6 +438,13 @@ struct ConversationMessageContent: View {
     private var payloadMentionItems: [CodexAppServerUserInput] {
         message.turnPayload?.input.filter { item in
             if case .mention = item { return true }
+            return false
+        } ?? []
+    }
+
+    private var payloadFileItems: [CodexAppServerUserInput] {
+        message.turnPayload?.input.filter { item in
+            if case .uploadedFile = item { return true }
             return false
         } ?? []
     }
