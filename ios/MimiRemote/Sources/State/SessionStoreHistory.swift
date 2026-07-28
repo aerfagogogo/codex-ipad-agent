@@ -203,6 +203,41 @@ extension SessionStore {
             }
             return true
         } catch {
+            if case CodexAppServerSessionRuntimeError.activeTurnConflict(
+                let authoritativeSession,
+                let activeTurnID
+            ) = error,
+               resume != nil {
+                // resume 快照已经证明旧 turn 仍在运行。这里只回滚本次未送达的新消息，
+                // 不能把复用原 ID 的真实会话写成 failed，也不能清掉原审批/补充问题。
+                var recoveredSession = authoritativeSession
+                recoveredSession.status = "running"
+                recoveredSession.activeTurnID = activeTurnID
+                recoveredSession = sessionPreservingActiveApproval(recoveredSession)
+                upsert(recoveredSession)
+                if let optimisticSessionID, let clientMessageID {
+                    conversationStore.updateSendStatus(
+                        clientMessageID: clientMessageID,
+                        sessionID: optimisticSessionID,
+                        status: .failed
+                    )
+                    clearSessionListProjection(
+                        sessionID: optimisticSessionID,
+                        clientMessageID: clientMessageID
+                    )
+                    clearSessionRecentActivityProjection(
+                        sessionID: optimisticSessionID,
+                        clientMessageID: clientMessageID
+                    )
+                }
+                if let optimisticSelectionLease,
+                   isSelectionLeaseCurrent(optimisticSelectionLease) {
+                    connectWebSocket(recoveredSession, replayBufferedEvents: true)
+                    setStatusMessage(error.localizedDescription)
+                    setErrorMessage(nil)
+                }
+                return false
+            }
             if let optimisticSessionID {
                 if let clientMessageID {
                     conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: optimisticSessionID, status: .failed)

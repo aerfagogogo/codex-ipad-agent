@@ -1339,6 +1339,33 @@ extension SessionStore {
                     sessionID: sessionID
                 )
             }
+        case .activeTurnConflict(let activeTurnID, let message):
+            // 这是“新消息未被接受”，不是原会话失败。恢复权威 active turn，
+            // 并保留已有审批/补充问题；排队项回到等待态，待原 turn 完成后再发。
+            updateSession(sessionID) { item in
+                item.activeTurnID = activeTurnID
+                if item.pendingUserInput != nil {
+                    item.status = "waiting_for_input"
+                } else if item.pendingApproval != nil {
+                    item.status = "waiting_for_approval"
+                } else {
+                    item.status = "running"
+                }
+            }
+            if handleQueuedActiveTurnConflict(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                activeTurnID: activeTurnID
+            ) {
+                setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            setStatusMessage(message)
         case .rejected(let message):
             if handleQueuedSendRejected(
                 clientMessageID: clientMessageID,
@@ -1370,6 +1397,42 @@ extension SessionStore {
             clearForegroundActivity(sessionID: sessionID)
             setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
         }
+    }
+
+    @discardableResult
+    func handleQueuedActiveTurnConflict(
+        clientMessageID: ClientMessageID,
+        sessionID: SessionID,
+        activeTurnID: TurnID
+    ) -> Bool {
+        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
+              location.sessionID == sessionID,
+              let item = queuedRunningTurnsBySessionID[sessionID]?[location.index],
+              item.dispatchState == .dispatching else {
+            return false
+        }
+        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+        guard mutateAndPersistQueuedTurns({
+            guard var queue = queuedRunningTurnsBySessionID[sessionID],
+                  queue.indices.contains(location.index) else { return }
+            queue[location.index].dispatchState = .waiting
+            queue[location.index].expectedTurnID = activeTurnID
+            queue[location.index].lastError = nil
+            queuedRunningTurnsBySessionID[sessionID] = queue
+        }) else {
+            return true
+        }
+        conversationStore.appendLocalUser(
+            item.previewText,
+            sessionID: sessionID,
+            clientMessageID: clientMessageID,
+            sendStatus: .local,
+            turnPayload: item.payload,
+            userDelivery: .queued
+        )
+        ensureQueuedSessionMonitoring(sessionID: sessionID)
+        return true
     }
 
     @discardableResult
@@ -1599,6 +1662,48 @@ extension SessionStore {
                 setErrorMessage(L10n.text("ui.this_session_is_running_on_another_client_please_c95578ac"))
                 return false
             }
+            let payload = message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt)
+            let resolvedPayload = await payloadResolvingRequiredModel(payload)
+            if let activeTurnID = session.activeTurnID {
+                let queueCount = queuedRunningTurnsBySessionID[session.id]?.count ?? 0
+                guard queueCount < Self.queuedTurnLimitPerSession else {
+                    setErrorMessage(L10n.format("ui.each_session_retains_a_maximum_of_value_messages", Self.queuedTurnLimitPerSession))
+                    return false
+                }
+                let intent: QueuedTurnIntent = resolvedPayload.options.collaborationMode == .plan
+                    ? .plan
+                    : .standard
+                let item = QueuedTurnEntry(
+                    sessionID: session.id,
+                    projectID: session.projectID,
+                    payload: resolvedPayload,
+                    clientMessageID: clientMessageID,
+                    intent: intent,
+                    expectedTurnID: activeTurnID
+                )
+                guard mutateAndPersistQueuedTurns({
+                    queuedRunningTurnsBySessionID[session.id, default: []].append(item)
+                }) else {
+                    return false
+                }
+                conversationStore.appendLocalUser(
+                    item.previewText,
+                    sessionID: session.id,
+                    clientMessageID: clientMessageID,
+                    sendStatus: .local,
+                    turnPayload: resolvedPayload,
+                    userDelivery: .queued
+                )
+                setSessionListProjection(
+                    sessionID: session.id,
+                    preview: prompt,
+                    source: .localUser,
+                    clientMessageID: clientMessageID
+                )
+                ensureQueuedSessionMonitoring(sessionID: session.id)
+                setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
+                return true
+            }
             guard let socket = readyWebSocket(for: session) else {
                 return false
             }
@@ -1606,8 +1711,6 @@ extension SessionStore {
             conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sending)
             setSessionListProjection(sessionID: session.id, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
             setForegroundActivity(.waitingForAssistant, sessionID: session.id)
-            let payload = message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt)
-            let resolvedPayload = await payloadResolvingRequiredModel(payload)
             guard socket.sendTurn(resolvedPayload, clientMessageID: clientMessageID) else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
                 clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)

@@ -115,7 +115,6 @@ extension ConversationDataFlowTests {
         XCTAssertNil(options.sessionStartSource)
         XCTAssertNil(options.threadSource)
         XCTAssertEqual(options.collaborationMode, .default)
-        XCTAssertFalse(options.planGuidanceEnabled)
     }
 
     func testComposerStateStandardModePreservesAutoApprovalPreset() throws {
@@ -142,12 +141,10 @@ extension ConversationDataFlowTests {
     func testComposerStandardModeClearsPreviousPlanModeToDefault() throws {
         var options = CodexAppServerTurnOptions.default
         options.collaborationMode = .plan
-        options.planGuidanceEnabled = true
 
         let standard = options.sanitizedForStandardComposer()
 
         XCTAssertEqual(standard.collaborationMode, .default)
-        XCTAssertFalse(standard.planGuidanceEnabled)
     }
 
     func testComposerGoalSubmissionPayloadUsesDefaultCollaborationMode() throws {
@@ -157,7 +154,6 @@ extension ConversationDataFlowTests {
         var goalOptions = composerState.turnOptions.sanitizedForStandardComposer()
         // 目标模式的目标状态走 thread/goal/set；turn/start 必须显式回到 default。
         goalOptions.collaborationMode = .default
-        goalOptions.planGuidanceEnabled = false
 
         let submitted = try XCTUnwrap(composerState.takeDraftForSubmit(
             isLoading: false,
@@ -165,7 +161,6 @@ extension ConversationDataFlowTests {
         ))
 
         XCTAssertEqual(submitted.payload.options.collaborationMode, .default)
-        XCTAssertFalse(submitted.payload.options.planGuidanceEnabled)
     }
 
     func testConversationSendRegressionMatrixKeepsModesAttachmentsVoiceAndPermissionsIndependent() throws {
@@ -181,14 +176,12 @@ extension ConversationDataFlowTests {
         composerState.addAttachment(.mention(name: "README", path: "\(projectPath)/README.md"))
         var planOptions = composerState.turnOptions
         planOptions.collaborationMode = .plan
-        planOptions.planGuidanceEnabled = true
 
         let planSubmission = try XCTUnwrap(composerState.takeDraftForSubmit(
             isLoading: false,
             turnOptionsOverride: planOptions
         ))
         XCTAssertEqual(planSubmission.payload.options.collaborationMode, .plan)
-        XCTAssertTrue(planSubmission.payload.options.planGuidanceEnabled)
         XCTAssertEqual(planSubmission.payload.input.count, 6)
         XCTAssertEqual(planSubmission.payload.textPrompt, "先规划完整链路")
         XCTAssertTrue(payloadContainsImageURL(planSubmission.payload, url: "https://example.test/diagram.png"))
@@ -211,20 +204,17 @@ extension ConversationDataFlowTests {
             turnOptionsOverride: composerState.turnOptions.sanitizedForStandardComposer()
         ))
         XCTAssertEqual(standardSubmission.payload.options.collaborationMode, .default)
-        XCTAssertFalse(standardSubmission.payload.options.planGuidanceEnabled)
         XCTAssertEqual(standardSubmission.payload.textPrompt, "切回普通模式")
 
         composerState.restore("切到目标模式")
         composerState.toggleGoalMode()
         var goalOptions = composerState.turnOptions.sanitizedForStandardComposer()
         goalOptions.collaborationMode = .default
-        goalOptions.planGuidanceEnabled = false
         let goalSubmission = try XCTUnwrap(composerState.takeDraftForSubmit(
             isLoading: false,
             turnOptionsOverride: goalOptions
         ))
         XCTAssertEqual(goalSubmission.payload.options.collaborationMode, .default)
-        XCTAssertFalse(goalSubmission.payload.options.planGuidanceEnabled)
         XCTAssertEqual(
             composerState.runningTurnDelivery(canUseGuidedFollowUp: true, guidedFollowUpEnabled: true),
             .queued
@@ -248,14 +238,12 @@ extension ConversationDataFlowTests {
         composerState.togglePlanMode()
         var voicePlanOptions = composerState.turnOptions.sanitizedForStandardComposer()
         voicePlanOptions.collaborationMode = .plan
-        voicePlanOptions.planGuidanceEnabled = true
         let voicePlanSubmission = try XCTUnwrap(composerState.takeDraftForSubmit(
             isLoading: false,
             turnOptionsOverride: voicePlanOptions
         ))
         XCTAssertTrue(voicePlanSubmission.voiceDraftNeedsReview)
         XCTAssertEqual(voicePlanSubmission.payload.options.collaborationMode, .plan)
-        XCTAssertTrue(voicePlanSubmission.payload.options.planGuidanceEnabled)
     }
 
     func testComposerPermissionRegressionMatrixKeepsNetworkDisabled() throws {

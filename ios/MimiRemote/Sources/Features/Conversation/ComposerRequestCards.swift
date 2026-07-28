@@ -827,52 +827,72 @@ private struct PendingUserInputQuestions: View {
         }
     }
 
+    @ViewBuilder
     private func optionButtons(for question: AgentUserInputQuestion) -> some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let columns = usesFullWidthOptions
-            ? [GridItem(.flexible(), spacing: 8, alignment: .leading)]
-            : [GridItem(.adaptive(minimum: 150), spacing: 8, alignment: .leading)]
-
-        return LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-            ForEach(question.options) { option in
-                let isSelected = draft.isSelected(option.label, for: question.id)
-                Button {
-                    focusedQuestionID?.wrappedValue = nil
-                    draft.toggleOption(option.label, for: question)
-                } label: {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                            .font(themeStore.uiFont(.callout, weight: .semibold))
-                            .foregroundStyle(isSelected ? tokens.accent : tokens.tertiaryText)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(option.label)
-                                .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                                .foregroundStyle(tokens.primaryText)
-                            if let description = option.description?.trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty {
-                                Text(description)
-                                    .font(themeStore.uiFont(.caption))
-                                    .foregroundStyle(tokens.secondaryText)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: usesFullWidthOptions ? .infinity : 220, minHeight: 44, alignment: .leading)
-                    .background(
-                        isSelected ? tokens.selectionFill : tokens.inputBackground,
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(isSelected ? tokens.accent.opacity(0.5) : tokens.border, lineWidth: 1)
-                    }
-                    .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        if usesFullWidthOptions {
+            // iPhone 本来就是单列。直接使用 VStack，避免 iOS 27 在
+            // ScrollView + LazyVGrid + Button 组合下错误裁掉按钮背景和选择图标。
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(question.options) { option in
+                    optionButton(option, for: question)
                 }
-                .buttonStyle(.plain)
-                .disabled(isSubmitting)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 150), spacing: 8, alignment: .leading)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                ForEach(question.options) { option in
+                    optionButton(option, for: question)
+                }
             }
         }
+    }
+
+    private func optionButton(
+        _ option: AgentUserInputOption,
+        for question: AgentUserInputQuestion
+    ) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let isSelected = draft.isSelected(option.label, for: question.id)
+
+        return Button {
+            focusedQuestionID?.wrappedValue = nil
+            draft.toggleOption(option.label, for: question)
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .foregroundStyle(isSelected ? tokens.accent : tokens.tertiaryText)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(option.label)
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                    if let description = option.description?.trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty {
+                        Text(description)
+                            .font(themeStore.uiFont(.caption))
+                            .foregroundStyle(tokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 12)
+            .frame(maxWidth: usesFullWidthOptions ? .infinity : 220, minHeight: 44, alignment: .leading)
+            .background(
+                isSelected ? tokens.selectionFill : tokens.inputBackground,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(isSelected ? tokens.accent.opacity(0.5) : tokens.border, lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isSubmitting)
     }
 
     @ViewBuilder

@@ -144,11 +144,17 @@ enum EventDriverCommand {
         turn_id: String,
         started_at: i64,
         turn_guard: TurnGuard,
-        ready: oneshot::Sender<Result<(), String>>,
+        ready: oneshot::Sender<Result<(), BeginDriverTurnError>>,
     },
     AbortTurn {
         turn_id: String,
     },
+}
+
+#[derive(Debug)]
+enum BeginDriverTurnError {
+    AlreadyActive(String),
+    Unavailable(String),
 }
 
 #[derive(Debug, Error)]
@@ -165,6 +171,11 @@ pub enum TurnError {
     InputTranslation(String),
     #[error("model `{model}` was rejected before turn creation: {message}")]
     ModelRejected { model: String, message: String },
+    #[error("thread `{thread_id}` already has active turn `{active_turn_id}`")]
+    AlreadyActive {
+        thread_id: String,
+        active_turn_id: String,
+    },
     #[error("claude rpc error: {0}")]
     ClaudeRpc(String),
     #[error("review/start is not implemented in claude-bridge v1")]
@@ -179,7 +190,8 @@ impl TurnError {
             | TurnError::ThreadNotLoaded(_)
             | TurnError::NoActiveTurn(_)
             | TurnError::InputTranslation(_)
-            | TurnError::ModelRejected { .. } => p::error_codes::INVALID_PARAMS,
+            | TurnError::ModelRejected { .. }
+            | TurnError::AlreadyActive { .. } => p::error_codes::INVALID_PARAMS,
             TurnError::ReviewUnsupported => p::error_codes::METHOD_NOT_FOUND,
             TurnError::ClaudeRpc(_) => p::error_codes::INTERNAL_ERROR,
         }
@@ -193,6 +205,16 @@ impl TurnError {
                 "model": model,
                 "phase": "runtime_overrides",
                 "reason": message,
+                "retryable": false,
+            })),
+            TurnError::AlreadyActive {
+                thread_id,
+                active_turn_id,
+            } => Some(serde_json::json!({
+                "accepted": false,
+                "reason": "active_turn",
+                "threadId": thread_id,
+                "activeTurnId": active_turn_id,
                 "retryable": false,
             })),
             _ => None,
@@ -245,6 +267,15 @@ pub async fn handle_turn_start(
         }
     };
 
+    // 必须在 runtime overrides 之前拒绝重复 turn/start。否则一次陈旧的客户端
+    // 发送会先改掉正在执行轮次的模型/权限，再以内部错误退出。
+    if let Some(active) = active_turn(&params.thread_id) {
+        return Err(TurnError::AlreadyActive {
+            thread_id: params.thread_id.clone(),
+            active_turn_id: active.turn_id,
+        });
+    }
+
     // App 可以绕过显式 thread/resume 直接开始 turn。此时也要先把 JSONL
     // 历史播种进共享内存日志，保证后续 thread/read 返回完整会话而非仅本轮。
     if state.thread_log(&params.thread_id).is_empty()
@@ -290,9 +321,20 @@ pub async fn handle_turn_start(
 
     let started_at = now_unix_secs();
     let turn_guard = state.session().begin_turn();
-    if let Err(message) = begin_driver_turn(&driver, &turn_id, started_at, turn_guard).await {
-        state.claude_pool().mark_idle(&params.thread_id).await;
-        return Err(TurnError::ClaudeRpc(message));
+    if let Err(error) = begin_driver_turn(&driver, &turn_id, started_at, turn_guard).await {
+        return match error {
+            BeginDriverTurnError::AlreadyActive(active_turn_id) => {
+                // 竞态中的失败属于现有轮次，不能把进程池错误标成 idle。
+                Err(TurnError::AlreadyActive {
+                    thread_id: params.thread_id.clone(),
+                    active_turn_id,
+                })
+            }
+            BeginDriverTurnError::Unavailable(message) => {
+                state.claude_pool().mark_idle(&params.thread_id).await;
+                Err(TurnError::ClaudeRpc(message))
+            }
+        };
     }
 
     // Codex emits `startedAt: null` on the turn/start response but
@@ -574,6 +616,10 @@ fn active_turn(thread_id: &str) -> Option<ActiveTurn> {
     ACTIVE_TURNS.lock().unwrap().get(thread_id).cloned()
 }
 
+pub(super) fn active_turn_id(thread_id: &str) -> Option<String> {
+    active_turn(thread_id).map(|turn| turn.turn_id)
+}
+
 fn clear_active_turn(thread_id: &str) {
     ACTIVE_TURNS.lock().unwrap().remove(thread_id);
 }
@@ -767,7 +813,7 @@ async fn begin_driver_turn(
     turn_id: &str,
     started_at: i64,
     turn_guard: TurnGuard,
-) -> Result<(), String> {
+) -> Result<(), BeginDriverTurnError> {
     let (ready_tx, ready_rx) = oneshot::channel();
     driver
         .send(EventDriverCommand::BeginTurn {
@@ -776,10 +822,16 @@ async fn begin_driver_turn(
             turn_guard,
             ready: ready_tx,
         })
-        .map_err(|_| "claude thread event driver is not running".to_string())?;
-    ready_rx
-        .await
-        .map_err(|_| "claude thread event driver stopped before accepting turn".to_string())?
+        .map_err(|_| {
+            BeginDriverTurnError::Unavailable(
+                "claude thread event driver is not running".to_string(),
+            )
+        })?;
+    ready_rx.await.map_err(|_| {
+        BeginDriverTurnError::Unavailable(
+            "claude thread event driver stopped before accepting turn".to_string(),
+        )
+    })?
 }
 
 async fn run_event_driver(mut args: EventDriverArgs) {
@@ -804,9 +856,8 @@ async fn run_event_driver(mut args: EventDriverArgs) {
                         ready,
                     }) => {
                         if let Some(active) = current.as_ref() {
-                            let _ = ready.send(Err(format!(
-                                "thread `{}` already has active turn `{}`",
-                                args.thread_id, active.turn_id
+                            let _ = ready.send(Err(BeginDriverTurnError::AlreadyActive(
+                                active.turn_id.clone(),
                             )));
                             continue;
                         }
@@ -1444,6 +1495,22 @@ mod tests {
                 "model": "unknown-model",
                 "phase": "runtime_overrides",
                 "reason": "not recognized",
+                "retryable": false,
+            }))
+        );
+
+        let active = TurnError::AlreadyActive {
+            thread_id: "thread-1".into(),
+            active_turn_id: "turn-live".into(),
+        };
+        assert_eq!(active.rpc_code(), p::error_codes::INVALID_PARAMS);
+        assert_eq!(
+            active.rpc_data(),
+            Some(serde_json::json!({
+                "accepted": false,
+                "reason": "active_turn",
+                "threadId": "thread-1",
+                "activeTurnId": "turn-live",
                 "retryable": false,
             }))
         );

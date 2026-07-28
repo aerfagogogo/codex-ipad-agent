@@ -7,6 +7,58 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testQueuedTurnActiveConflictReturnsToWaitingWithoutFailingSession() async throws {
+        let project = makeProject(id: "proj_active_conflict_queue")
+        let staleIdle = makeSession(
+            id: "sess_active_conflict_queue",
+            projectID: project.id,
+            title: "Stale Idle",
+            status: "running",
+            source: "claude"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [staleIdle], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(staleIdle)
+        await store.selectSession(staleIdle)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let didQueue = await store.sendTurn(CodexAppServerTurnPayload(prompt: "等旧任务完成后发送"))
+        XCTAssertTrue(didQueue)
+        let clientMessageID = try XCTUnwrap(sockets[0].sentTurns.first?.clientMessageID)
+        sockets[0].onTurnSendOutcome?(
+            clientMessageID,
+            .activeTurnConflict(activeTurnID: "turn-live", message: "already active")
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(store.selectedSession?.status, "running")
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-live")
+        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .waiting)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn-live")
+        XCTAssertEqual(
+            conversationStore.messages(for: staleIdle.id).first { $0.clientMessageID == clientMessageID }?.sendStatus,
+            .local
+        )
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testRunningSessionGuidedDeliverySteersActiveTurn() async throws {
         let project = makeProject(id: "proj_ws_guided")
         let running = makeSession(

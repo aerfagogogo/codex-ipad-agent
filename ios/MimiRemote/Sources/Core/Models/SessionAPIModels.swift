@@ -588,7 +588,6 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
     var threadSource: String?
     // 只在 iPad 发起 turn/start 时消费的本地发送配置；不模拟 prompt，不影响 thread/start。
     var collaborationMode: CollaborationMode?
-    var planGuidanceEnabled: Bool
     // 仅供本地派发前校验使用，不进入 app-server 请求；随队列持久化以保留提交时的权限边界。
     var modelSelectionPolicy: ModelSelectionPolicy
 
@@ -612,7 +611,6 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         case sessionStartSource = "session_start_source"
         case threadSource = "thread_source"
         case collaborationMode = "collaboration_mode"
-        case planGuidanceEnabled = "plan_guidance_enabled"
         case modelSelectionPolicy = "model_selection_policy"
     }
 
@@ -636,7 +634,6 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         sessionStartSource: String? = nil,
         threadSource: String? = nil,
         collaborationMode: CollaborationMode? = .default,
-        planGuidanceEnabled: Bool = false,
         modelSelectionPolicy: ModelSelectionPolicy = .catalogOnly
     ) {
         self.runtimeProvider = runtimeProvider?.trimmingCharacters(in: .whitespacesAndNewlines).appServerNilIfEmpty
@@ -658,7 +655,6 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         self.sessionStartSource = sessionStartSource
         self.threadSource = threadSource
         self.collaborationMode = collaborationMode
-        self.planGuidanceEnabled = planGuidanceEnabled
         self.modelSelectionPolicy = modelSelectionPolicy
     }
 
@@ -684,7 +680,6 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
             sessionStartSource: try container.decodeIfPresent(String.self, forKey: .sessionStartSource),
             threadSource: try container.decodeIfPresent(String.self, forKey: .threadSource),
             collaborationMode: try container.decodeIfPresent(CollaborationMode.self, forKey: .collaborationMode) ?? .default,
-            planGuidanceEnabled: try container.decodeIfPresent(Bool.self, forKey: .planGuidanceEnabled) ?? false,
             modelSelectionPolicy: try container.decodeIfPresent(ModelSelectionPolicy.self, forKey: .modelSelectionPolicy) ?? .catalogOnly
         )
     }
@@ -709,7 +704,6 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         sessionStartSource: nil,
         threadSource: nil,
         collaborationMode: .default,
-        planGuidanceEnabled: false,
         modelSelectionPolicy: .catalogOnly
     )
 
@@ -728,7 +722,6 @@ struct CodexAppServerTurnOptions: Codable, Hashable {
         sanitized.sessionStartSource = nil
         sanitized.threadSource = nil
         sanitized.collaborationMode = .default
-        sanitized.planGuidanceEnabled = false
         sanitized.modelSelectionPolicy = .catalogOnly
         return sanitized
     }

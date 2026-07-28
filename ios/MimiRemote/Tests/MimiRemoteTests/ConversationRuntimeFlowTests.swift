@@ -2008,6 +2008,83 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(conversationStore.messages(for: optimisticSessionID).first?.sendStatus, .failed)
     }
 
+    func testActiveTurnConflictKeepsSessionAndPendingInputAlive() async throws {
+        let project = makeProject(id: "proj_active_conflict")
+        let history = makeSession(
+            id: "sess_active_conflict",
+            projectID: project.id,
+            title: "旧任务",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "sess_active_conflict"
+        )
+        let pendingInput = AgentUserInputRequest(
+            id: "input-live",
+            threadID: history.id,
+            turnID: "turn-live",
+            itemID: "item-live",
+            questions: [
+                AgentUserInputQuestion(
+                    id: "scope",
+                    header: "范围",
+                    question: "继续前先确认？",
+                    isOther: true,
+                    isSecret: false,
+                    options: []
+                )
+            ]
+        )
+        var authoritative = history
+        authoritative.status = "running"
+        authoritative.activeTurnID = "turn-live"
+        authoritative.pendingUserInput = nil
+
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [history])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        // 模拟列表状态已经陈旧为 history，但实时事件留下的补充问题仍在本地。
+        // 这种不一致正是 active_turn 冲突恢复不能覆盖的现场状态。
+        store.updateSession(history.id) { item in
+            item.status = "history"
+            item.pendingUserInput = pendingInput
+        }
+        let sendTask = Task { await store.sendPrompt("这条不能覆盖旧任务") }
+        await client.waitForCreateRequestCount(1)
+        client.resolveCreate(with: .failure(
+            CodexAppServerSessionRuntimeError.activeTurnConflict(
+                session: authoritative,
+                activeTurnID: "turn-live"
+            )
+        ))
+
+        let didSend = await sendTask.value
+        XCTAssertFalse(didSend)
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-live")
+        XCTAssertEqual(store.selectedSession?.status, "waiting_for_input")
+        XCTAssertEqual(store.selectedSession?.pendingUserInput, pendingInput)
+        XCTAssertEqual(
+            conversationStore.messages(for: history.id).first { $0.content == "这条不能覆盖旧任务" }?.sendStatus,
+            .failed
+        )
+        XCTAssertEqual(sockets.last?.connectedSessionIDs.last, history.id)
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testNewSessionRichPayloadFailureKeepsInlineImageForRetry() async throws {
         let project = makeProject(id: "proj_rich_echo_fail")
         let client = DelayedCreateSessionClient(projects: [project], sessions: [])
@@ -2057,7 +2134,14 @@ extension ConversationDataFlowTests {
 
     func testFailedRunningMessageRetryReusesClientMessageID() async throws {
         let project = makeProject(id: "proj_retry")
-        let running = makeSession(id: "sess_retry", projectID: project.id, title: "运行中", status: "running", source: "codex")
+        let running = makeSession(
+            id: "sess_retry",
+            projectID: project.id,
+            title: "运行中",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn-existing"
+        )
         let appStore = AppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
@@ -2091,13 +2175,31 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(retried)
         XCTAssertTrue(sockets[0].sentInputs.isEmpty)
-        XCTAssertEqual(sockets[0].sentTurns.count, 1)
-        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "请重试")
-        XCTAssertEqual(sockets[0].sentTurns.first?.clientMessageID, "client-retry")
+        XCTAssertTrue(sockets[0].sentTurns.isEmpty)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.clientMessageID, "client-retry")
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn-existing")
         let messages = conversationStore.messages(for: running.id)
         let retriedMessages = messages.filter { $0.clientMessageID == "client-retry" }
         XCTAssertEqual(retriedMessages.count, 1)
-        XCTAssertEqual(retriedMessages.first?.sendStatus, .sending)
+        XCTAssertEqual(retriedMessages.first?.sendStatus, .local)
+
+        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 1,
+            sessionID: running.id,
+            turnID: "turn-existing",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSentTurnCount(1, socket: sockets[0])
+        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "请重试")
+        XCTAssertEqual(sockets[0].sentTurns.first?.clientMessageID, "client-retry")
+        XCTAssertEqual(
+            conversationStore.messages(for: running.id).first { $0.clientMessageID == "client-retry" }?.sendStatus,
+            .sending
+        )
         sockets[0].onSendAccepted?("client-retry")
         let acceptedMessages = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in
             messages.contains { $0.clientMessageID == "client-retry" && $0.sendStatus == .sent }

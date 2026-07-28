@@ -7,6 +7,7 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
     case projectRequired
     case sessionNotFound(SessionID)
     case missingActiveTurn(SessionID)
+    case activeTurnConflict(session: AgentSession, activeTurnID: TurnID)
     case approvalNotFound(String)
     case userInputRequestNotFound(String)
 
@@ -26,6 +27,8 @@ enum CodexAppServerSessionRuntimeError: LocalizedError {
             return L10n.format("ui.app_server_thread_does_not_exist_value", sessionID)
         case .missingActiveTurn(let sessionID):
             return L10n.format("ui.there_is_no_interruptible_active_turn_for_the", sessionID)
+        case .activeTurnConflict:
+            return L10n.text("ui.please_wait_for_the_current_turn_to_complete")
         case .approvalNotFound(let approvalID):
             return L10n.format("ui.approval_request_has_expired_value", approvalID)
         case .userInputRequestNotFound(let requestID):
@@ -87,7 +90,6 @@ actor CodexAppServerSessionRuntime {
     ] = [:]
     var pendingApprovalRequestsByID: [String: CodexAppServerServerRequest] = [:]
     var pendingUserInputRequestsByID: [String: CodexAppServerServerRequest] = [:]
-    var userInputPromptsEnabledBySessionID: [SessionID: Bool] = [:]
     var accountRateLimit: RateLimitSummary?
     var rateLimitRefreshTask: Task<RateLimitSummary?, Never>?
     var lastRateLimitRefreshAt: Date?
@@ -591,6 +593,14 @@ actor CodexAppServerSessionRuntime {
             // thread/start 后立刻 turn/start 仍沿用当前连接；但空会话没有立即 turn，
             // 后续监听/发送前必须补 thread/resume，否则真实 app-server 可能不回推事件。
             threadsResumedOnConnection.insert(session.id)
+        }
+
+        if !turnPayload.isEmpty, let activeTurnID = session.activeTurnID {
+            // resume 已经证明旧 turn 仍活跃，此时绝不能再发第二个 turn/start。
+            throw CodexAppServerSessionRuntimeError.activeTurnConflict(
+                session: session,
+                activeTurnID: activeTurnID
+            )
         }
 
         let initialGoalObjective = payload.initialGoalObjective?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1469,9 +1479,12 @@ actor CodexAppServerSessionRuntime {
         guard let context = contextsBySessionID[sessionID] else {
             throw CodexAppServerSessionRuntimeError.sessionNotFound(sessionID)
         }
-        // request_user_input 是 turn 内部的补充信息请求；是否展示由本地发送选项决定，
-        // 不和目标模式绑定。运行中“引导对话”另走 turn/steer。
-        userInputPromptsEnabledBySessionID[sessionID] = payload.options.planGuidanceEnabled
+        if let activeTurnID = context.activeTurnID {
+            throw CodexAppServerSessionRuntimeError.activeTurnConflict(
+                session: context.session,
+                activeTurnID: activeTurnID
+            )
+        }
         sessionsStartingTurn.insert(sessionID)
         defer {
             sessionsStartingTurn.remove(sessionID)
@@ -1483,6 +1496,13 @@ actor CodexAppServerSessionRuntime {
             let connection = try await ensureConnection()
             do {
                 try await ensureThreadResumedOnConnection(sessionID: sessionID, cwd: context.cwd, builder: builder, connection: connection)
+                if let activeTurnID = contextsBySessionID[sessionID]?.activeTurnID {
+                    let session = contextsBySessionID[sessionID]?.session ?? context.session
+                    throw CodexAppServerSessionRuntimeError.activeTurnConflict(
+                        session: session,
+                        activeTurnID: activeTurnID
+                    )
+                }
                 result = try await connection.send(try builder.turnStart(
                     threadID: sessionID,
                     cwd: context.cwd,
@@ -1495,6 +1515,16 @@ actor CodexAppServerSessionRuntime {
                    await recoverConnectionAfterStaleInitialization(connection, error: error) {
                     didRetryAfterStaleInitialization = true
                     continue
+                }
+                if let activeTurnID = Self.activeTurnIDFromConflict(error) {
+                    let session = withUpdatedSession(sessionID) { item in
+                        item.status = "running"
+                        item.activeTurnID = activeTurnID
+                    } ?? context.session
+                    throw CodexAppServerSessionRuntimeError.activeTurnConflict(
+                        session: session,
+                        activeTurnID: activeTurnID
+                    )
                 }
                 await refreshRateLimitAfterQuotaError(error)
                 await retireCurrentConnectionAfterRecoverableError(connection, error: error)
@@ -1510,6 +1540,18 @@ actor CodexAppServerSessionRuntime {
             item.activeTurnID = turnID
         }
         return turnID
+    }
+
+    nonisolated static func activeTurnIDFromConflict(_ error: Error) -> TurnID? {
+        guard case CodexAppServerConnectionError.appServer(let appError) = error,
+              let data = appError.data?.objectValue,
+              data["accepted"]?.boolValue == false,
+              data["reason"]?.stringValue == "active_turn",
+              let activeTurnID = data["activeTurnId"]?.stringValue,
+              !activeTurnID.isEmpty else {
+            return nil
+        }
+        return activeTurnID
     }
 
     func steerTurn(
@@ -2407,31 +2449,13 @@ actor CodexAppServerSessionRuntime {
     }
 
     func handleUserInputRequest(_ request: CodexAppServerServerRequest) {
-        let sessionID = approvalSessionID(for: request)
-        if let sessionID, userInputPromptsEnabledBySessionID[sessionID] == false {
-            autoResolveUserInputRequest(request, sessionID: sessionID)
-            return
-        }
+        // requestUserInput 是上游明确要求用户作答的协议事件。无论普通、Plan
+        // 还是 Goal turn，都必须先展示；只有用户点击“跳过”才允许回空 answers。
         rememberPendingUserInputRequest(request)
         guard let event = projector.project(request) else {
             return
         }
         emit(event)
-    }
-
-    func autoResolveUserInputRequest(_ request: CodexAppServerServerRequest, sessionID: SessionID?) {
-        removePendingUserInputRequest(request)
-        guard let connection else {
-            return
-        }
-        Task { [connection, sessionID] in
-            do {
-                try await connection.respond(to: request, result: self.userInputResponse(for: request, answers: [:]))
-                if let sessionID {
-                    self.emitUserInputResolved(sessionID: sessionID, skipped: true)
-                }
-            } catch {}
-        }
     }
 
     func isStaleReplayedApproval(_ request: CodexAppServerServerRequest) -> Bool {

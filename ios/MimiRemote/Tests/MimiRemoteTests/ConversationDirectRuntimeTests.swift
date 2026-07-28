@@ -616,6 +616,23 @@ extension ConversationDataFlowTests {
             return false
         })
 
+        // 下一条用户输入只能在上一轮明确完成后启动，避免制造第二个并发 turn。
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_direct","turnId":"turn_direct_1"}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .turnCompleted(let metadata) = $0 {
+                return metadata.turnID == "turn_direct_1"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .turnCompleted(let metadata) = $0 {
+                return metadata.turnID == "turn_direct_1"
+            }
+            return false
+        })
+
         XCTAssertTrue(socket.sendInput("继续\r", clientMessageID: "client_direct_2"))
         let followUpTurnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: 4)
         XCTAssertEqual(followUpTurnStart.method, "turn/start")
@@ -1585,7 +1602,53 @@ extension ConversationDataFlowTests {
         socket.disconnect()
     }
 
-    func testDirectRuntimeAutoSkipsUserInputWhenPlanGuidanceDisabled() async throws {
+    func testDirectRuntimeResumeWithActiveTurnDoesNotStartSecondTurn() async throws {
+        let project = AgentProject(id: "proj_active_resume", name: "Active Resume", path: "/tmp/active-resume")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let createTask = Task {
+            try await client.createSession(CreateSessionRequest(
+                projectID: project.id,
+                prompt: "不要重复启动",
+                resumeID: "thr_active_resume",
+                clientMessageID: "client_active_resume"
+            ))
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let threadMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let resume = try decodeAppServerRequest(threadMessages[2])
+        XCTAssertEqual(resume.method, "thread/resume")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_active_resume","sessionId":"thr_active_resume","preview":"旧任务","ephemeral":false,"modelProvider":"openai","createdAt":1780490000,"updatedAt":1780490100,"status":{"type":"active","activeFlags":[]},"path":null,"cwd":"/tmp/active-resume","cliVersion":"0.0.0","source":"appServer","threadSource":"user","name":"活动会话","turns":[{"id":"turn_live","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490001,"completedAt":null,"durationMs":null}]}}}"#)
+
+        do {
+            _ = try await createTask.value
+            XCTFail("活动会话恢复后必须拒绝第二个 turn/start")
+        } catch CodexAppServerSessionRuntimeError.activeTurnConflict(let session, let activeTurnID) {
+            XCTAssertEqual(session.id, "thr_active_resume")
+            XCTAssertEqual(session.status, "running")
+            XCTAssertEqual(activeTurnID, "turn_live")
+        } catch {
+            XCTFail("应返回 typed activeTurnConflict，实际为 \(error)")
+        }
+
+        let methods = await transport.sentMessages().compactMap {
+            try? decodeAppServerRequest($0).method
+        }
+        XCTAssertFalse(methods.contains("turn/start"))
+    }
+
+    func testDirectRuntimeSurfacesUserInputAndWaitsForExplicitResponse() async throws {
         let project = AgentProject(id: "proj_plan_skip", name: "Plan Skip", path: "/tmp/plan-skip")
         let transport = FakeCodexAppServerTransport()
         let runtime = CodexAppServerSessionRuntime(
@@ -1598,7 +1661,6 @@ extension ConversationDataFlowTests {
         var options = CodexAppServerTurnOptions.default
         options.model = "gpt-5-codex"
         options.collaborationMode = .plan
-        options.planGuidanceEnabled = false
 
         let createTask = Task {
             try await client.createSession(CreateSessionRequest(
@@ -1628,9 +1690,44 @@ extension ConversationDataFlowTests {
         transport.enqueue(#"{"id":\#(try jsonFragment(for: turnStart.id)),"result":{"turn":{"id":"turn_plan_skip","items":[],"itemsView":{"type":"complete"},"status":"inProgress","error":null,"startedAt":1780490102,"completedAt":null,"durationMs":null}}}"#)
         _ = try await createTask.value
 
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var events: [AgentEvent] = []
+        socket.onEvent = { events.append($0) }
+        socket.connect(sessionID: "thr_plan_skip")
+
         transport.enqueue(#"{"id":501,"method":"item/tool/requestUserInput","params":{"threadId":"thr_plan_skip","turnId":"turn_plan_skip","itemId":"input_skip","questions":[{"id":"scope","header":"范围","question":"要补充吗？","isOther":true,"isSecret":false,"options":[{"label":"后端","description":"先做 API"}]}]}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .userInputRequest(let request, _) = $0 {
+                return request.id == "input_skip"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .userInputRequest(let request, _) = $0 {
+                return request.id == "input_skip"
+            }
+            return false
+        })
+
+        // 上游提问必须一直挂起到用户明确操作，不能再由普通/Plan 发送选项伪造空回答。
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let prematureResponse = await transport.sentMessages().contains { text in
+            (try? AgentAPIClient.decoder.decode(
+                CodexAppServerResponse.self,
+                from: Data(text.utf8)
+            ))?.id == .int(501)
+        }
+        XCTAssertFalse(prematureResponse)
+
+        XCTAssertTrue(socket.sendUserInputResponse(requestID: "input_skip", answers: ["scope": ["后端"]]))
         let response = try await waitForFakeAppServerResponse(transport, id: .int(501))
-        XCTAssertEqual(response.result?["answers"]?.objectValue?.isEmpty, true)
+        XCTAssertEqual(
+            response.result?["answers"]?.objectValue?["scope"]?.objectValue?["answers"]?.arrayValue?.first?.stringValue,
+            "后端"
+        )
+        socket.disconnect()
     }
 
     func testDirectSocketEmitsSendAcceptedOnlyAfterTurnStartSucceeds() async throws {
@@ -1670,9 +1767,11 @@ extension ConversationDataFlowTests {
 
         let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
         var statuses: [WebSocketStatus] = []
+        var events: [AgentEvent] = []
         var acceptedIDs: [ClientMessageID?] = []
         var failures: [(ClientMessageID?, String)] = []
         socket.onStatus = { statuses.append($0) }
+        socket.onEvent = { events.append($0) }
         socket.onSendAccepted = { acceptedIDs.append($0) }
         socket.onSendFailure = { failures.append(($0, $1)) }
         socket.connect(sessionID: "thr_direct_accept")
@@ -1681,6 +1780,22 @@ extension ConversationDataFlowTests {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTAssertTrue(statuses.contains(.connected))
+
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_direct_accept","turnId":"turn_direct_accept_initial"}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .turnCompleted(let metadata) = $0 {
+                return metadata.turnID == "turn_direct_accept_initial"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .turnCompleted(let metadata) = $0 {
+                return metadata.turnID == "turn_direct_accept_initial"
+            }
+            return false
+        })
 
         XCTAssertTrue(socket.sendTurn(CodexAppServerTurnPayload(prompt: "成功 turn"), clientMessageID: "client_direct_accept_success"))
         let successTurnStart = try await waitForFakeAppServerRequest(transport, method: "turn/start", after: 4)
@@ -1694,6 +1809,22 @@ extension ConversationDataFlowTests {
         }
         XCTAssertTrue(acceptedIDs.contains("client_direct_accept_success"))
         XCTAssertTrue(failures.isEmpty)
+
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_direct_accept","turnId":"turn_direct_accept_success"}}"#)
+        for _ in 0..<200 where !events.contains(where: {
+            if case .turnCompleted(let metadata) = $0 {
+                return metadata.turnID == "turn_direct_accept_success"
+            }
+            return false
+        }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .turnCompleted(let metadata) = $0 {
+                return metadata.turnID == "turn_direct_accept_success"
+            }
+            return false
+        })
 
         XCTAssertTrue(socket.sendTurn(CodexAppServerTurnPayload(prompt: "失败 turn"), clientMessageID: "client_direct_accept_fail"))
         let sentAfterSuccess = await transport.sentMessages()

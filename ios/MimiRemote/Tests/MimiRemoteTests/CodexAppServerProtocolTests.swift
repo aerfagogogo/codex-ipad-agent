@@ -180,7 +180,23 @@ final class CodexAppServerProtocolTests: XCTestCase {
             message: "internal error",
             data: nil
         ))
+        let activeTurnConflict = CodexAppServerConnectionError.appServer(CodexAppServerError(
+            code: -32602,
+            message: "thread already has active turn",
+            data: .object([
+                "accepted": .bool(false),
+                "reason": .string("active_turn"),
+                "activeTurnId": .string("turn-live")
+            ])
+        ))
 
+        XCTAssertEqual(
+            CodexAppServerSessionWebSocketClient.turnSendOutcome(for: activeTurnConflict),
+            .activeTurnConflict(
+                activeTurnID: "turn-live",
+                message: activeTurnConflict.localizedDescription
+            )
+        )
         XCTAssertEqual(
             CodexAppServerSessionWebSocketClient.turnSendOutcome(for: rejectedByData),
             .rejected(message: rejectedByData.localizedDescription)
@@ -319,7 +335,6 @@ final class CodexAppServerProtocolTests: XCTestCase {
         planOptions.model = "gpt-5.6-sol"
         planOptions.reasoningEffort = .ultra
         planOptions.collaborationMode = .plan
-        planOptions.planGuidanceEnabled = true
         let planPayload = CodexAppServerTurnPayload(prompt: "先做方案", options: planOptions)
         let planRequest = try builder.turnStart(threadID: "thread-1", projectID: project.id, payload: planPayload)
         let planParams = try XCTUnwrap(planRequest.params?.objectValue)
@@ -341,7 +356,7 @@ final class CodexAppServerProtocolTests: XCTestCase {
     }
 
     func testTurnOptionsDecodesLegacyPayloadWithNilModelAndDefaultCollaborationMode() throws {
-        let legacy = Data(#"{"approval_policy":"on-request","sandbox_mode":"dangerFullAccess"}"#.utf8)
+        let legacy = Data(#"{"approval_policy":"on-request","sandbox_mode":"dangerFullAccess","plan_guidance_enabled":false}"#.utf8)
         let decoded = try JSONDecoder().decode(CodexAppServerTurnOptions.self, from: legacy)
 
         XCTAssertNil(decoded.model)
@@ -349,7 +364,6 @@ final class CodexAppServerProtocolTests: XCTestCase {
         XCTAssertEqual(decoded.approvalPolicy, .onRequest)
         XCTAssertEqual(decoded.sandboxMode, .dangerFullAccess)
         XCTAssertEqual(decoded.collaborationMode, .default)
-        XCTAssertFalse(decoded.planGuidanceEnabled)
         XCTAssertEqual(decoded.modelSelectionPolicy, .catalogOnly)
     }
 
@@ -358,7 +372,6 @@ final class CodexAppServerProtocolTests: XCTestCase {
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
         var goalOptions = CodexAppServerTurnOptions.default
         goalOptions.collaborationMode = .default
-        goalOptions.planGuidanceEnabled = false
 
         let request = try builder.turnStart(
             threadID: "thread-1",

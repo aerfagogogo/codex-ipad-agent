@@ -1615,6 +1615,23 @@ extension ConversationDataFlowTests {
         let firstTurnID = try await firstTurnTask.value
         XCTAssertEqual(firstTurnID, "turn_resume_guard")
 
+        let events = await runtime.attachEvents(sessionID: "thr_idle_guard")
+        defer { events.cancel() }
+        let firstTurnCompleted = expectation(description: "第一轮完成后允许启动下一轮")
+        let eventTask = Task { @MainActor in
+            for await event in events {
+                guard case .turnCompleted(let metadata) = event,
+                      metadata.turnID == "turn_resume_guard" else {
+                    continue
+                }
+                firstTurnCompleted.fulfill()
+                return
+            }
+        }
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_idle_guard","turnId":"turn_resume_guard"}}"#)
+        await fulfillment(of: [firstTurnCompleted], timeout: 2)
+        eventTask.cancel()
+
         // 同一连接内第二次发送不应再 resume，只发 turn/start。
         let secondTurnTask = Task {
             try await runtime.startTurn(sessionID: "thr_idle_guard", prompt: "再来一次", clientMessageID: nil)

@@ -208,6 +208,13 @@ pub async fn handle_thread_resume(
     if !params.exclude_turns {
         thread.turns = cached_thread_turns(state, &entry).await?;
     }
+    let is_loaded = state
+        .claude_pool()
+        .loaded_thread_ids()
+        .await
+        .iter()
+        .any(|id| id == &params.thread_id);
+    apply_live_thread_status(&mut thread, is_loaded);
 
     let response_model = match model {
         Some(m) => normalize_claude_model_id(&m),
@@ -621,9 +628,8 @@ pub async fn handle_thread_list(
         .into_iter()
         .map(|entry| {
             let mut t = thread_from_entry(&entry);
-            if loaded.contains(&t.id) {
-                t.status = p::ThreadStatus::Idle;
-            }
+            let is_loaded = loaded.contains(&t.id);
+            apply_live_thread_status(&mut t, is_loaded);
             t
         })
         .collect();
@@ -667,6 +673,13 @@ pub async fn handle_thread_read(
     if params.include_turns {
         thread.turns = cached_thread_turns(state, &entry).await?;
     }
+    let is_loaded = state
+        .claude_pool()
+        .loaded_thread_ids()
+        .await
+        .iter()
+        .any(|id| id == &params.thread_id);
+    apply_live_thread_status(&mut thread, is_loaded);
     Ok(p::ThreadReadResponse { thread })
 }
 
@@ -896,6 +909,18 @@ fn now_unix_millis() -> i64 {
 
 fn thread_from_entry(entry: &IndexEntry) -> p::Thread {
     crate::index::entry_to_thread(entry)
+}
+
+/// 磁盘索引不知道常驻 Claude 进程是否正在执行。所有 thread 查询必须以
+/// live active-turn registry 为准，否则 App 会把运行会话当成 idle 并再次 start。
+fn apply_live_thread_status(thread: &mut p::Thread, is_loaded: bool) {
+    if crate::handlers::turn::active_turn_id(&thread.id).is_some() {
+        thread.status = p::ThreadStatus::Active {
+            active_flags: Vec::new(),
+        };
+    } else if is_loaded {
+        thread.status = p::ThreadStatus::Idle;
+    }
 }
 
 /// Default `permissionProfile` matching codex's `{type: "disabled"}` shape

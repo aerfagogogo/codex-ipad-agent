@@ -286,7 +286,6 @@ struct ComposerView: View {
         // 目标模式不是 Plan Mode：目标元数据走 thread/goal/set，turn/start 仍显式声明 default，
         // 防止 app-server 沿用上一轮规划协作状态。
         options.collaborationMode = .default
-        options.planGuidanceEnabled = false
         let submittedDraftScope = activeComposerDraftScope
         guard let submitted = composerState.takeDraftForSubmit(
             isLoading: sessionStore.isLoading || sessionStore.isUpdatingThreadGoal,
@@ -458,11 +457,9 @@ struct ComposerView: View {
         }
         if composerState.isPlanModeSelected {
             options.collaborationMode = .plan
-            options.planGuidanceEnabled = true
         } else {
             // 普通发送也必须显式退出 Plan Mode，不能依赖 nil/absent。
             options.collaborationMode = .default
-            options.planGuidanceEnabled = false
         }
         return options
     }

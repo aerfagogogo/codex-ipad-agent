@@ -825,7 +825,19 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     }
 
     static func turnSendOutcome(for error: Error) -> TurnSendOutcome {
+        if case CodexAppServerSessionRuntimeError.activeTurnConflict(_, let activeTurnID) = error {
+            return .activeTurnConflict(
+                activeTurnID: activeTurnID,
+                message: error.localizedDescription
+            )
+        }
         if case CodexAppServerConnectionError.appServer(let appError) = error {
+            if let activeTurnID = CodexAppServerSessionRuntime.activeTurnIDFromConflict(error) {
+                return .activeTurnConflict(
+                    activeTurnID: activeTurnID,
+                    message: error.localizedDescription
+                )
+            }
             let wasExplicitlyRejected = appError.data?.objectValue?["accepted"]?.boolValue == false
             // -32602 表示请求参数在执行前即被拒绝；-32603 等内部错误可能发生在
             // bridge 已接受并启动 turn 之后，不能允许自动重试制造重复消息。
