@@ -1110,6 +1110,17 @@ struct SessionRestoreSnapshot: Codable, Equatable {
         self.endpoint = endpoint
         self.session = session
     }
+
+    func matches(profileID currentProfileID: String?, endpoint currentEndpoint: String) -> Bool {
+        if let profileID,
+           !profileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // V2 身份只认稳定 Profile；同一台 Mac 更换 Tailscale/IP 路由后仍可恢复。
+            return profileID == currentProfileID
+        }
+        // V1 SceneStorage 没有 Profile，只能继续使用一次 endpoint 兼容匹配。
+        return AgentAPIClient.normalizedEndpoint(endpoint) ==
+            AgentAPIClient.normalizedEndpoint(currentEndpoint)
+    }
 }
 
 /// 跨 await 的前台选择凭证。除了代次，还同时校验项目和会话，避免同一 ID
@@ -1196,17 +1207,8 @@ enum WorkbenchRestorationRoute: Codable, Equatable {
         else {
             return nil
         }
-        if let snapshotProfileID = snapshot.profileID,
-           !snapshotProfileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            guard snapshotProfileID == currentProfileID else {
-                return nil
-            }
-        } else {
-            // V1 endpoint 数据只做一次兼容匹配；V2 缓存身份永远不再使用可变 endpoint。
-            guard AgentAPIClient.normalizedEndpoint(snapshot.endpoint) ==
-                    AgentAPIClient.normalizedEndpoint(currentEndpoint) else {
-                return nil
-            }
+        guard snapshot.matches(profileID: currentProfileID, endpoint: currentEndpoint) else {
+            return nil
         }
         return snapshot
     }

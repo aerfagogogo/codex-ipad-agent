@@ -900,6 +900,66 @@ extension ConversationDataFlowTests {
         let options = try await modelTask.value
         XCTAssertEqual(options.map(\.model), ["gpt-live"])
         XCTAssertEqual(options.first?.runtimeProvider, "codex")
+        let claudeRemainsReady = await claude.hasReadyConnectionForTesting()
+        let claudeCloseCount = await claudeTransport.closeCallCount()
+        XCTAssertTrue(claudeRemainsReady, "模型列表失败不能回收可能正被会话订阅复用的 Claude 连接")
+        XCTAssertEqual(claudeCloseCount, 0)
+    }
+
+    func testMultiRuntimeSocketsKeepCodexAndClaudeConnectionsOnActiveHost() async throws {
+        let project = AgentProject(id: "proj_multi_socket", name: "Multi Socket", path: "/tmp/multi-socket")
+        let config = makeDirectAppServerConfig(project: project, channels: [makeClaudeChannelMetadata()])
+        let codexTransport = FakeCodexAppServerTransport()
+        let claudeTransport = FakeCodexAppServerTransport()
+        let codex = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "codex",
+            transportFactory: { codexTransport },
+            configProvider: { config }
+        )
+        let claude = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            runtimeProvider: "claude",
+            transportFactory: { claudeTransport },
+            configProvider: { config }
+        )
+
+        let codexPrepareTask = Task { try await codex.prepareForHostActivation() }
+        let codexInitialize = try await waitForFakeAppServerRequest(codexTransport, method: "initialize")
+        transportResponse(codexTransport, id: codexInitialize.id, result: #"{"userAgent":"fake-codex","platformFamily":"macos"}"#)
+        try await codexPrepareTask.value
+
+        let claudePrepareTask = Task { try await claude.prepareForHostActivation() }
+        let claudeInitialize = try await waitForFakeAppServerRequest(claudeTransport, method: "initialize")
+        transportResponse(claudeTransport, id: claudeInitialize.id, result: #"{"userAgent":"fake-claude","platformFamily":"macos"}"#)
+        try await claudePrepareTask.value
+
+        let bundle = AppServerRuntimeBundle(codexRuntime: codex, claudeRuntime: claude)
+        bundle.routes.remember("codex", for: "thread-codex")
+        bundle.routes.remember("claude", for: "thread-claude")
+        let selectedSessionSocket = MultiRuntimeSessionWebSocketClient(bundle: bundle)
+        let queuedSessionSocket = MultiRuntimeSessionWebSocketClient(bundle: bundle)
+        defer {
+            selectedSessionSocket.disconnect()
+            queuedSessionSocket.disconnect()
+        }
+
+        // 复现线上组合：前台选中的 Codex 会话与后台排队的 Claude 会话同时监听。
+        selectedSessionSocket.connect(sessionID: "thread-codex")
+        queuedSessionSocket.connect(sessionID: "thread-claude")
+        _ = try await waitForFakeAppServerRequest(codexTransport, method: "thread/read")
+        _ = try await waitForFakeAppServerRequest(claudeTransport, method: "thread/read")
+
+        let codexRemainsReady = await codex.hasReadyConnectionForTesting()
+        let claudeRemainsReady = await claude.hasReadyConnectionForTesting()
+        let codexCloseCount = await codexTransport.closeCallCount()
+        let claudeCloseCount = await claudeTransport.closeCallCount()
+        XCTAssertTrue(codexRemainsReady)
+        XCTAssertTrue(claudeRemainsReady)
+        XCTAssertEqual(codexCloseCount, 0, "Claude 队列监听不能关闭当前 Codex Runtime")
+        XCTAssertEqual(claudeCloseCount, 0, "Codex 前台监听不能关闭 Claude 队列 Runtime")
     }
 
     func testMultiRuntimeClaudeRateLimitReadUsesClaudeGateway() async throws {
@@ -1069,6 +1129,8 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(thirdPage.sessions.map(\.id), ["codex-old", "claude-old"])
         XCTAssertFalse(thirdPage.hasMore)
         XCTAssertNil(thirdPage.nextCursor)
+        let claudeCloseCount = await claudeTransport.closeCallCount()
+        XCTAssertEqual(claudeCloseCount, 0, "列表翻到末页不能回收可能被后台会话复用的 Claude Runtime")
     }
 
     func testDirectRuntimeRetriesNewSessionAfterStaleInitializationError() async throws {

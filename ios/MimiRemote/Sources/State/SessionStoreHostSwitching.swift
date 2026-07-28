@@ -86,6 +86,7 @@ extension SessionStore {
         sessionControlStateStore.remove(profileID: profileID)
         sessionReminderStore.remove(profileID: profileID)
         sessionReminderScheduler.cancel(profileID: profileID)
+        WorkspaceAppearanceStore().remove(profileID: profileID)
         do {
             try queuedTurnStore.remove(profileID: profileID)
             queuedTurnStorageErrorMessage = nil

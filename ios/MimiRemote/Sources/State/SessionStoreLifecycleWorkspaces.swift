@@ -23,7 +23,10 @@ extension SessionStore {
 
     /// 只解析并合并恢复候选，不改变前台选择。是否接受候选由 Root 的 route revision 决定。
     func resolveSessionForRestore(_ snapshot: SessionRestoreSnapshot) async -> AgentSession? {
-        guard AgentAPIClient.normalizedEndpoint(snapshot.endpoint) == AgentAPIClient.normalizedEndpoint(appStore.endpoint),
+        guard snapshot.matches(
+                  profileID: appStore.activeHostScope.profileID,
+                  endpoint: appStore.endpoint
+              ),
               !snapshot.session.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let workspace = ensureWorkspaceForKnownProjectID(snapshot.session.projectID)
         else { return nil }

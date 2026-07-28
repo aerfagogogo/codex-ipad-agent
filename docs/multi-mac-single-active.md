@@ -112,7 +112,7 @@ flowchart LR
 | 主线程 | 切换、历史和图片场景中超过 100ms stall 为 0 |
 | 滚动 | Hitch ratio 不超过 1%，相对基线劣化不超过 5% |
 | 内存 | 5 台轮转后趋于平台，峰值 RSS 不超过基线 +15% |
-| 连接 | 稳态只有 1 条业务 WebSocket |
+| 连接 | 稳态仅当前 Mac 保持业务连接；每个可用 Runtime provider 最多 1 条共享 WebSocket |
 | 100 次 A↔B | 0 crash、0 串数据，Task/连接数回归基线，内存不持续增长 |
 
 建议用 Instruments 的 Points of Interest、SwiftUI、Time Profiler 和 Allocations 同时留证。没有通过真机门禁时，不把快速切换列为可发布能力。
@@ -121,6 +121,8 @@ flowchart LR
 
 - `installation-id` 是设备数据身份的一部分，备份或迁移配置时必须与该 Mac 的 Profile 关系一起处理，不能手工复制到另一台 Mac。
 - 切换前已被旧 Mac 接收的 Turn 会继续运行；发送结果不确定的本地队列会标为 `needsConfirmation`，切回后由用户确认，禁止自动重发。
-- 多 Runtime 的延迟列表读取可能短暂建立第二条同主机连接，业务会话接管前会退役非选中 Runtime；发布 soak test 必须继续检查 1 秒内连接数回落。
+- 当前 Mac 可同时保留 Codex、Claude 各 1 条共享连接。前台会话与后台排队会话可能属于不同 provider，
+  不能为了压缩成单条连接而互相退役；切换 Mac、进入后台或凭据失效时必须整体关闭当前
+  `AppServerRuntimeBundle`。发布 soak test 应验证稳态连接数不超过当前可用 provider 数。
 - 真机性能、慢 DNS/DERP 和 100 次轮转属于发布验证，不应以单测或模拟器通过替代。
 - 首版不实现多主机并排、后台业务预热、非当前主机实时通知、中心云、APNs 中转、iCloud 凭据同步或自动故障转移。

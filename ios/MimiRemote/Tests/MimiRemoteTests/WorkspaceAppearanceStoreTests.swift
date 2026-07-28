@@ -28,35 +28,63 @@ final class WorkspaceAppearanceStoreTests: XCTestCase {
         )
     }
 
-    func testDefaultEmojiIsStableForNormalizedEndpointAndProject() {
+    func testDefaultEmojiIsStableForProfileAndProject() {
         let first = WorkspaceAppearanceStore(defaults: defaults)
-        let value = first.defaultEmoji(endpoint: "example.test:8787/", projectID: "project-1")
+        let value = first.defaultEmoji(profileID: "mac-a", projectID: "project-1")
 
         let restored = WorkspaceAppearanceStore(defaults: defaults)
         XCTAssertEqual(
-            restored.defaultEmoji(endpoint: "http://example.test:8787", projectID: "project-1"),
+            restored.defaultEmoji(profileID: "mac-a", projectID: "project-1"),
             value
         )
         XCTAssertTrue(WorkspaceAppearanceStore.builtInEmoji.contains(value))
     }
 
-    func testCustomEmojiPersistsAndStaysScopedToEndpointAndProject() {
+    func testCustomEmojiPersistsAndStaysScopedToProfileAndProject() {
         let store = WorkspaceAppearanceStore(defaults: defaults)
-        store.setCustomEmoji("🧑‍💻", endpoint: "mac-a.local:8787", projectID: "project-1")
+        store.setCustomEmoji("🧑‍💻", profileID: "mac-a", projectID: "project-1")
 
         let restored = WorkspaceAppearanceStore(defaults: defaults)
         XCTAssertEqual(
-            restored.emoji(endpoint: "http://mac-a.local:8787", projectID: "project-1"),
+            restored.emoji(profileID: "mac-a", projectID: "project-1"),
             "🧑‍💻"
         )
         XCTAssertNotEqual(
-            restored.customEmoji(endpoint: "mac-b.local:8787", projectID: "project-1"),
+            restored.customEmoji(profileID: "mac-b", projectID: "project-1"),
             "🧑‍💻"
         )
-        XCTAssertNil(restored.customEmoji(endpoint: "mac-a.local:8787", projectID: "project-2"))
+        XCTAssertNil(restored.customEmoji(profileID: "mac-a", projectID: "project-2"))
 
-        restored.setCustomEmoji(nil, endpoint: "mac-a.local:8787", projectID: "project-1")
-        XCTAssertNil(restored.customEmoji(endpoint: "mac-a.local:8787", projectID: "project-1"))
+        restored.setCustomEmoji(nil, profileID: "mac-a", projectID: "project-1")
+        XCTAssertNil(restored.customEmoji(profileID: "mac-a", projectID: "project-1"))
+    }
+
+    func testLegacyEndpointEmojiMigratesOnlyForUniqueProfile() throws {
+        let key = "agentd.workspaceAppearancePreferences.v1"
+        let legacy = [
+            "byEndpoint": [
+                "http://mac-a.local:8787": [
+                    "project-1": "🧑‍💻"
+                ]
+            ]
+        ]
+        defaults.set(try JSONSerialization.data(withJSONObject: legacy), forKey: key)
+        let profile = ConnectionProfile(
+            id: "mac-a",
+            displayName: "Mac A",
+            endpoint: "http://mac-a.local:8787",
+            lastSuccessfulAt: nil
+        )
+        let store = WorkspaceAppearanceStore(defaults: defaults)
+
+        store.migrateLegacyValueIfNeeded(
+            profileID: profile.id,
+            endpoint: profile.endpoint,
+            profiles: [profile]
+        )
+
+        XCTAssertEqual(store.customEmoji(profileID: profile.id, projectID: "project-1"), "🧑‍💻")
+        XCTAssertNil(store.customEmoji(profileID: "mac-b", projectID: "project-1"))
     }
 
     func testCustomEmojiAcceptsOneGraphemeAndRejectsPlainText() {

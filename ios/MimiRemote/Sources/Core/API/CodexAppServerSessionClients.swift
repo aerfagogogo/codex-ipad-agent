@@ -313,10 +313,6 @@ final class AppServerRuntimeBundle {
         runtime(for: routes.runtimeProvider(for: sessionID))
     }
 
-    func inactiveRuntime(forSessionID sessionID: SessionID) -> CodexAppServerSessionRuntime {
-        runtime(forSessionID: sessionID) === claude ? codex : claude
-    }
-
     func prepareForHostActivation() async throws {
         try await codex.prepareForHostActivation()
     }
@@ -413,16 +409,12 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
     func modelOptions() async throws -> [CodexAppServerModelOption] {
         var options = try await bundle.codex.modelOptions()
         if try await bundle.codex.channelAvailable(runtimeProvider: "claude") {
-            let claudeWasReady = await bundle.claude.hasReadyConnectionForTesting()
             do {
                 options.append(contentsOf: try await bundle.claude.modelOptions())
             } catch {
                 // Claude 是 experimental runtime；模型列表失败不能拖垮 Codex 主路径。
                 // config/channel metadata 会继续暴露 bridge 状态，菜单这里优先保持可用。
                 print("Claude model/list unavailable: \(error.localizedDescription)")
-            }
-            if !claudeWasReady {
-                await bundle.claude.shutdownForHostSwitch()
             }
         }
         var seen: Set<String> = []
@@ -450,9 +442,7 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         let codexPage = try await page(runtime: bundle.codex, projectID: projectID, cursor: decoded.codex, limit: limit, buffer: decoded.codexBuffer, consistency: consistency)
         let claudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
         let claudePage = claudeAvailable
-            ? try await transientClaudePage {
-                try await page(runtime: bundle.claude, projectID: projectID, cursor: decoded.claude, limit: limit, buffer: decoded.claudeBuffer, consistency: consistency)
-            }
+            ? try await page(runtime: bundle.claude, projectID: projectID, cursor: decoded.claude, limit: limit, buffer: decoded.claudeBuffer, consistency: consistency)
             : preservedPage(cursor: decoded.claude, buffer: decoded.claudeBuffer)
         return mergedPage(codex: codexPage, claude: claudePage, limit: limit)
     }
@@ -466,9 +456,7 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         let codexPage = try await page(runtime: bundle.codex, workspace: workspace, cursor: decoded.codex, limit: limit, buffer: decoded.codexBuffer, consistency: consistency)
         let claudeAvailable = try await bundle.codex.channelAvailable(runtimeProvider: "claude")
         let claudePage = claudeAvailable
-            ? try await transientClaudePage {
-                try await page(runtime: bundle.claude, workspace: workspace, cursor: decoded.claude, limit: limit, buffer: decoded.claudeBuffer, consistency: consistency)
-            }
+            ? try await page(runtime: bundle.claude, workspace: workspace, cursor: decoded.claude, limit: limit, buffer: decoded.claudeBuffer, consistency: consistency)
             : preservedPage(cursor: decoded.claude, buffer: decoded.claudeBuffer)
         return mergedPage(codex: codexPage, claude: claudePage, limit: limit)
     }
@@ -604,27 +592,6 @@ final class MultiRuntimeSessionAPIClient: SessionStoreAPIClient {
         RuntimePage(sessions: buffer, nextCursor: cursor)
     }
 
-    private func transientClaudePage(
-        _ operation: () async throws -> RuntimePage
-    ) async throws -> RuntimePage {
-        let wasReady = await bundle.claude.hasReadyConnectionForTesting()
-        do {
-            let page = try await operation()
-            if !wasReady, page.nextCursor == nil {
-                // Claude 全局列表属于延迟数据；没有活跃 Claude 会话时使用一次性连接，
-                // 分页未结束时保留连接，避免为了下一页重复 initialize；最后一页再立即回落到
-                // Codex 这一条业务 WS。
-                await bundle.claude.shutdownForHostSwitch()
-            }
-            return page
-        } catch {
-            if !wasReady {
-                await bundle.claude.shutdownForHostSwitch()
-            }
-            throw error
-        }
-    }
-
     private func mergedPage(codex: RuntimePage, claude: RuntimePage, limit: Int?) -> SessionsPage {
         var sessions = codex.sessions + claude.sessions
         bundle.routes.remember(sessions)
@@ -671,14 +638,10 @@ final class MultiRuntimeSessionWebSocketClient: SessionWebSocketClient {
 
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
         let runtime = bundle.runtime(forSessionID: sessionID)
-        let inactiveRuntime = bundle.inactiveRuntime(forSessionID: sessionID)
-        let client = CodexAppServerSessionWebSocketClient(
-            runtime: runtime,
-            beforeConnect: {
-                // 用户打开另一 provider 的会话前先退役旧 provider，稳态只保留一条业务 WS。
-                await inactiveRuntime.shutdownForHostSwitch()
-            }
-        )
+        // “单活”边界是当前 Mac，而不是 Runtime provider。同一台 Mac 上当前会话与后台
+        // 排队会话可能分别属于 Codex/Claude；两者各复用一条共享连接，不能互相退役。
+        // 切换 Mac、进入后台或凭据失效时仍由 AppServerRuntimeBundle 整体关闭。
+        let client = CodexAppServerSessionWebSocketClient(runtime: runtime)
         activeClient?.disconnect()
         activeClient = client
         wireHandlers(to: client)
@@ -775,16 +738,11 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
     var onControlFailure: ((String) -> Void)?
 
     private let runtime: CodexAppServerSessionRuntime
-    private let beforeConnect: (@Sendable () async -> Void)?
     private var sessionID: SessionID?
     private var eventPumpTask: Task<Void, Never>?
 
-    init(
-        runtime: CodexAppServerSessionRuntime,
-        beforeConnect: (@Sendable () async -> Void)? = nil
-    ) {
+    init(runtime: CodexAppServerSessionRuntime) {
         self.runtime = runtime
-        self.beforeConnect = beforeConnect
     }
 
     func connect(sessionID threadID: SessionID) {
@@ -798,11 +756,7 @@ final class CodexAppServerSessionWebSocketClient: SessionWebSocketClient {
         let statusHandler = onStatus
         let eventHandler = onEvent
         let replayPolicy: CodexAppServerBufferedEventReplayPolicy = replayBufferedEvents ? .all : .stateOnly
-        eventPumpTask = Task { [runtime, beforeConnect] in
-            await beforeConnect?()
-            guard !Task.isCancelled else {
-                return
-            }
+        eventPumpTask = Task { [runtime] in
             let events = await runtime.attachEvents(sessionID: threadID, replayPolicy: replayPolicy)
             defer {
                 // Task 可能在等待 MainActor 时被取消；显式释放订阅，避免 runtime 长期保留邮箱。

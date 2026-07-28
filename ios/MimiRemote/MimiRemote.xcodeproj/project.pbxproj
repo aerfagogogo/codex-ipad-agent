@@ -60,7 +60,7 @@
 		3E93414CD3560843DC67433E /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.accessibility3.png in Resources */ = {isa = PBXBuildFile; fileRef = 9143CBABCA38B2E316A221BB /* testModelPickerAdaptiveWidthAndAccessibilityLayouts.accessibility3.png */; };
 		3F150075A258BDF73AFB8ED6 /* WorktreeManagementViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEB7A4F02C5EC7121D1BB6B9 /* WorktreeManagementViews.swift */; };
 		410ECA3E93AE577686A636C0 /* MediaWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4E57C95034C12853D10303 /* MediaWorker.swift */; };
-		4133C316969607C72DFE1168 /* SkillModelPickerSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 476737709E01875A7992BABB /* SkillModelPickerSnapshotTests.swift */; };
+		4133C316969607C72DFE1168 /* SkillModelPickerSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 476737709E01875A7992BABB /* SkillModelPickerSnapshotTests.swift */; platformFilters = (ios, ); };
 		41B2009F6B92E4B407CFDB72 /* ModelReasoningGridPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53A4A2B3A4B718F54CB4F8AE /* ModelReasoningGridPicker.swift */; };
 		420F5F2A694B0E491DBD45B0 /* ThemeStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7348A6FCD28C7489CC7097AD /* ThemeStoreTests.swift */; };
 		439355570F5ED69354673D07 /* testAppearancePreview.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 190DA6E3F95C3577B94AB67C /* testAppearancePreview.1.png */; };
@@ -80,7 +80,7 @@
 		5CD51AE13B5D23F8FBE444C5 /* SessionStoreSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DA86790E2FD08AE5C651FEC /* SessionStoreSupport.swift */; };
 		5FD1DBDBCD89B51F6B22D679 /* ConversationSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C7C7C0DF7B33C596EBE5FC7 /* ConversationSnapshotTests.swift */; platformFilters = (ios, ); };
 		613A97BCD065B780C6162C8E /* ConversationTimelineReducerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F938DA83B5613E99E202281D /* ConversationTimelineReducerTests.swift */; };
-		626E053AFAE30F345EEFC01D /* WorkspaceVisualSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 327AF69020E348B4AE9F7BBE /* WorkspaceVisualSnapshotTests.swift */; };
+		626E053AFAE30F345EEFC01D /* WorkspaceVisualSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 327AF69020E348B4AE9F7BBE /* WorkspaceVisualSnapshotTests.swift */; platformFilters = (ios, ); };
 		6329757B930F1A8506FACF90 /* SessionAPIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4C046A065EC50889673C918 /* SessionAPIModels.swift */; };
 		648665FD8A9D6AC67326D404 /* testEmptyConversationState.1.png in Resources */ = {isa = PBXBuildFile; fileRef = 38004512B302AB5F8AD23644 /* testEmptyConversationState.1.png */; };
 		671C4601FF0BC177E460C60F /* AgentRuntimeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52BCEEFCD8324800FC52F2DC /* AgentRuntimeModels.swift */; };

@@ -7,9 +7,7 @@ import Foundation
 final class WorkspaceAppearanceStore: ObservableObject {
     static let builtInEmoji = ["🐱", "🤖", "🦧", "🌻", "🍔", "⚾️", "🌍", "🌓", "🌈", "🚕", "🌋", "🍍", "📮"]
 
-    private struct Storage: Codable {
-        var byEndpoint: [String: [String: String]] = [:]
-    }
+    private typealias Storage = ProfileScopedStorage<[String: String]>
 
     @Published private var storage: Storage
 
@@ -30,23 +28,45 @@ final class WorkspaceAppearanceStore: ObservableObject {
         }
     }
 
-    func emoji(endpoint: String, projectID: String) -> String {
-        customEmoji(endpoint: endpoint, projectID: projectID)
-            ?? defaultEmoji(endpoint: endpoint, projectID: projectID)
+    /// endpoint 旧值只在唯一匹配的 Profile 上迁移一次；地址只是路由，不能继续作为偏好主键。
+    func migrateLegacyValueIfNeeded(
+        profileID: String,
+        endpoint: String,
+        profiles: [ConnectionProfile]
+    ) {
+        guard storage.migrateLegacyValueIfUnique(
+            profileID: profileID,
+            endpoint: endpoint,
+            profiles: profiles
+        ) else {
+            return
+        }
+        persist()
     }
 
-    func customEmoji(endpoint: String, projectID: String) -> String? {
-        storage.byEndpoint[normalizedEndpoint(endpoint)]?[projectID]
+    func emoji(profileID: String, projectID: String) -> String {
+        customEmoji(profileID: profileID, projectID: projectID)
+            ?? defaultEmoji(profileID: profileID, projectID: projectID)
     }
 
-    func defaultEmoji(endpoint: String, projectID: String) -> String {
-        let identity = "\(normalizedEndpoint(endpoint))\n\(projectID)"
+    func customEmoji(profileID: String, projectID: String) -> String? {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return nil
+        }
+        return storage.byProfileID[profileKey]?[projectID]
+    }
+
+    func defaultEmoji(profileID: String, projectID: String) -> String {
+        let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) ?? "legacy"
+        let identity = "\(profileKey)\n\(projectID)"
         return Self.builtInEmoji[Self.stableIndex(for: identity, count: Self.builtInEmoji.count)]
     }
 
-    func setCustomEmoji(_ emoji: String?, endpoint: String, projectID: String) {
-        let endpointKey = normalizedEndpoint(endpoint)
-        var projectValues = storage.byEndpoint[endpointKey] ?? [:]
+    func setCustomEmoji(_ emoji: String?, profileID: String, projectID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID) else {
+            return
+        }
+        var projectValues = storage.byProfileID[profileKey] ?? [:]
         if let emoji {
             guard let normalized = Self.normalizedEmoji(emoji) else { return }
             projectValues[projectID] = normalized
@@ -54,9 +74,17 @@ final class WorkspaceAppearanceStore: ObservableObject {
             projectValues.removeValue(forKey: projectID)
         }
         if projectValues.isEmpty {
-            storage.byEndpoint.removeValue(forKey: endpointKey)
+            storage.byProfileID.removeValue(forKey: profileKey)
         } else {
-            storage.byEndpoint[endpointKey] = projectValues
+            storage.byProfileID[profileKey] = projectValues
+        }
+        persist()
+    }
+
+    func remove(profileID: String) {
+        guard let profileKey = ProfileScopedPersistence.normalizedProfileID(profileID),
+              storage.byProfileID.removeValue(forKey: profileKey) != nil else {
+            return
         }
         persist()
     }
@@ -87,10 +115,6 @@ final class WorkspaceAppearanceStore: ObservableObject {
             prefix = (prefix << 8) | UInt64(byte)
         }
         return Int(prefix % UInt64(count))
-    }
-
-    private func normalizedEndpoint(_ endpoint: String) -> String {
-        AgentAPIClient.normalizedEndpoint(endpoint)
     }
 
     private func persist() {

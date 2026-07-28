@@ -176,7 +176,12 @@ struct WorkspaceRootView: View {
                 navigationContent(tokens: tokens)
             }
         }
-        .task {
+        .task(id: appStore.activeHostScope) {
+            appearanceStore.migrateLegacyValueIfNeeded(
+                profileID: appStore.activeHostScope.profileID,
+                endpoint: appStore.endpoint,
+                profiles: appStore.connectionProfiles
+            )
             synchronizeSelection()
             // 每次进入工作区都做轻量目录同步，同时执行旧版自动候选数据清理；
             // 该请求不改变当前会话和 WebSocket，上层选择保持稳定。
@@ -371,7 +376,7 @@ struct WorkspaceRootView: View {
                             ForEach(0..<4, id: \.self) { index in
                                 WorkspaceLibraryCard(
                                     project: AgentProject(id: "loading-\(index)", name: L10n.text("ui.loading_workspace"), path: "/Users/you/code/project"),
-                                    endpoint: appStore.endpoint,
+                                    profileID: appStore.activeHostScope.profileID,
                                     appearanceStore: appearanceStore,
                                     gitSummary: nil,
                                     isGitSummaryLoading: true,
@@ -393,7 +398,7 @@ struct WorkspaceRootView: View {
                                 let projectSessions = sessionStore.sessions(forProjectID: project.id)
                                 WorkspaceLibraryCard(
                                     project: project,
-                                    endpoint: appStore.endpoint,
+                                    profileID: appStore.activeHostScope.profileID,
                                     appearanceStore: appearanceStore,
                                     gitSummary: sessionStore.workspaceGitSummaryByPath[project.path],
                                     isGitSummaryLoading: sessionStore.refreshingWorkspaceGitSummaryPaths.contains(project.path),
@@ -620,7 +625,7 @@ private struct WorkspaceLibraryCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     let project: AgentProject
-    let endpoint: String
+    let profileID: String
     @ObservedObject var appearanceStore: WorkspaceAppearanceStore
     let gitSummary: GitStatusResponse?
     let isGitSummaryLoading: Bool
@@ -695,7 +700,7 @@ private struct WorkspaceLibraryCard: View {
                         .popover(isPresented: $isPresentingEmojiPicker, arrowEdge: .top) {
                             WorkspaceEmojiPicker(
                                 project: project,
-                                endpoint: endpoint,
+                                profileID: profileID,
                                 appearanceStore: appearanceStore,
                                 tokens: tokens
                             )
@@ -758,7 +763,7 @@ private struct WorkspaceLibraryCard: View {
     }
 
     private var displayedEmoji: String {
-        appearanceStore.emoji(endpoint: endpoint, projectID: project.id)
+        appearanceStore.emoji(profileID: profileID, projectID: project.id)
     }
 
     private var emojiTile: some View {
@@ -953,7 +958,7 @@ private struct WorkspaceEmojiPicker: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let project: AgentProject
-    let endpoint: String
+    let profileID: String
     @ObservedObject var appearanceStore: WorkspaceAppearanceStore
     let tokens: ThemeTokens
     @State private var customInput = ""
@@ -975,7 +980,7 @@ private struct WorkspaceEmojiPicker: View {
             LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
                 ForEach(WorkspaceAppearanceStore.builtInEmoji, id: \.self) { emoji in
                     Button {
-                        appearanceStore.setCustomEmoji(emoji, endpoint: endpoint, projectID: project.id)
+                        appearanceStore.setCustomEmoji(emoji, profileID: profileID, projectID: project.id)
                         dismiss()
                     } label: {
                         ZStack(alignment: .topTrailing) {
@@ -1029,24 +1034,24 @@ private struct WorkspaceEmojiPicker: View {
             }
 
             Button {
-                appearanceStore.setCustomEmoji(nil, endpoint: endpoint, projectID: project.id)
+                appearanceStore.setCustomEmoji(nil, profileID: profileID, projectID: project.id)
                 dismiss()
             } label: {
                 Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
             }
             .font(themeStore.uiFont(.callout, weight: .medium))
-            .disabled(appearanceStore.customEmoji(endpoint: endpoint, projectID: project.id) == nil)
+            .disabled(appearanceStore.customEmoji(profileID: profileID, projectID: project.id) == nil)
         }
         .padding(18)
         .frame(width: 336)
         .background(tokens.surface)
         .onAppear {
-            customInput = appearanceStore.customEmoji(endpoint: endpoint, projectID: project.id) ?? ""
+            customInput = appearanceStore.customEmoji(profileID: profileID, projectID: project.id) ?? ""
         }
     }
 
     private var currentEmoji: String {
-        appearanceStore.emoji(endpoint: endpoint, projectID: project.id)
+        appearanceStore.emoji(profileID: profileID, projectID: project.id)
     }
 
     private func applyCustomEmoji() {
@@ -1054,7 +1059,7 @@ private struct WorkspaceEmojiPicker: View {
             validationMessage = L10n.text("ui.enter_one_valid_emoji")
             return
         }
-        appearanceStore.setCustomEmoji(emoji, endpoint: endpoint, projectID: project.id)
+        appearanceStore.setCustomEmoji(emoji, profileID: profileID, projectID: project.id)
         dismiss()
     }
 }

@@ -1299,6 +1299,41 @@ extension ConversationDataFlowTests {
         XCTAssertNil(route.restoreSnapshot(from: storage, currentEndpoint: "http://100.64.0.11:8787"))
     }
 
+    func testWorkbenchRestorationRouteUsesProfileIdentityAfterEndpointChanges() throws {
+        let session = makeSession(
+            id: "session_profile",
+            projectID: "project_profile",
+            title: "同一 Mac 的恢复快照",
+            status: "history",
+            source: "codex",
+            resumeID: "resume_profile"
+        )
+        let snapshot = SessionRestoreSnapshot(
+            profileID: "mac-a",
+            endpoint: "http://100.64.0.10:8787",
+            session: session
+        )
+        let storage = try JSONEncoder().encode(snapshot).base64EncodedString()
+        let route = WorkbenchRestorationRoute.session(id: session.id, source: .sessions)
+
+        XCTAssertNotNil(
+            route.restoreSnapshot(
+                from: storage,
+                currentProfileID: "mac-a",
+                currentEndpoint: "http://100.64.0.99:8787"
+            ),
+            "V2 快照应跟随稳定 Profile，不能因同一 Mac 更换网络地址而丢失"
+        )
+        XCTAssertNil(
+            route.restoreSnapshot(
+                from: storage,
+                currentProfileID: "mac-b",
+                currentEndpoint: snapshot.endpoint
+            ),
+            "即使 endpoint 相同，不同 Profile 也不能恢复彼此的会话"
+        )
+    }
+
     func testSelectingRunningSessionRefreshesHistoryAndSuppressesBufferedMessageReplay() async throws {
         let project = makeProject(id: "proj_live_resume")
         let running = makeSession(id: "sess_live_resume", projectID: project.id, title: "运行中", status: "running", source: "codex")
