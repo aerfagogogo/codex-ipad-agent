@@ -267,10 +267,12 @@ final class AppStore: ObservableObject {
     private let credentialVault: HostCredentialVault
     private let routeProbeTimeout: TimeInterval
     private let prefersLocalConnection: Bool
+    private let allowsEphemeralLocalCredentialFallback: Bool
     private let localAgentProbe: LocalAgentProbe
     private let localAgentPairingClaim: LocalAgentPairingClaim
     private let routeProbe: ConnectionRouteProbe
     private let usesDefaultRouteProbe: Bool
+    private var ephemeralLocalProfileID: String?
     private var isConnectionPreflightRunning = false
     private var automaticSettingsConnectionTestState: AutomaticSettingsConnectionTestState = .pending
     private var localAgentProbeTask: Task<Bool, Never>?
@@ -291,13 +293,16 @@ final class AppStore: ObservableObject {
         prefersLocalConnection: Bool? = nil,
         localAgentProbe: LocalAgentProbe? = nil,
         localAgentPairingClaim: LocalAgentPairingClaim? = nil,
-        routeProbe: ConnectionRouteProbe? = nil
+        routeProbe: ConnectionRouteProbe? = nil,
+        allowsEphemeralLocalCredentialFallback: Bool? = nil
     ) {
         self.defaults = defaults
         self.tokenStore = tokenStore
         credentialVault = HostCredentialVault(tokenStore: tokenStore)
         self.routeProbeTimeout = routeProbeTimeout
         self.prefersLocalConnection = prefersLocalConnection ?? Self.isRunningOnMacCatalyst
+        self.allowsEphemeralLocalCredentialFallback =
+            allowsEphemeralLocalCredentialFallback ?? Self.isRunningOnMacCatalyst
         self.localAgentProbe = localAgentProbe ?? Self.defaultLocalAgentProbe
         self.localAgentPairingClaim = localAgentPairingClaim ?? Self.defaultLocalAgentPairingClaim
         self.routeProbe = routeProbe ?? Self.defaultConnectionRouteProbe
@@ -409,6 +414,35 @@ final class AppStore: ObservableObject {
         return connectionProfiles.isEmpty || activeConnectionProfile != nil
     }
 
+    /// 认证请求只能在前台凭据完整恢复后创建。后台缩略图虽然仍保留工作台，
+    /// 但不能让任何旧任务拿空 Token 创建 REST 或 WebSocket Runtime。
+    var authenticatedCredentialFingerprint: String? {
+        guard !isCredentialMemorySuspended, isConfigured else {
+            return nil
+        }
+        return connectionCredentialFingerprint(token)
+    }
+
+    func acceptsCredentialInvalidation(_ error: Error) -> Bool {
+        guard isCredentialInvalidatingError(error),
+              let currentFingerprint = authenticatedCredentialFingerprint else {
+            return false
+        }
+        guard let rejectedFingerprint = credentialFingerprintRejectedByError(error) else {
+            // 兼容测试替身和旧的进程内错误；生产 REST/WS 传输都会携带指纹。
+            return true
+        }
+        return rejectedFingerprint == currentFingerprint
+    }
+
+    func isCurrentCredentialFingerprint(_ fingerprint: String?) -> Bool {
+        guard let currentFingerprint = authenticatedCredentialFingerprint else {
+            return false
+        }
+        // nil 仅兼容不携带传输上下文的测试 WebSocket。
+        return fingerprint == nil || fingerprint == currentFingerprint
+    }
+
     var activeConnectionProfile: ConnectionProfile? {
         guard let activeConnectionProfileID else { return nil }
         return connectionProfiles.first { $0.id == activeConnectionProfileID }
@@ -498,6 +532,11 @@ final class AppStore: ObservableObject {
     /// 进入后台时同时清空 Vault、公开内存 Token 与复用 Runtime。
     /// Profile 元数据仍在，回前台只恢复当前 Profile，不会触碰其它 Mac。
     func suspendCredentialsForBackground() {
+        if activeConnectionProfileID == ephemeralLocalProfileID {
+            // macOS 本地 Debug 包没有可恢复的 Keychain 项；桌面端后台保留同机短期凭据，
+            // 进程退出后自然清空，下一次启动重新向 loopback agentd 领取。
+            return
+        }
         credentialLifecycleGeneration &+= 1
         // 先标记“临时挂起”再清空 Token，让根视图继续保留当前会话；
         // 否则 SwiftUI 会把短暂的空 Token 误判成从未配对并切到初始设置页。
@@ -593,11 +632,17 @@ final class AppStore: ObservableObject {
 #endif
 
     func client() throws -> AgentAPIClient {
+        guard authenticatedCredentialFingerprint != nil else {
+            throw CancellationError()
+        }
         let endpoint = try Self.validatedEndpoint(connectionEndpoint)
         return AgentAPIClient(endpoint: endpoint, token: token)
     }
 
     func makeSessionStoreAPIClient() throws -> any SessionStoreAPIClient {
+        guard authenticatedCredentialFingerprint != nil else {
+            throw CancellationError()
+        }
         let endpoint = try Self.validatedEndpoint(connectionEndpoint)
         return CodexAppServerRuntimeRoutingSessionAPIClient(bundle: runtimeBundle(endpoint: endpoint, token: token))
     }
@@ -792,20 +837,61 @@ final class AppStore: ObservableObject {
             targetProfile.id != activeConnectionProfileID ||
             targetProfile.installationID != activeConnectionProfile?.installationID
 
-        // Token 必须按档案先经 Vault actor 写入 Keychain；MainActor 不执行安全框架 I/O。
-        // 失败时不能发布 activeID，更不能让 SessionStore 退役旧连接。
+        // Token 优先按档案经 Vault actor 写入 Keychain；MainActor 不执行安全框架 I/O。
+        // 未签入 provisioning profile 的 Catalyst 本机 Debug 包只在 loopback + -34018 时使用进程内凭据。
         let credentialLifecycle = credentialLifecycleGeneration
-        let credentialReceipt = try await credentialVault.save(prepared.token, for: targetProfile.id)
+        let credentialReceipt: HostCredentialWriteReceipt
+        let usesEphemeralLocalCredential: Bool
+        let isContinuingEphemeralLoopback =
+            ephemeralLocalProfileID == targetProfile.id &&
+            Self.isLoopbackEndpoint(normalizedEndpoint)
+        if isContinuingEphemeralLoopback {
+            credentialReceipt = await credentialVault.rememberInMemory(prepared.token, for: targetProfile.id)
+            usesEphemeralLocalCredential = true
+        } else {
+            do {
+                credentialReceipt = try await credentialVault.save(
+                    prepared.token,
+                    for: targetProfile.id,
+                    forcePersistence: ephemeralLocalProfileID == targetProfile.id
+                )
+                usesEphemeralLocalCredential = false
+            } catch {
+                let canUseEphemeralLocalCredential =
+                    allowsEphemeralLocalCredentialFallback &&
+                    Self.isLoopbackEndpoint(normalizedEndpoint) &&
+                    (error as? TokenStoreError)?.isMissingEntitlement == true
+                guard canUseEphemeralLocalCredential else {
+                    throw error
+                }
+                // 仅降级同机 loopback，且只接受明确的 Keychain entitlement 缺失。
+                // Token 不进入 UserDefaults；进程退出后由下一次本机自动配对重新领取。
+                credentialReceipt = await credentialVault.rememberInMemory(
+                    prepared.token,
+                    for: targetProfile.id
+                )
+                usesEphemeralLocalCredential = true
+            }
+        }
         guard credentialLifecycle == credentialLifecycleGeneration, !Task.isCancelled else {
             // App 在 Keychain await 期间进入后台时，候选提交必须回滚，A 的元数据和 Runtime 不变。
-            try? await credentialVault.rollback(credentialReceipt, profileID: targetProfile.id)
+            if usesEphemeralLocalCredential {
+                await credentialVault.rollbackMemory(credentialReceipt, profileID: targetProfile.id)
+            } else {
+                try? await credentialVault.rollback(credentialReceipt, profileID: targetProfile.id)
+            }
             throw CancellationError()
         }
-        persistProfiles(encodedProfiles)
-        defaults.set(targetProfile.id, forKey: Self.activeProfileIDKey)
-        defaults.set(normalizedEndpoint, forKey: endpointKey)
-        defaults.removeObject(forKey: retiredFallbackEndpointKey)
-        defaults.removeObject(forKey: retiredConnectionModeKey)
+        if usesEphemeralLocalCredential {
+            ephemeralLocalProfileID = targetProfile.id
+        } else {
+            ephemeralLocalProfileID = nil
+            persistProfiles(encodedProfiles)
+            defaults.set(targetProfile.id, forKey: Self.activeProfileIDKey)
+            defaults.set(normalizedEndpoint, forKey: endpointKey)
+            defaults.removeObject(forKey: retiredFallbackEndpointKey)
+            defaults.removeObject(forKey: retiredConnectionModeKey)
+        }
 
         let previousRuntimeBundle = activeRuntimeBundle
         endpoint = normalizedEndpoint
@@ -860,7 +946,7 @@ final class AppStore: ObservableObject {
     }
 
     func clearPairing() async throws {
-        // Keychain 删除是唯一可能失败的步骤，必须先完成它再清理 UserDefaults 和内存态。
+        // 持久化凭据必须先完成 Keychain 删除；临时 loopback 凭据只需清理进程内缓存。
         // 否则系统暂时禁止 Keychain 访问时，下一次启动会变成“旧 Token + 默认 Endpoint”的半提交状态。
         let nextProfiles: [ConnectionProfile]
         if let activeConnectionProfileID {
@@ -871,7 +957,11 @@ final class AppStore: ObservableObject {
         let encodedProfiles = try JSONEncoder().encode(nextProfiles)
         let removedProfileID = activeConnectionProfileID
         if let removedProfileID {
-            try await credentialVault.delete(profileID: removedProfileID)
+            if removedProfileID == ephemeralLocalProfileID {
+                await credentialVault.forgetMemory(profileID: removedProfileID)
+            } else {
+                try await credentialVault.delete(profileID: removedProfileID)
+            }
         } else {
             try await credentialVault.deleteLegacy()
         }
@@ -884,6 +974,7 @@ final class AppStore: ObservableObject {
         endpoint = defaultEndpoint
         connectionProfiles = nextProfiles
         activeConnectionProfileID = nil
+        ephemeralLocalProfileID = nil
         connectionGeneration += 1
         token = ""
         let legacyProfileID = "legacy"
@@ -920,8 +1011,8 @@ final class AppStore: ObservableObject {
         connectionProfiles = nextProfiles
     }
 
-    /// 只修改 UserDefaults 中的非敏感显示名称，不进入连接切换事务，也不读取或写入 Keychain。
-    /// 先完成编码再发布内存状态，避免持久化准备失败时列表出现半提交名称。
+    /// 只修改非敏感显示名称，不进入连接切换事务，也不读取或写入 Keychain。
+    /// 临时 loopback 档案保持进程内；其它档案先完成编码再发布，避免出现半提交名称。
     @discardableResult
     func renameConnectionProfile(id: String, displayName rawDisplayName: String) throws -> Bool {
         guard let profileIndex = connectionProfiles.firstIndex(where: { $0.id == id }) else {
@@ -941,8 +1032,10 @@ final class AppStore: ObservableObject {
         var nextProfiles = connectionProfiles
         nextProfiles[profileIndex].displayName = displayName
         nextProfiles[profileIndex].revision &+= 1
-        let encodedProfiles = try JSONEncoder().encode(nextProfiles)
-        persistProfiles(encodedProfiles)
+        if id != ephemeralLocalProfileID {
+            let encodedProfiles = try JSONEncoder().encode(nextProfiles)
+            persistProfiles(encodedProfiles)
+        }
         connectionProfiles = nextProfiles
         if id == activeConnectionProfileID {
             activeHostState = ActiveHostState(
@@ -1244,7 +1337,7 @@ final class AppStore: ObservableObject {
 
         resetConnectionRoute()
         let finalError = configuredRouteError ?? URLError(.cannotConnectToHost)
-        if isCredentialInvalidatingError(finalError) {
+        if acceptsCredentialInvalidation(finalError) {
             markCredentialsInvalid()
             return false
         }
@@ -1667,9 +1760,7 @@ final class AppStore: ObservableObject {
     }
 
     private static func tokenFingerprint(_ token: String) -> String {
-        SHA256.hash(data: Data(token.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
+        connectionCredentialFingerprint(token)
     }
 
     private func rejectDuplicateInstallation(

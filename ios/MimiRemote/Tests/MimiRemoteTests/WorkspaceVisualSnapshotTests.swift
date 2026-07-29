@@ -144,11 +144,20 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         let appearanceDefaults = UserDefaults(suiteName: appearanceDefaultsSuite)!
         appearanceDefaults.removePersistentDomain(forName: appearanceDefaultsSuite)
         let appearanceStore = WorkspaceAppearanceStore(defaults: appearanceDefaults)
+        // 默认角色会混入安装身份；快照显式固定，避免隔离 AppStore 后生成的新身份让视觉基线抖动。
+        let appearanceProfileID = appStore.activeHostScope.profileID
+        appearanceStore.setCustomCharacterID("sun-wukong", profileID: appearanceProfileID, projectID: projects[0].id)
+        appearanceStore.setCustomCharacterID("zhu-bajie", profileID: appearanceProfileID, projectID: projects[1].id)
+        appearanceStore.setCustomCharacterID("white-bone-demon", profileID: appearanceProfileID, projectID: projects[2].id)
 
         let themeDefaultsSuite = "WorkspaceVisualSnapshotTests.Theme.\(UUID().uuidString)"
         let themeDefaults = UserDefaults(suiteName: themeDefaultsSuite)!
         themeDefaults.removePersistentDomain(forName: themeDefaultsSuite)
         let themeStore = ThemeStore(defaults: themeDefaults)
+        themeStore.applyDeviceDefaultFontScale(
+            isPad: true,
+            screenSize: CGSize(width: 744, height: 1_133)
+        )
 
         let view = WorkspaceRootView(
             onStartSession: { _, _ in },
@@ -164,7 +173,7 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
         .environment(\.colorScheme, .light)
         .frame(width: 744, height: 1_133)
 
-        assertSnapshot(
+        if let failure = verifySnapshot(
             of: view,
             as: .wait(
                 for: 0.8,
@@ -173,8 +182,21 @@ final class WorkspaceVisualSnapshotTests: XCTestCase {
                     precision: 0.98,
                     layout: .fixed(width: 744, height: 1_133)
                 )
-            )
-        )
+            ),
+            snapshotDirectory: referenceSnapshotDirectory
+        ) {
+            XCTFail(failure)
+        }
+    }
+
+    private var referenceSnapshotDirectory: String? {
+        #if targetEnvironment(simulator)
+        // 模拟器保留源码目录路径，方便本地重新录制基线。
+        nil
+        #else
+        // 真机不能访问 Mac 源码目录；Xcode 会把基线平铺复制进测试 Bundle。
+        Bundle(for: Self.self).bundlePath
+        #endif
     }
 
     private func gitSummary(
