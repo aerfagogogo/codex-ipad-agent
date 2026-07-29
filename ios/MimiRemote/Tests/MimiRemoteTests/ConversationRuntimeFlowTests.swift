@@ -267,11 +267,14 @@ extension ConversationDataFlowTests {
             ],
             messagesResult: []
         )
+        let appStore = AppStore()
         let conversationStore = ConversationStore()
         let logStore = LogStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
+        logStore.activate(profileID: appStore.activeHostScope.profileID)
         logStore.append("本地已有输出", sessionID: running.id, seq: 12)
         let store = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: logStore,
             clientFactory: { client }
@@ -302,6 +305,10 @@ extension ConversationDataFlowTests {
 
     func testTerminalStreamStoreBatchesRuntimeEventsBySession() async {
         let store = TerminalStreamStore(maxBatchSize: 2)
+        let lease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "sess_batch"
+        )
         let metadata = AgentEventMetadata(
             seq: 1,
             sessionID: "sess_batch",
@@ -313,19 +320,26 @@ extension ConversationDataFlowTests {
             createdAt: nil
         )
 
-        let firstShouldFlush = store.append(.turnStarted(metadata), sessionID: "sess_batch")
-        let secondShouldFlush = store.append(.assistantDelta(AgentDelta(text: "hi", role: .assistant, kind: .message), metadata), sessionID: "sess_batch")
+        let firstShouldFlush = store.append(.turnStarted(metadata), lease: lease)
+        let secondShouldFlush = store.append(
+            .assistantDelta(AgentDelta(text: "hi", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
 
         XCTAssertFalse(firstShouldFlush)
         XCTAssertTrue(secondShouldFlush)
-        let drained = store.drain(sessionID: "sess_batch")
-        let drainedAgain = store.drain(sessionID: "sess_batch")
+        let drained = store.drain(lease: lease)
+        let drainedAgain = store.drain(lease: lease)
         XCTAssertEqual(drained.count, 2)
         XCTAssertTrue(drainedAgain.isEmpty)
     }
 
     func testTerminalStreamStoreCompactsContiguousAssistantDeltasWithoutCrossingBoundaries() {
         let store = TerminalStreamStore(maxBatchSize: 64)
+        let lease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "sess_compact"
+        )
         let metadata = AgentEventMetadata(
             seq: 1,
             sessionID: "sess_compact",
@@ -337,20 +351,66 @@ extension ConversationDataFlowTests {
             createdAt: nil
         )
 
-        _ = store.append(.assistantDelta(AgentDelta(text: "你", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
-        _ = store.append(.assistantDelta(AgentDelta(text: "好", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "你", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "好", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
 
-        let compacted = store.drain(sessionID: "sess_compact")
+        let compacted = store.drain(lease: lease)
         XCTAssertEqual(compacted.count, 1)
         guard case .assistantDelta(let delta, _) = compacted.first else {
             return XCTFail("连续正文增量应合并为一个事件")
         }
         XCTAssertEqual(delta.text, "你好")
 
-        _ = store.append(.assistantDelta(AgentDelta(text: "A", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
-        _ = store.append(.turnStarted(metadata), sessionID: "sess_compact")
-        _ = store.append(.assistantDelta(AgentDelta(text: "B", role: .assistant, kind: .message), metadata), sessionID: "sess_compact")
-        XCTAssertEqual(store.drain(sessionID: "sess_compact").count, 3, "控制事件边界不能被合并穿透")
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "A", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
+        _ = store.append(.turnStarted(metadata), lease: lease)
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "B", role: .assistant, kind: .message), metadata),
+            lease: lease
+        )
+        XCTAssertEqual(store.drain(lease: lease).count, 3, "控制事件边界不能被合并穿透")
+    }
+
+    func testTerminalStreamStoreSeparatesSameSessionAcrossHostScopes() {
+        let store = TerminalStreamStore(maxBatchSize: 64)
+        let macALease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-a", installationID: "install-a", generation: 1),
+            sessionID: "same-session"
+        )
+        let macBLease = HostSessionLease(
+            hostScope: HostScope(profileID: "mac-b", installationID: "install-b", generation: 2),
+            sessionID: "same-session"
+        )
+        let metadata = AgentEventMetadata(
+            seq: 1,
+            sessionID: "same-session",
+            turnID: "same-turn",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )
+
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "A", role: .assistant, kind: .message), metadata),
+            lease: macALease
+        )
+        _ = store.append(
+            .assistantDelta(AgentDelta(text: "B", role: .assistant, kind: .message), metadata),
+            lease: macBLease
+        )
+
+        XCTAssertEqual(store.drain(lease: macALease).count, 1)
+        XCTAssertEqual(store.drain(lease: macBLease).count, 1)
     }
 
     func testDisconnectFlushesBufferedRuntimeEventsBeforeSwitchingSession() async throws {
@@ -894,7 +954,8 @@ extension ConversationDataFlowTests {
         XCTAssertLessThanOrEqual(started.turnStartedAt, started.lastActivityAt)
         try await waitForSelectedActiveTurnID("turn-runtime", store: store)
 
-        try await Task.sleep(nanoseconds: 120_000_000)
+        // 运行时活动在 1 秒内合并高频事件，测试需要跨过该窗口再验证时间推进。
+        try await Task.sleep(nanoseconds: 1_050_000_000)
         sockets[0].emitEvent(.logDelta(
             LogDelta(text: "still working\n", stream: "stdout"),
             AgentEventMetadata(
@@ -1037,7 +1098,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "修复 iPad 目标入口")
     }
 
-    func testQueuedGoalDoesNotCompleteWithPreviousTurn() async throws {
+    func testQueuedGoalRemainsActiveAfterItsTurnCompletes() async throws {
         let project = makeProject(id: "proj_goal_queued")
         let running = makeSession(
             id: "sess_goal_queued",
@@ -1112,10 +1173,15 @@ extension ConversationDataFlowTests {
             revision: nil,
             createdAt: nil
         )))
-        try await waitForSelectedThreadGoalStatus(.complete, store: store)
+        try await waitForSelectedSessionStatus(SessionStatus.completed.rawValue, store: store)
+        XCTAssertEqual(
+            store.selectedThreadGoal?.status,
+            .active,
+            "turn/completed 只能结束当前轮次，不能代替明确的 goal 状态更新"
+        )
     }
 
-    func testTurnCompletionFinishesActiveGoalAndIgnoresStaleActiveGoalRefresh() async throws {
+    func testTurnCompletionKeepsActiveGoalUntilExplicitCompletionAndIgnoresStaleRefresh() async throws {
         let project = makeProject(id: "proj_goal_complete")
         let goal = ThreadGoal(
             threadID: "thread_goal_complete",
@@ -1186,14 +1252,38 @@ extension ConversationDataFlowTests {
             createdAt: nil
         )))
 
-        try await waitForSelectedThreadGoalStatus(.complete, store: store)
         try await waitForSelectedSessionStatus(SessionStatus.completed.rawValue, store: store)
         try await waitForSelectedActiveTurnID(nil, store: store)
         XCTAssertEqual(store.selectedSession?.status, SessionStatus.completed.rawValue)
         XCTAssertNil(store.selectedSession?.activeTurnID)
+        XCTAssertEqual(
+            store.selectedThreadGoal?.status,
+            .active,
+            "目标生命周期必须由 goal 事件或用户操作驱动，不能从普通 turn 完成推断"
+        )
+
+        let completedGoal = ThreadGoal(
+            threadID: goal.threadID,
+            objective: goal.objective,
+            status: .complete,
+            tokenBudget: goal.tokenBudget,
+            tokensUsed: goal.tokensUsed,
+            timeUsedSeconds: goal.timeUsedSeconds
+        )
+        sockets[0].emitEvent(.goalUpdated(completedGoal, AgentEventMetadata(
+            seq: 2,
+            sessionID: running.id,
+            turnID: nil,
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSelectedThreadGoalStatus(.complete, store: store)
 
         sockets[0].emitEvent(.goalUpdated(goal, AgentEventMetadata(
-            seq: 2,
+            seq: 3,
             sessionID: running.id,
             turnID: nil,
             itemID: nil,
@@ -1493,7 +1583,7 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(createPayload.turnOptions.networkAccess, false)
     }
 
-    func testExplicitModelBypassesModelListResolutionBeforeCreate() async throws {
+    func testUnknownExplicitModelIsValidatedAndFallsBackBeforeCreate() async throws {
         let project = makeProject(id: "proj_explicit_model_create")
         let created = makeSession(id: "sess_explicit_model_create", projectID: project.id, title: "显式模型", status: "running", source: "codex")
         let client = MockSessionStoreClient(
@@ -1520,9 +1610,9 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(accepted)
         let createPayload = try XCTUnwrap(client.createPayloads.first)
-        XCTAssertEqual(createPayload.turnOptions.model, "gpt-user-selected")
-        XCTAssertEqual(createPayload.turnOptions.modelProvider, "custom-provider")
-        XCTAssertEqual(client.modelOptionsCallCount, 0)
+        XCTAssertEqual(createPayload.turnOptions.model, "gpt-should-not-load")
+        XCTAssertEqual(createPayload.turnOptions.modelProvider, "openai")
+        XCTAssertEqual(client.modelOptionsCallCount, 1)
     }
 
     func testCodexHistorySessionIgnoresStaleClaudeModelSelectionBeforeResume() async throws {
@@ -1640,6 +1730,57 @@ extension ConversationDataFlowTests {
         let client = MockSessionStoreClient(
             projects: [project],
             sessions: [],
+            createSessionResponse: try makeCreateSessionResponse(session: created),
+            modelOptions: [
+                CodexAppServerModelOption(
+                    id: "sonnet",
+                    title: "Claude Sonnet",
+                    provider: "anthropic",
+                    runtimeProvider: "claude",
+                    isDefault: true
+                )
+            ]
+        )
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            clientFactory: { client }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.selectedProjectID = project.id
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = "claude"
+        options.model = "SONNET"
+        options.modelProvider = "anthropic"
+        options.sandboxMode = .dangerFullAccess
+        options.networkAccess = true
+        let accepted = await store.sendTurn(CodexAppServerTurnPayload(prompt: "使用 Claude", options: options))
+
+        XCTAssertTrue(accepted)
+        let createPayload = try XCTUnwrap(client.createPayloads.first)
+        XCTAssertEqual(createPayload.turnOptions.runtimeProvider, "claude")
+        XCTAssertEqual(createPayload.turnOptions.model, "sonnet")
+        XCTAssertEqual(createPayload.turnOptions.modelProvider, "anthropic")
+        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .workspaceWrite)
+        XCTAssertEqual(createPayload.turnOptions.networkAccess, false)
+        XCTAssertEqual(client.modelOptionsCallCount, 1)
+    }
+
+    func testDeveloperModelPolicyKeepsUnlistedModelBeforeCreate() async throws {
+        let project = makeProject(id: "proj_unlisted_developer_model")
+        let created = makeSession(
+            id: "sess_unlisted_developer_model",
+            projectID: project.id,
+            title: "Developer Model",
+            status: "running",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let client = MockSessionStoreClient(
+            projects: [project],
+            sessions: [],
             createSessionResponse: try makeCreateSessionResponse(session: created)
         )
         let store = SessionStore(
@@ -1653,18 +1794,18 @@ extension ConversationDataFlowTests {
         store.selectedProjectID = project.id
         var options = CodexAppServerTurnOptions.default
         options.runtimeProvider = "claude"
-        options.model = "claude-sonnet"
+        options.model = "private-model-alias"
         options.modelProvider = "anthropic"
-        options.sandboxMode = .dangerFullAccess
-        options.networkAccess = true
-        let accepted = await store.sendTurn(CodexAppServerTurnPayload(prompt: "使用 Claude", options: options))
+        options.modelSelectionPolicy = .allowUnlisted
+        let accepted = await store.sendTurn(
+            CodexAppServerTurnPayload(prompt: "使用开发者自定义模型", options: options)
+        )
 
         XCTAssertTrue(accepted)
         let createPayload = try XCTUnwrap(client.createPayloads.first)
-        XCTAssertEqual(createPayload.turnOptions.runtimeProvider, "claude")
-        XCTAssertEqual(createPayload.turnOptions.model, "claude-sonnet")
-        XCTAssertEqual(createPayload.turnOptions.sandboxMode, .workspaceWrite)
-        XCTAssertEqual(createPayload.turnOptions.networkAccess, false)
+        XCTAssertEqual(createPayload.turnOptions.model, "private-model-alias")
+        XCTAssertEqual(createPayload.turnOptions.modelProvider, "anthropic")
+        XCTAssertEqual(createPayload.turnOptions.modelSelectionPolicy, .allowUnlisted)
         XCTAssertEqual(client.modelOptionsCallCount, 0)
     }
 
@@ -1690,7 +1831,7 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(accepted)
         let createPayload = try XCTUnwrap(client.createPayloads.first)
-        XCTAssertEqual(createPayload.turnOptions.model, "gpt-5.5")
+        XCTAssertEqual(createPayload.turnOptions.model, "gpt-5.6-sol")
         XCTAssertNil(createPayload.turnOptions.modelProvider)
         XCTAssertEqual(client.modelOptionsCallCount, 1)
     }
@@ -1979,6 +2120,83 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(conversationStore.messages(for: optimisticSessionID).first?.sendStatus, .failed)
     }
 
+    func testActiveTurnConflictKeepsSessionAndPendingInputAlive() async throws {
+        let project = makeProject(id: "proj_active_conflict")
+        let history = makeSession(
+            id: "sess_active_conflict",
+            projectID: project.id,
+            title: "旧任务",
+            status: "history",
+            source: "claude",
+            runtimeProvider: "claude",
+            resumeID: "sess_active_conflict"
+        )
+        let pendingInput = AgentUserInputRequest(
+            id: "input-live",
+            threadID: history.id,
+            turnID: "turn-live",
+            itemID: "item-live",
+            questions: [
+                AgentUserInputQuestion(
+                    id: "scope",
+                    header: "范围",
+                    question: "继续前先确认？",
+                    isOther: true,
+                    isSecret: false,
+                    options: []
+                )
+            ]
+        )
+        var authoritative = history
+        authoritative.status = "running"
+        authoritative.activeTurnID = "turn-live"
+        authoritative.pendingUserInput = nil
+
+        let client = DelayedCreateSessionClient(projects: [project], sessions: [history])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: AppStore(),
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        await store.selectSession(history)
+        // 模拟列表状态已经陈旧为 history，但实时事件留下的补充问题仍在本地。
+        // 这种不一致正是 active_turn 冲突恢复不能覆盖的现场状态。
+        store.updateSession(history.id) { item in
+            item.status = "history"
+            item.pendingUserInput = pendingInput
+        }
+        let sendTask = Task { await store.sendPrompt("这条不能覆盖旧任务") }
+        await client.waitForCreateRequestCount(1)
+        client.resolveCreate(with: .failure(
+            CodexAppServerSessionRuntimeError.activeTurnConflict(
+                session: authoritative,
+                activeTurnID: "turn-live"
+            )
+        ))
+
+        let didSend = await sendTask.value
+        XCTAssertFalse(didSend)
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-live")
+        XCTAssertEqual(store.selectedSession?.status, "waiting_for_input")
+        XCTAssertEqual(store.selectedSession?.pendingUserInput, pendingInput)
+        XCTAssertEqual(
+            conversationStore.messages(for: history.id).first { $0.content == "这条不能覆盖旧任务" }?.sendStatus,
+            .failed
+        )
+        XCTAssertEqual(sockets.last?.connectedSessionIDs.last, history.id)
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testNewSessionRichPayloadFailureKeepsInlineImageForRetry() async throws {
         let project = makeProject(id: "proj_rich_echo_fail")
         let client = DelayedCreateSessionClient(projects: [project], sessions: [])
@@ -2009,12 +2227,12 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(failedMessage.sendStatus, .failed)
         XCTAssertTrue(payloadContainsInlineImage(failedMessage.turnPayload))
         XCTAssertEqual(failedMessage.turnPayload?.input, payload.input)
-        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-5.5")
+        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-5.6-sol")
 
         let retryTask = Task { await store.retryFailedUserMessage(failedMessage) }
         await client.waitForCreateRequestCount(2)
         XCTAssertEqual(client.createPayloads[1].input, payload.input)
-        XCTAssertEqual(client.createPayloads[1].turnOptions.model, "gpt-5.5")
+        XCTAssertEqual(client.createPayloads[1].turnOptions.model, "gpt-5.6-sol")
         XCTAssertTrue(client.createPayloads[1].input.contains { item in
             if case .image(let url, _) = item {
                 return url == "data:image/png;base64,AA=="
@@ -2028,7 +2246,14 @@ extension ConversationDataFlowTests {
 
     func testFailedRunningMessageRetryReusesClientMessageID() async throws {
         let project = makeProject(id: "proj_retry")
-        let running = makeSession(id: "sess_retry", projectID: project.id, title: "运行中", status: "running", source: "codex")
+        let running = makeSession(
+            id: "sess_retry",
+            projectID: project.id,
+            title: "运行中",
+            status: "running",
+            source: "codex",
+            activeTurnID: "turn-existing"
+        )
         let appStore = AppStore()
         appStore.token = "test-token"
         let client = MockSessionStoreClient(projects: [project], sessions: [running], messagesResult: [])
@@ -2062,13 +2287,31 @@ extension ConversationDataFlowTests {
 
         XCTAssertTrue(retried)
         XCTAssertTrue(sockets[0].sentInputs.isEmpty)
-        XCTAssertEqual(sockets[0].sentTurns.count, 1)
-        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "请重试")
-        XCTAssertEqual(sockets[0].sentTurns.first?.clientMessageID, "client-retry")
+        XCTAssertTrue(sockets[0].sentTurns.isEmpty)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.clientMessageID, "client-retry")
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn-existing")
         let messages = conversationStore.messages(for: running.id)
         let retriedMessages = messages.filter { $0.clientMessageID == "client-retry" }
         XCTAssertEqual(retriedMessages.count, 1)
-        XCTAssertEqual(retriedMessages.first?.sendStatus, .sending)
+        XCTAssertEqual(retriedMessages.first?.sendStatus, .local)
+
+        sockets[0].emitEvent(.turnCompleted(AgentEventMetadata(
+            seq: 1,
+            sessionID: running.id,
+            turnID: "turn-existing",
+            itemID: nil,
+            messageID: nil,
+            clientMessageID: nil,
+            revision: nil,
+            createdAt: nil
+        )))
+        try await waitForSentTurnCount(1, socket: sockets[0])
+        XCTAssertEqual(sockets[0].sentTurns.first?.payload.textPrompt, "请重试")
+        XCTAssertEqual(sockets[0].sentTurns.first?.clientMessageID, "client-retry")
+        XCTAssertEqual(
+            conversationStore.messages(for: running.id).first { $0.clientMessageID == "client-retry" }?.sendStatus,
+            .sending
+        )
         sockets[0].onSendAccepted?("client-retry")
         let acceptedMessages = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in
             messages.contains { $0.clientMessageID == "client-retry" && $0.sendStatus == .sent }
@@ -2158,7 +2401,7 @@ extension ConversationDataFlowTests {
         let sent = try XCTUnwrap(sockets[0].sentTurns.first)
         XCTAssertEqual(sent.clientMessageID, "client-rich-retry")
         XCTAssertEqual(sent.payload.input, payload.input)
-        XCTAssertEqual(sent.payload.options.model, "gpt-5.5")
+        XCTAssertEqual(sent.payload.options.model, "gpt-5.6-sol")
     }
 
     func testRunningSendKeepsInlineImagePayloadAfterAcceptedForPreview() async throws {
@@ -2201,7 +2444,7 @@ extension ConversationDataFlowTests {
         let clientMessageID = try XCTUnwrap(localEcho.clientMessageID)
         XCTAssertTrue(payloadContainsInlineImage(localEcho.turnPayload))
         XCTAssertEqual(localEcho.turnPayload?.input, payload.input)
-        XCTAssertEqual(localEcho.turnPayload?.options.model, "gpt-5.5")
+        XCTAssertEqual(localEcho.turnPayload?.options.model, "gpt-5.6-sol")
 
         sockets[0].onSendAccepted?(clientMessageID)
         let acceptedMessages = try await waitForConversationMessages(in: conversationStore, sessionID: running.id) { messages in

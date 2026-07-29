@@ -29,6 +29,43 @@ func TestVersionDoesNotRequireConfig(t *testing.T) {
 	}
 }
 
+func TestLoadInstallationIDForServeIsStableAndFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	first, err := loadInstallationIDForServe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadInstallationIDForServe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == "" || second != first {
+		t.Fatalf("serve 必须复用稳定安装身份：first=%q second=%q", first, second)
+	}
+
+	configDir, err := config.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityPath := filepath.Join(configDir, "installation-id")
+	if err := os.WriteFile(identityPath, []byte("damaged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadInstallationIDForServe(); err == nil || !strings.Contains(err.Error(), "加载 agentd 安装身份失败") {
+		t.Fatalf("损坏身份必须阻止 serve 启动：%v", err)
+	}
+	raw, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "damaged\n" {
+		t.Fatalf("serve 不能静默替换损坏身份：%q", raw)
+	}
+}
+
 func TestRestartNoPairDoesNotPrintLongLivedCredentials(t *testing.T) {
 	fixture := prepareMainLegacyConfigFixture(t)
 	prepareBrewSideEffectProbe(t)
@@ -880,6 +917,11 @@ func TestAgentStatusAggregatesHealthAndReadiness(t *testing.T) {
 			if fields["process_ok"] != true || fields["service_ok"] != testCase.wantServiceOK {
 				t.Fatalf("status JSON 字段语义错误：%v", fields)
 			}
+			if testCase.readyVersion != "" &&
+				testCase.clientToken == serverToken &&
+				fields["server_version"] != testCase.readyVersion {
+				t.Fatalf("status 必须保留 Endpoint 的真实服务版本：%v", fields)
+			}
 			serviceError, _ := fields["service_error"].(string)
 			if testCase.wantReadyError == "" {
 				if serviceError != "" {
@@ -920,6 +962,157 @@ func TestAgentStatusTextSeparatesProcessAndCodexAndRedactsToken(t *testing.T) {
 	}
 	if strings.Contains(string(raw), token) || !strings.Contains(string(raw), `"process_ok":true`) || !strings.Contains(string(raw), `"service_ok":false`) {
 		t.Fatalf("status JSON 应保留兼容字段并脱敏：%s", raw)
+	}
+}
+
+func TestStatusRuntimeEnrichmentRequiresJSON(t *testing.T) {
+	err := runStatus([]string{"status", "--runtime"})
+	if err == nil || !strings.Contains(err.Error(), "--json") {
+		t.Fatalf("status --runtime 必须拒绝无 JSON 的调用：%v", err)
+	}
+}
+
+func TestStatusOnlyRequestsRuntimeWhenExplicitlyEnabled(t *testing.T) {
+	clearAgentdEnvForMainTest(t)
+	const token = "status-runtime-opt-in-token-0123456789"
+	var runtimeRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/healthz":
+			w.WriteHeader(http.StatusOK)
+		case "/api/readyz":
+			if req.Header.Get("Authorization") != "Bearer "+token {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(doctor.Results{
+				OK: true, Version: version, Checks: []doctor.Check{},
+			})
+		case "/api/runtime/status":
+			runtimeRequests.Add(1)
+			if req.Header.Get("Authorization") != "Bearer "+token {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`{"refreshing":false,"stale":false,"runtimes":[]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.json")
+	upstreamTokenPath := filepath.Join(root, "app-server-token")
+	projectPath := filepath.Join(root, "project")
+	if err := os.Mkdir(projectPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(upstreamTokenPath, []byte("upstream-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Listen: strings.TrimPrefix(server.URL, "http://"),
+		Auth:   config.AuthConfig{Token: token},
+		Runtime: config.RuntimeConfig{
+			Type: "codex_app_server",
+		},
+		AppServer: config.AppServerConfig{
+			Transport:   "ws",
+			Managed:     true,
+			Listen:      "ws://127.0.0.1:4222",
+			WSTokenFile: upstreamTokenPath,
+		},
+		Codex: config.CodexConfig{Bin: "/bin/true"},
+		Session: config.SessionConfig{
+			OutputBufferBytes: 128 * 1024,
+		},
+		Projects: []config.ProjectConfig{{
+			ID: "test", Name: "Test", Path: projectPath,
+		}},
+		WorktreesRoot: filepath.Join(root, "worktrees"),
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := captureMainCommandOutput(t, func() error {
+		return runStatus([]string{"status", "--config", configPath, "--json"})
+	}); err != nil {
+		t.Fatalf("core status 失败：%v", err)
+	}
+	if runtimeRequests.Load() != 0 {
+		t.Fatalf("默认 status --json 不得触发额度探测：requests=%d", runtimeRequests.Load())
+	}
+
+	if _, _, err := captureMainCommandOutput(t, func() error {
+		return runStatus([]string{"status", "--config", configPath, "--json", "--runtime"})
+	}); err != nil {
+		t.Fatalf("runtime-enriched status 失败：%v", err)
+	}
+	if runtimeRequests.Load() != 1 {
+		t.Fatalf("显式 --runtime 应只请求一次缓存接口：requests=%d", runtimeRequests.Load())
+	}
+}
+
+func TestFetchServiceRuntimeStatusUsesBearerAndStrictJSON(t *testing.T) {
+	const token = "runtime-status-secret"
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests.Add(1)
+		if req.URL.Path != "/api/runtime/status" {
+			t.Errorf("runtime status 路径错误：%s", req.URL.Path)
+		}
+		if req.Header.Get("Authorization") != "Bearer "+token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"checked_at":"2026-07-27T12:00:00Z","runtimes":[{"id":"codex","title":"Codex","enabled":true,"state":"connected"}]}`))
+	}))
+	defer server.Close()
+
+	payload, err := fetchServiceRuntimeStatus(context.Background(), server.URL, token, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload["checked_at"] != "2026-07-27T12:00:00Z" {
+		t.Fatalf("runtime status payload 异常：%v", payload)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("runtime status 应只请求一次：requests=%d", requests.Load())
+	}
+
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "wrong-token", time.Second); err == nil ||
+		!strings.Contains(err.Error(), "HTTP 401") {
+		t.Fatalf("runtime status 必须使用 Bearer Token：%v", err)
+	}
+}
+
+func TestFetchServiceRuntimeStatusRejectsTrailingJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_, _ = w.Write([]byte(`{"runtimes":[]} {"unexpected":true}`))
+	}))
+	defer server.Close()
+
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second); err == nil ||
+		!strings.Contains(err.Error(), "多个 JSON 值") {
+		t.Fatalf("runtime status 必须拒绝尾随 JSON：%v", err)
+	}
+}
+
+func TestFetchServiceRuntimeStatusRejectsMissingRequiredShape(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	if _, err := fetchServiceRuntimeStatus(context.Background(), server.URL, "", time.Second); err == nil ||
+		!strings.Contains(err.Error(), "缺少 runtimes") {
+		t.Fatalf("runtime status 必须拒绝缺少最小结构的 200 响应：%v", err)
 	}
 }
 
@@ -1044,8 +1237,34 @@ func TestWaitForServiceReadyAllowsDevelopmentClientVersion(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := waitForServiceReady(context.Background(), server.URL, "token", "devel", time.Second); err != nil {
-		t.Fatalf("默认开发版本不应误伤本地测试服务：%v", err)
+	for _, clientVersion := range []string{"devel", "devel-e6049e97bd9d"} {
+		if err := waitForServiceReady(context.Background(), server.URL, "token", clientVersion, time.Second); err != nil {
+			t.Fatalf("开发版本 %q 不应误伤本地测试服务：%v", clientVersion, err)
+		}
+	}
+}
+
+func TestAgentVersionsKeepMacBuildStrictButAllowReleaseCLI(t *testing.T) {
+	tests := []struct {
+		expected string
+		running  string
+		want     bool
+	}{
+		{expected: "0.1.5", running: "0.1.5+mac.240", want: true},
+		{expected: "0.1.5+mac.240", running: "0.1.5+mac.240", want: true},
+		{expected: "0.1.5+mac.240", running: "0.1.5+mac.239", want: false},
+		{expected: "0.1.6", running: "0.1.5+mac.240", want: false},
+	}
+	for _, testCase := range tests {
+		if got := agentVersionsCompatible(testCase.expected, testCase.running); got != testCase.want {
+			t.Fatalf(
+				"agentd 版本兼容判断错误：expected=%q running=%q got=%v want=%v",
+				testCase.expected,
+				testCase.running,
+				got,
+				testCase.want,
+			)
+		}
 	}
 }
 

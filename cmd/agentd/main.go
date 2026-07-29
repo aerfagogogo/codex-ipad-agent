@@ -391,8 +391,12 @@ func runStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "配置文件路径")
 	asJSON := fs.Bool("json", false, "输出 JSON")
+	includeRuntime := fs.Bool("runtime", false, "附加本机 Codex / Claude 运行时状态")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
+	}
+	if *includeRuntime && !*asJSON {
+		return errors.New("status --runtime 只能与 --json 一起使用")
 	}
 	if err := prepareDefaultConfigMigration(fs, *configPath, os.Stderr); err != nil {
 		return err
@@ -403,13 +407,35 @@ func runStatus(args []string) error {
 		return err
 	}
 	result := agentsetup.ResultFromConfig(context.Background(), *configPath, cfg)
+	loopbackEndpoint := loopbackServiceEndpoint(result.Endpoint)
+	type runtimeStatusResult struct {
+		payload map[string]any
+		err     error
+	}
+	var runtimeStatusCh chan runtimeStatusResult
+	if *includeRuntime {
+		runtimeStatusCh = make(chan runtimeStatusResult, 1)
+		go func() {
+			payload, fetchErr := fetchServiceRuntimeStatus(
+				context.Background(),
+				loopbackEndpoint,
+				result.Token,
+				2*time.Second,
+			)
+			runtimeStatusCh <- runtimeStatusResult{payload: payload, err: fetchErr}
+		}()
+	}
 	serviceStatus := probeAgentServiceStatus(
 		context.Background(),
-		loopbackServiceEndpoint(result.Endpoint),
+		loopbackEndpoint,
 		result.Token,
 		version,
 		2*time.Second,
 	)
+	var runtimeStatus runtimeStatusResult
+	if runtimeStatusCh != nil {
+		runtimeStatus = <-runtimeStatusCh
+	}
 	doctorResults := doctor.Results{
 		OK:      false,
 		Version: version,
@@ -443,6 +469,11 @@ func runStatus(args []string) error {
 	status["doctor_ok"] = doctorResults.OK
 	status["doctor"] = doctorResults
 	status["pair_expires"] = result.PairExpiresAt
+	// 旧版本 agentd 没有 runtime status endpoint。升级/接管过程中保持 status
+	// 兼容，只在成功拿到脱敏快照时附加字段，不让展示增强阻断服务状态。
+	if runtimeStatusCh != nil && runtimeStatus.err == nil {
+		status["runtime_status"] = runtimeStatus.payload
+	}
 	if *asJSON {
 		return printJSON(status)
 	}
@@ -472,6 +503,13 @@ func serviceStatusFields(serviceStatus agentServiceStatus, token string) map[str
 		// service_ok 是 Linux 安装脚本已使用的兼容字段；从现在起明确表示 readyz 通过，
 		// 不能再用只有进程存活语义的 healthz 冒充移动端可用。
 		"service_ok": serviceStatus.Ready(),
+	}
+	if serviceStatus.ReadinessResults != nil {
+		if runningVersion := strings.TrimSpace(serviceStatus.ReadinessResults.Version); runningVersion != "" {
+			// version 是当前命令自身版本；server_version 才是 Endpoint 上真实运行的服务版本。
+			// 两者同时返回，Mac App 才能识别安装更新后仍驻留的旧 LaunchAgent。
+			status["server_version"] = runningVersion
+		}
 	}
 	if serviceStatus.ProcessErr != nil {
 		status["process_error"] = publicStatusError(serviceStatus.ProcessErr, token)
@@ -894,6 +932,10 @@ func forceSetupWithBackup(ctx context.Context, configPath string) ([]string, err
 }
 
 func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Checker) error {
+	installationID, err := loadInstallationIDForServe()
+	if err != nil {
+		return err
+	}
 	// 启动后第一时间探测配置目录和 macOS 受保护目录。探测异步执行，避免权限弹窗
 	// 尚未处理时阻塞 HTTP 控制面恢复；结果会进入 readyz/doctor warning 和服务日志。
 	checker.StartFileAccessPreflight()
@@ -921,9 +963,13 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 		OutputBuffer: cfg.Session.OutputBufferBytes,
 	})
 
+	apiHandler, apiRouter := httpapi.NewRouterWithRuntimeAndInstallationID(cfg, registry, manager, checker, version, installationID, nil)
+	if appServerWSProcess != nil {
+		apiRouter.SetCodexRuntimeStartedAt(appServerWSProcess.StartedAt())
+	}
 	server := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           httpapi.NewRouterWithRuntime(cfg, registry, manager, checker, version, nil),
+		Handler:           apiHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -935,7 +981,7 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 			for _, opened := range listeners {
 				_ = opened.Close()
 			}
-			_ = shutdownServeResources(manager, appServerWSProcess)
+			_ = shutdownServeResources(manager, appServerWSProcess, apiRouter)
 			return fmt.Errorf("监听 %s 失败：%w", address, err)
 		}
 		listeners = append(listeners, listener)
@@ -964,9 +1010,17 @@ func serve(cfg config.Config, registry *projects.Registry, checker *doctor.Check
 	defer signal.Stop(stopCh)
 	return waitForServeExit(stopCh, errCh, func() error {
 		return shutdownServe(server, serveHTTPDrainTimeout, func() error {
-			return shutdownServeResources(manager, appServerWSProcess)
+			return shutdownServeResources(manager, appServerWSProcess, apiRouter)
 		})
 	})
+}
+
+func loadInstallationIDForServe() (string, error) {
+	installationID, err := config.LoadOrCreateInstallationID()
+	if err != nil {
+		return "", fmt.Errorf("加载 agentd 安装身份失败：%w", err)
+	}
+	return installationID, nil
 }
 
 func agentDListenAddresses(configured string, allowLAN bool) []string {
@@ -1056,11 +1110,14 @@ func managedAppServerExitedError(process *appserver.ManagedWebSocketProcess) err
 	return fmt.Errorf("%s", message)
 }
 
-func shutdownServeResources(manager *session.Manager, appServerWSProcess *appserver.ManagedWebSocketProcess) error {
+func shutdownServeResources(manager *session.Manager, appServerWSProcess *appserver.ManagedWebSocketProcess, apiRouter *httpapi.Router) error {
 	// listener 绑定失败，或 HTTP 已完成 drain 后，都必须回收运行时资源，避免会话/托管子进程成为孤儿。
 	if manager != nil {
 		manager.Shutdown()
 	}
+	// 常驻 Claude bridge 独立进程组，不会随 agentd 退出而结束；它还会再拉起 Claude Code
+	// 子进程，漏掉这一步就会在每次重启后留下一整棵仍在跑的孤儿进程树。
+	apiRouter.Shutdown()
 	if appServerWSProcess != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), serveRuntimeShutdownTimeout)
 		err := appServerWSProcess.Shutdown(ctx)
@@ -1656,7 +1713,7 @@ func waitForServiceReadyResults(
 			decoded, decodeErr := decodeReadyServiceResults(resp.Body, expectedVersion)
 			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
-			if decodeErr == nil {
+			if strings.TrimSpace(decoded.Version) != "" || len(decoded.Checks) > 0 {
 				latest = decoded
 			}
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -1744,10 +1801,22 @@ func decodeReadyServiceResults(body io.Reader, expectedVersion string) (doctor.R
 		return doctor.Results{}, readyVersionCheckError("readyz 响应缺少 server version")
 	}
 	expectedVersion = strings.TrimSpace(expectedVersion)
-	if isDevelopmentAgentVersion(expectedVersion) || runningVersion == expectedVersion {
+	if agentVersionsCompatible(expectedVersion, runningVersion) {
 		return payload, nil
 	}
-	return doctor.Results{}, readyVersionCheckError(fmt.Sprintf("运行中的 agentd 版本为 %q，当前命令版本为 %q，可能仍是占用端口的旧服务", runningVersion, expectedVersion))
+	return payload, readyVersionCheckError(fmt.Sprintf("运行中的 agentd 版本为 %q，当前命令版本为 %q，可能仍是占用端口的旧服务", runningVersion, expectedVersion))
+}
+
+func agentVersionsCompatible(expectedVersion string, runningVersion string) bool {
+	expected := strings.TrimSpace(expectedVersion)
+	running := strings.TrimSpace(runningVersion)
+	if isDevelopmentAgentVersion(expected) || running == expected {
+		return true
+	}
+	// 独立安装的正式 CLI 只有 marketing version，应能检查同版本的 Mac 构建。
+	// 反向不放宽：App 内嵌版本含 mac build，必须精确识别覆盖安装后的旧进程。
+	return !strings.Contains(expected, "+") &&
+		strings.HasPrefix(running, expected+"+mac.")
 }
 
 func isDevelopmentAgentVersion(value string) bool {
@@ -1755,7 +1824,11 @@ func isDevelopmentAgentVersion(value string) bool {
 	if normalized == "" || normalized == "devel" || normalized == "(devel)" {
 		return true
 	}
-	return strings.Contains(normalized, "-next") || strings.Contains(normalized, "dirty")
+	// GoReleaser/本地 make 会把提交摘要追加成 devel-<sha>；它和裸 devel
+	// 一样没有可用于部署一致性判断的正式版本，不能误报 App 托管服务过旧。
+	return strings.HasPrefix(normalized, "devel-") ||
+		strings.Contains(normalized, "-next") ||
+		strings.Contains(normalized, "dirty")
 }
 
 func readyVersionCheckError(reason string) error {
@@ -1770,6 +1843,96 @@ func healthCheckURL(endpoint string) (string, error) {
 
 func readyCheckURL(endpoint string) (string, error) {
 	return serviceCheckURL(endpoint, "/api/readyz")
+}
+
+func runtimeStatusURL(endpoint string) (string, error) {
+	return serviceCheckURL(endpoint, "/api/runtime/status")
+}
+
+func fetchServiceRuntimeStatus(
+	ctx context.Context,
+	endpoint string,
+	token string,
+	timeout time.Duration,
+) (map[string]any, error) {
+	target, err := runtimeStatusURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target, nil)
+	if err != nil {
+		return nil, err
+	}
+	if value := strings.TrimSpace(token); value != "" {
+		req.Header.Set("Authorization", "Bearer "+value)
+	}
+	client := http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil, fmt.Errorf("runtime status HTTP %d", resp.StatusCode)
+	}
+	var payload map[string]any
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 256*1024))
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, fmt.Errorf("runtime status 响应不是有效 JSON：%w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("runtime status 响应包含多个 JSON 值")
+		}
+		return nil, fmt.Errorf("runtime status 响应包含畸形尾部数据：%w", err)
+	}
+	if err := validateRuntimeStatusPayload(payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func validateRuntimeStatusPayload(payload map[string]any) error {
+	rawRuntimes, ok := payload["runtimes"]
+	if !ok {
+		return errors.New("runtime status 响应缺少 runtimes")
+	}
+	runtimes, ok := rawRuntimes.([]any)
+	if !ok {
+		return errors.New("runtime status 响应的 runtimes 不是数组")
+	}
+	for index, rawRuntime := range runtimes {
+		runtime, ok := rawRuntime.(map[string]any)
+		if !ok {
+			return fmt.Errorf("runtime status 响应的 runtimes[%d] 不是对象", index)
+		}
+		for _, key := range []string{"id", "title", "state"} {
+			value, ok := runtime[key].(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				return fmt.Errorf("runtime status 响应的 runtimes[%d].%s 无效", index, key)
+			}
+		}
+		if _, ok := runtime["enabled"].(bool); !ok {
+			return fmt.Errorf("runtime status 响应的 runtimes[%d].enabled 无效", index)
+		}
+	}
+	for _, key := range []string{"refreshing", "stale"} {
+		if value, exists := payload[key]; exists {
+			if _, ok := value.(bool); !ok {
+				return fmt.Errorf("runtime status 响应的 %s 不是布尔值", key)
+			}
+		}
+	}
+	if value, exists := payload["checked_at"]; exists {
+		if _, ok := value.(string); !ok {
+			return errors.New("runtime status 响应的 checked_at 不是字符串")
+		}
+	}
+	return nil
 }
 
 func serviceCheckURL(endpoint string, path string) (string, error) {

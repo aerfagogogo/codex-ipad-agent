@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/gaixianggeng/mimi-remote/internal/claudebridge"
 )
 
 const AppName = "mimi-remote"
@@ -476,7 +478,7 @@ func (c Config) Validate() error {
 	if c.Codex.Bin == "" {
 		return fmt.Errorf("codex.bin 不能为空")
 	}
-	if c.Claude.Enabled && strings.TrimSpace(c.Claude.BridgeBin) == "" {
+	if c.Claude.Enabled && strings.TrimSpace(c.Claude.BridgeBin) == "" && !claudebridge.BundledAvailable() {
 		return fmt.Errorf("claude.bridge_bin 不能为空")
 	}
 	if c.Claude.Enabled && c.Claude.MaxConcurrentBridges <= 0 {

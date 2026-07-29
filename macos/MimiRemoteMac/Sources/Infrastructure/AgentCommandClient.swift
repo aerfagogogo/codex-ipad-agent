@@ -76,14 +76,14 @@ extension AgentCommandClient {
                 let binary = try requireEmbeddedBinary()
                 return try decode(AgentStatus.self, from: try await execute(
                     binary: binary,
-                    arguments: ["status", "--json"],
+                    arguments: statusArguments(includeRuntime: true),
                     timeout: .seconds(8)
                 ))
             },
             statusAt: { binary in
                 try decode(AgentStatus.self, from: try await execute(
                     binary: binary,
-                    arguments: ["status", "--json"],
+                    arguments: statusArguments(includeRuntime: false),
                     timeout: .seconds(8)
                 ))
             },
@@ -142,6 +142,14 @@ extension AgentCommandClient {
             // 文件预览和会话产物可能位于 ~/.codex 等目录，浏览权限默认覆盖当前用户 Home。
             "--browse-root", browseRoot.path,
         ]
+    }
+
+    static func statusArguments(includeRuntime: Bool) -> [String] {
+        var arguments = ["status", "--json"]
+        if includeRuntime {
+            arguments.append("--runtime")
+        }
+        return arguments
     }
 }
 

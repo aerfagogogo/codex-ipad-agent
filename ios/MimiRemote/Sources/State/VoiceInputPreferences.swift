@@ -1,7 +1,12 @@
 import Foundation
 
-/// 语音提供方是设备级偏好。正式商店版本只开放设备端实时转写；
-/// 旧值继续保留解码能力，便于升级时无损迁移，但不会再作为可选入口。
+enum VoiceInputProviderIcon: Equatable {
+    case asset(String)
+    case system(String)
+}
+
+/// 语音提供方是设备级偏好。Apple 负责设备端实时转写，
+/// Codex 通过用户配置的主机复用现有登录态完成录音转写。
 enum VoiceInputProvider: String, CaseIterable, Identifiable {
     static let storageKey = "voice.input.provider"
     static let appleTipAcknowledgedStorageKey = "voice.input.appleTipAcknowledged"
@@ -10,8 +15,6 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
     case apple
 
     var id: String { rawValue }
-
-    static let storeAvailableCases: [VoiceInputProvider] = [.apple]
 
     var title: String {
         switch self {
@@ -32,20 +35,22 @@ enum VoiceInputProvider: String, CaseIterable, Identifiable {
         }
     }
 
-    var systemImage: String {
+    var icon: VoiceInputProviderIcon {
         switch self {
         case .codex:
-            return "waveform"
+            // 这里表达的是“录音后转写”能力，不再嵌入第三方品牌图标；
+            // 使用系统波形后，也能和设备端的 Siri 标识保持同一套视觉语言。
+            return .system("waveform")
         case .apple:
-            return "waveform.badge.mic"
+            return .system("siri")
         }
     }
 
     static func stored(in defaults: UserDefaults = .standard) -> VoiceInputProvider {
-        // 中国大陆版本不把录音发送到第三方模型转写端点；旧 Codex 偏好和未知值统一迁移到设备端。
-        guard defaults.string(forKey: storageKey) == VoiceInputProvider.apple.rawValue else {
-            return .apple
+        // 新安装默认复用主机已有的 Codex 登录态；用户主动选择设备端后仍保留该偏好。
+        guard let rawValue = defaults.string(forKey: storageKey) else {
+            return .codex
         }
-        return .apple
+        return VoiceInputProvider(rawValue: rawValue) ?? .codex
     }
 }

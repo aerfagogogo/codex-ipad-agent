@@ -5,6 +5,23 @@ import SwiftUI
 import UIKit
 @testable import MimiRemote
 
+/// XCTest 的同步断言不能包裹 async Keychain/Vault 事务；这里确保测试等待 actor 提交完成。
+@MainActor
+func XCTAssertThrowsErrorAsync<T>(
+    _ expression: @autoclosure () async throws -> T,
+    _ message: @autoclosure () -> String = "",
+    file: StaticString = #filePath,
+    line: UInt = #line,
+    _ errorHandler: (Error) -> Void = { _ in }
+) async {
+    do {
+        _ = try await expression()
+        XCTFail(message().isEmpty ? "Expected expression to throw an error." : message(), file: file, line: line)
+    } catch {
+        errorHandler(error)
+    }
+}
+
 // 多个测试领域共享的网络、WebSocket、API client 与等待工具。
 final class TestNetworkPathStatusSource: NetworkPathStatusSource {
     private(set) var currentStatus: NetworkReachabilityStatus
@@ -51,6 +68,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
     var onStatus: ((WebSocketStatus) -> Void)?
     var onSendAccepted: ((ClientMessageID?) -> Void)?
     var onSendFailure: ((ClientMessageID?, String) -> Void)?
+    var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)?
     var onApprovalDecisionFailure: ((String, String) -> Void)?
     var onUserInputResponseFailure: ((String, String) -> Void)?
     var onControlFailure: ((String) -> Void)?
@@ -64,6 +82,7 @@ final class MockWebSocketClient: SessionWebSocketClient {
     private(set) var sentApprovals: [(approvalID: String, decision: String, message: String?)] = []
     private(set) var sentUserInputResponses: [(requestID: String, answers: [String: [String]])] = []
     private(set) var disconnectCallCount = 0
+    private(set) var acknowledgedEvents: [AgentEvent] = []
     var sendTurnResult = true
     var sendGuidanceResult = true
     var sendCtrlCResult = true
@@ -83,6 +102,10 @@ final class MockWebSocketClient: SessionWebSocketClient {
     func disconnect() {
         disconnectCallCount += 1
         onStatus?(.disconnected)
+    }
+
+    func acknowledgeAppliedEvent(_ event: AgentEvent) {
+        acknowledgedEvents.append(event)
     }
 
     func sendInput(_ text: String, clientMessageID: ClientMessageID?) -> Bool {
@@ -286,6 +309,7 @@ final class FakeSessionReminderScheduler: SessionReminderScheduling {
     private(set) var runtimeNotifications: [SessionRuntimeNotification] = []
     private(set) var runtimeNotificationRoutes: [SessionNotificationRoute] = []
     private(set) var canceledSessionIDs: [SessionID] = []
+    private(set) var canceledProfileIDs: [String] = []
     var scheduleOutcome: SessionReminderScheduleOutcome
 
     init(scheduleOutcome: SessionReminderScheduleOutcome = .scheduled) {
@@ -309,8 +333,12 @@ final class FakeSessionReminderScheduler: SessionReminderScheduling {
         runtimeNotificationRoutes.append(route)
     }
 
-    func cancel(sessionID: SessionID) {
+    func cancel(sessionID: SessionID, profileID: String) {
         canceledSessionIDs.append(sessionID)
+    }
+
+    func cancel(profileID: String) {
+        canceledProfileIDs.append(profileID)
     }
 }
 
@@ -385,6 +413,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let workspacePages: [String: SessionsPage]
     let cursorPages: [String: SessionsPage]
     let createSessionResponse: CreateSessionResponse?
+    var createSessionResults: [Result<CreateSessionResponse, Error>]
     let sessionArchiveResults: [String: Result<Void, Error>]
     let sessionForkResults: [String: Result<AgentSession, Error>]
     let threadGoalSetResults: [String: Result<ThreadGoal, Error>]
@@ -408,6 +437,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let commandActionResults: [String: Result<[AgentCommandAction], Error>]
     let commandActionRunResults: [String: Result<CommandActionRunResponse, Error>]
     let gitStatusResults: [String: Result<GitStatusResponse, Error>]
+    let gitStatusHandler: ((String) async throws -> GitStatusResponse)?
     let gitActionResults: [String: Result<GitStatusResponse, Error>]
     let gitPatchActionResults: [String: Result<GitStatusResponse, Error>]
     let gitCommitResults: [String: Result<GitStatusResponse, Error>]
@@ -422,6 +452,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     let rateLimitHandler: ((String) async throws -> RateLimitSummary?)?
     let threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)?
     let sessionHandler: ((String, EventSequence?) async throws -> SessionResponse)?
+    let externalActivityResponses: [ExternalActivityResponse?]
     var requestedProjectIDs: [String?] {
         requestLogLock.withLock { requestedProjectIDsStorage }
     }
@@ -470,6 +501,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
     private(set) var worktreeListCallCount = 0
     private(set) var modelOptionsCallCount = 0
     private(set) var requestedRateLimitProviders: [String] = []
+    private(set) var externalActivityCallCount = 0
 
     init(
         projects: [AgentProject],
@@ -480,6 +512,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         workspacePages: [String: SessionsPage] = [:],
         cursorPages: [String: SessionsPage] = [:],
         createSessionResponse: CreateSessionResponse? = nil,
+        createSessionResults: [Result<CreateSessionResponse, Error>] = [],
         sessionArchiveResults: [String: Result<Void, Error>] = [:],
         sessionForkResults: [String: Result<AgentSession, Error>] = [:],
         threadGoalSetResults: [String: Result<ThreadGoal, Error>] = [:],
@@ -503,6 +536,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         commandActionResults: [String: Result<[AgentCommandAction], Error>] = [:],
         commandActionRunResults: [String: Result<CommandActionRunResponse, Error>] = [:],
         gitStatusResults: [String: Result<GitStatusResponse, Error>] = [:],
+        gitStatusHandler: ((String) async throws -> GitStatusResponse)? = nil,
         gitActionResults: [String: Result<GitStatusResponse, Error>] = [:],
         gitPatchActionResults: [String: Result<GitStatusResponse, Error>] = [:],
         gitCommitResults: [String: Result<GitStatusResponse, Error>] = [:],
@@ -516,7 +550,8 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         rateLimitsByRuntime: [String: RateLimitSummary] = [:],
         rateLimitHandler: ((String) async throws -> RateLimitSummary?)? = nil,
         threadSearchHandler: ((String, String?, Int?) async throws -> ThreadSearchPage)? = nil,
-        sessionHandler: ((String, EventSequence?) async throws -> SessionResponse)? = nil
+        sessionHandler: ((String, EventSequence?) async throws -> SessionResponse)? = nil,
+        externalActivityResponses: [ExternalActivityResponse?] = []
     ) {
         self.projectsResult = projects
         self.sessionsResult = sessions
@@ -526,6 +561,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.workspacePages = workspacePages
         self.cursorPages = cursorPages
         self.createSessionResponse = createSessionResponse
+        self.createSessionResults = createSessionResults
         self.sessionArchiveResults = sessionArchiveResults
         self.sessionForkResults = sessionForkResults
         self.threadGoalSetResults = threadGoalSetResults
@@ -552,6 +588,7 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.commandActionResults = commandActionResults
         self.commandActionRunResults = commandActionRunResults
         self.gitStatusResults = gitStatusResults
+        self.gitStatusHandler = gitStatusHandler
         self.gitActionResults = gitActionResults
         self.gitPatchActionResults = gitPatchActionResults
         self.gitCommitResults = gitCommitResults
@@ -566,10 +603,20 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
         self.rateLimitHandler = rateLimitHandler
         self.threadSearchHandler = threadSearchHandler
         self.sessionHandler = sessionHandler
+        self.externalActivityResponses = externalActivityResponses
     }
 
     func projects() async throws -> [AgentProject] {
         projectsResult
+    }
+
+    func externalActivities() async throws -> ExternalActivityResponse? {
+        let index = min(externalActivityCallCount, max(0, externalActivityResponses.count - 1))
+        externalActivityCallCount += 1
+        guard !externalActivityResponses.isEmpty else {
+            return nil
+        }
+        return externalActivityResponses[index]
     }
 
     func modelOptions() async throws -> [CodexAppServerModelOption] {
@@ -766,6 +813,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func gitStatus(path: String) async throws -> GitStatusResponse {
         requestedGitStatusPaths.append(path)
+        if let gitStatusHandler {
+            return try await gitStatusHandler(path)
+        }
         switch gitStatusResults[path] {
         case .success(let response):
             return response
@@ -945,6 +995,9 @@ final class MockSessionStoreClient: SessionStoreAPIClient {
 
     func createSession(_ payload: CreateSessionRequest) async throws -> CreateSessionResponse {
         createPayloads.append(payload)
+        if !createSessionResults.isEmpty {
+            return try createSessionResults.removeFirst().get()
+        }
         guard let createSessionResponse else {
             throw MockError.unimplemented
         }

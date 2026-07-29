@@ -55,11 +55,17 @@ service_ready() {
   local status_json
   local service_ok
   local cli_version
+  local server_version
   while (( attempts > 0 )); do
     status_json="$("$TARGET_BINARY" status --json 2>/dev/null || true)"
     service_ok="$(printf '%s' "$status_json" | /usr/bin/plutil -extract service_ok raw -o - - 2>/dev/null || true)"
     cli_version="$(printf '%s' "$status_json" | /usr/bin/plutil -extract version raw -o - - 2>/dev/null || true)"
-    if [[ "$service_ok" == "true" && "$cli_version" == "$expected_version" ]]; then
+    server_version="$(printf '%s' "$status_json" | /usr/bin/plutil -extract server_version raw -o - - 2>/dev/null || true)"
+    # CLI 文件已经替换不代表端口上的服务也已经切换；Mac App 内嵌的旧
+    # agentd 可能仍占用端口，因此必须同时核对真实 /api/version 版本。
+    if [[ "$service_ok" == "true" \
+      && "$cli_version" == "$expected_version" \
+      && "$server_version" == "$expected_version" ]]; then
       return 0
     fi
     attempts=$((attempts - 1))

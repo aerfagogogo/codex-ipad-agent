@@ -104,8 +104,22 @@ struct AgentSession: Identifiable, Codable, Hashable {
     var goal: ThreadGoal?
     let context: SessionContextSnapshot?
 
+    /// 会话列表只认有名称的分支；空白值和 detached HEAD 不应伪装成可读分支。
+    var gitBranchName: String? {
+        guard let branch = context?.git?.branch?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !branch.isEmpty else {
+            return nil
+        }
+        return branch
+    }
+
     var isAppServerHistory: Bool {
         status == "history"
+    }
+
+    /// 新建页在首条消息前只保留本地草稿，不提前创建没有 rollout 的远端 thread。
+    var isLocalDraft: Bool {
+        source == "local" && status == "draft" && resumeID == nil
     }
 
     var isRunning: Bool {
@@ -379,6 +393,9 @@ extension AgentSession {
     func displayStatus(foregroundActivity: SessionForegroundActivity?) -> AgentSessionDisplayStatus {
         // 侧栏和对话顶部共用这套优先级，避免同一个会话在不同入口显示成两种状态。
         // 审批/输入是需要用户处理的状态，优先级高于流式输出；foreground activity 负责区分等待回复和正在回复。
+        if isLocalDraft {
+            return AgentSessionDisplayStatus(title: L10n.text("ui.new_session"), systemImage: "square.and.pencil", tone: .neutral, showsSpinner: false)
+        }
         if status == SessionStatus.waitingForApproval.rawValue || pendingApproval != nil {
             return AgentSessionDisplayStatus(title: L10n.text("ui.pending_approval"), systemImage: "checkmark.seal.fill", tone: .warning, showsSpinner: false)
         }

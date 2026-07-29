@@ -5,8 +5,17 @@ struct MimiRemoteMacApp: App {
     @State private var store: HostStore
 
     init() {
+#if DEBUG
+        let usesSeedUI = ProcessInfo.processInfo.arguments.contains("--debug-seed-ui")
+        // README 截图使用受控的演示数据，避免把本机地址、项目数量和账户额度带入公开仓库。
+        let store = usesSeedUI ? HostStore.preview(.ready) : HostStore.live()
+#else
         let store = HostStore.live()
+#endif
         _store = State(initialValue: store)
+#if DEBUG
+        guard !usesSeedUI else { return }
+#endif
         Task { @MainActor in
             await store.bootstrap()
         }

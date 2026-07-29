@@ -8,6 +8,36 @@ struct HealthResponse: Codable {
 struct VersionResponse: Codable {
     let name: String
     let version: String
+    let installationID: String?
+    let capabilities: [String]
+
+    init(
+        name: String,
+        version: String,
+        installationID: String? = nil,
+        capabilities: [String] = []
+    ) {
+        self.name = name
+        self.version = version
+        self.installationID = installationID
+        self.capabilities = capabilities
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case version
+        case installationID = "installation_id"
+        case capabilities
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.version = try container.decode(String.self, forKey: .version)
+        self.installationID = try container.decodeIfPresent(String.self, forKey: .installationID)
+        // 旧 agentd 没有 capabilities。解码必须成功，具体功能入口再给出明确升级提示。
+        self.capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+    }
 }
 
 struct VoiceTranscriptionRequest: Encodable {
@@ -99,6 +129,38 @@ struct CodexAppServerChannelMetadata: Codable, Hashable, Identifiable {
         case bridge
         case methods
         case capabilities
+    }
+}
+
+struct ExternalSessionActivity: Codable, Hashable, Identifiable {
+    let threadID: SessionID
+    let projectID: String
+    let source: String
+    let state: String
+    let turnID: TurnID?
+    let revision: String
+    let lastActivityAt: Date
+
+    var id: SessionID { threadID }
+
+    enum CodingKeys: String, CodingKey {
+        case threadID = "thread_id"
+        case projectID = "project_id"
+        case source
+        case state
+        case turnID = "turn_id"
+        case revision
+        case lastActivityAt = "last_activity_at"
+    }
+}
+
+struct ExternalActivityResponse: Codable, Hashable {
+    let activities: [ExternalSessionActivity]
+    let scannedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case activities
+        case scannedAt = "scanned_at"
     }
 }
 
@@ -1241,6 +1303,26 @@ struct CommandActionRunResponse: Codable, Hashable {
 
 struct GitStatusRequest: Encodable {
     let path: String
+    let summaryOnly: Bool
+
+    init(path: String, summaryOnly: Bool = false) {
+        self.path = path
+        self.summaryOnly = summaryOnly
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case summaryOnly = "summary_only"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(path, forKey: .path)
+        // 旧版完整状态请求继续只发送 path；只有卡片摘要才显式增加新字段。
+        if summaryOnly {
+            try container.encode(true, forKey: .summaryOnly)
+        }
+    }
 }
 
 enum GitActionKind: String, Codable, Hashable {
@@ -1474,6 +1556,24 @@ struct GitFileStatus: Codable, Hashable, Identifiable {
         case unstaged
         case untracked
     }
+
+    init(path: String, code: String, staged: Bool, unstaged: Bool, untracked: Bool) {
+        self.path = path
+        self.code = code
+        self.staged = staged
+        self.unstaged = unstaged
+        self.untracked = untracked
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.path = try container.decode(String.self, forKey: .path)
+        self.code = try container.decode(String.self, forKey: .code)
+        // Go 的 omitempty 会省略 false；缺失字段按 false 处理，兼容已经部署的 agentd。
+        self.staged = try container.decodeIfPresent(Bool.self, forKey: .staged) ?? false
+        self.unstaged = try container.decodeIfPresent(Bool.self, forKey: .unstaged) ?? false
+        self.untracked = try container.decodeIfPresent(Bool.self, forKey: .untracked) ?? false
+    }
 }
 
 struct GitStatusResponse: Codable, Hashable {
@@ -1481,6 +1581,9 @@ struct GitStatusResponse: Codable, Hashable {
     let isRepository: Bool
     let branch: String?
     let head: String?
+    let ahead: Int?
+    let behind: Int?
+    let upstream: String?
     let statusText: String?
     let diffStat: String?
     let unstagedDiff: String?
@@ -1490,7 +1593,7 @@ struct GitStatusResponse: Codable, Hashable {
     let truncatedNote: String?
 
     var hasChanges: Bool {
-        [statusText, diffStat, unstagedDiff, stagedDiff].contains { value in
+        !files.isEmpty || [statusText, diffStat, unstagedDiff, stagedDiff].contains { value in
             !(value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         }
     }
@@ -1500,6 +1603,9 @@ struct GitStatusResponse: Codable, Hashable {
         case isRepository = "is_repository"
         case branch
         case head
+        case ahead
+        case behind
+        case upstream
         case statusText = "status_text"
         case diffStat = "diff_stat"
         case unstagedDiff = "unstaged_diff"
@@ -1514,6 +1620,9 @@ struct GitStatusResponse: Codable, Hashable {
         isRepository: Bool,
         branch: String?,
         head: String?,
+        ahead: Int? = nil,
+        behind: Int? = nil,
+        upstream: String? = nil,
         statusText: String?,
         diffStat: String?,
         unstagedDiff: String?,
@@ -1526,6 +1635,9 @@ struct GitStatusResponse: Codable, Hashable {
         self.isRepository = isRepository
         self.branch = branch
         self.head = head
+        self.ahead = ahead
+        self.behind = behind
+        self.upstream = upstream
         self.statusText = statusText
         self.diffStat = diffStat
         self.unstagedDiff = unstagedDiff
@@ -1541,6 +1653,9 @@ struct GitStatusResponse: Codable, Hashable {
         self.isRepository = try container.decode(Bool.self, forKey: .isRepository)
         self.branch = try container.decodeIfPresent(String.self, forKey: .branch)
         self.head = try container.decodeIfPresent(String.self, forKey: .head)
+        self.ahead = try container.decodeIfPresent(Int.self, forKey: .ahead)
+        self.behind = try container.decodeIfPresent(Int.self, forKey: .behind)
+        self.upstream = try container.decodeIfPresent(String.self, forKey: .upstream)
         self.statusText = try container.decodeIfPresent(String.self, forKey: .statusText)
         self.diffStat = try container.decodeIfPresent(String.self, forKey: .diffStat)
         self.unstagedDiff = try container.decodeIfPresent(String.self, forKey: .unstagedDiff)

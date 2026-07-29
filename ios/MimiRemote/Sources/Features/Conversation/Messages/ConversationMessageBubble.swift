@@ -181,8 +181,8 @@ struct ConversationMessageContent: View {
     @ViewBuilder
     private func userImageGallery(style: MarkdownStyle) -> some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        // 图片网格位于深色用户气泡之外；加载/失败状态必须使用页面中性表面，
-        // 否则气泡内的浅色文字和透明白底叠到浅色页面后会几乎不可见。
+        // 图片网格位于用户气泡之外；加载/失败状态必须使用页面中性表面，
+        // 避免气泡语义色渗入独立媒体状态卡。
         let statusStyle = MarkdownStyle.make(
             role: .assistant,
             colorScheme: colorScheme,
@@ -257,7 +257,7 @@ struct ConversationMessageContent: View {
     private var shouldRenderStructuredUserPayload: Bool {
         message.role == .user
             && message.kind == .message
-            && (!payloadSkillItems.isEmpty || !payloadMentionItems.isEmpty)
+            && (!payloadSkillItems.isEmpty || !payloadMentionItems.isEmpty || !payloadFileItems.isEmpty)
     }
 
     private func structuredUserContent(style: MarkdownStyle) -> some View {
@@ -279,7 +279,7 @@ struct ConversationMessageContent: View {
             return payloadText
         }
         var text = message.content
-        for item in payloadSkillItems + payloadMentionItems {
+        for item in payloadSkillItems + payloadMentionItems + payloadFileItems {
             text = text.replacingOccurrences(of: item.previewText, with: "")
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -293,9 +293,39 @@ struct ConversationMessageContent: View {
                 SkillInvocationCard(
                     metadata: SkillVisualMetadata(name: name, path: path, capability: capability),
                     sendStatus: message.sendStatus,
-                    usesUserBubbleContrast: true
+                    // 浅色用户气泡是中性浅底，必须使用主题深色文字；
+                    // 只有深色主题继续使用原有的高对比白字样式。
+                    usesUserBubbleContrast: themeStore.tokens(for: colorScheme).resolvedScheme == .dark
                 )
                 .environmentObject(themeStore)
+            }
+        }
+
+        ForEach(payloadFileItems) { item in
+            if case .uploadedFile(let file) = item {
+                HStack(spacing: 10) {
+                    Image(systemName: "doc")
+                        .font(themeStore.uiFont(.headline, weight: .semibold))
+                        .frame(width: 36, height: 36)
+                        .background(
+                            themeStore.tokens(for: colorScheme).selectionFill,
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(file.name)
+                            .font(style.bodyFont.weight(.semibold))
+                            .lineLimit(2)
+                        Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
+                            .font(style.captionFont)
+                            .foregroundStyle(style.secondaryColor)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(10)
+                .background(
+                    themeStore.tokens(for: colorScheme).elevatedSurface,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
             }
         }
 
@@ -390,7 +420,7 @@ struct ConversationMessageContent: View {
             switch item {
             case .mention:
                 return item.previewText
-            case .text, .image, .localImage, .skill:
+            case .text, .image, .localImage, .uploadedFile, .skill:
                 return nil
             }
         }
@@ -408,6 +438,13 @@ struct ConversationMessageContent: View {
     private var payloadMentionItems: [CodexAppServerUserInput] {
         message.turnPayload?.input.filter { item in
             if case .mention = item { return true }
+            return false
+        } ?? []
+    }
+
+    private var payloadFileItems: [CodexAppServerUserInput] {
+        message.turnPayload?.input.filter { item in
+            if case .uploadedFile = item { return true }
             return false
         } ?? []
     }
@@ -467,10 +504,7 @@ struct ConversationMessageContent: View {
 
     private var bubbleBorder: Color {
         let tokens = themeStore.tokens(for: colorScheme)
-        if message.role == .user, tokens.preset == .codex {
-            return Color.white.opacity(tokens.resolvedScheme == .light ? 0.12 : 0.08)
-        }
-        return tokens.border.opacity(message.role == .assistant ? 0.58 : 0.42)
+        return tokens.border.opacity(message.role == .assistant ? 0.58 : 0.54)
     }
 
     private var bubbleShadowColor: Color {
@@ -486,18 +520,14 @@ struct ConversationMessageContent: View {
 
     private var foreground: Color {
         let tokens = themeStore.tokens(for: colorScheme)
-        if message.role == .user, tokens.preset == .codex {
-            return userBubbleForeground
-        }
-        return tokens.primaryText
+        return message.role == .user ? userBubbleForeground : tokens.primaryText
     }
 
     private var timestampForeground: Color? {
-        let tokens = themeStore.tokens(for: colorScheme)
-        guard message.role == .user, tokens.preset == .codex else {
+        guard message.role == .user else {
             return nil
         }
-        return userBubbleForeground.opacity(0.72)
+        return userBubbleForeground.opacity(0.64)
     }
 
     private var userBubbleForeground: Color {

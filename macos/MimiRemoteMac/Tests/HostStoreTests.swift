@@ -109,7 +109,8 @@ final class HostStoreTests: XCTestCase {
             pair: { network in
                 events.append("pair-\(network.rawValue)")
                 return network == .localNetwork ? lanPairing : Self.pairing
-            }
+            },
+            healthCheck: { _ in false }
         )
         await store.bootstrap()
 
@@ -188,7 +189,8 @@ final class HostStoreTests: XCTestCase {
                 events.append("start-homebrew")
                 throw TestError.expected
             },
-            homebrewStop: { events.append("stop-homebrew") }
+            homebrewStop: { events.append("stop-homebrew") },
+            healthCheck: { _ in false }
         )
         await store.bootstrap()
         await store.takeOverHomebrew()
@@ -215,21 +217,234 @@ final class HostStoreTests: XCTestCase {
                 guard registration.nextStatus() != .enabled else { return }
                 events.append("register-mac")
             },
-            unregisterAgent: { events.append("unregister-mac") }
+            unregisterAgent: { events.append("unregister-mac") },
+            healthCheck: { _ in
+                events.append("health-stopped")
+                return false
+            }
         )
         await store.bootstrap()
 
         await store.restartService()
 
-        XCTAssertEqual(events.values, ["unregister-mac", "register-mac"])
+        XCTAssertEqual(events.values, [
+            "unregister-mac", "health-stopped", "register-mac",
+        ])
         XCTAssertEqual(store.lifecycle, .ready)
         XCTAssertEqual(store.owner, .macApp)
+    }
+
+    func testStopAndQuitRequestSurvivesMenuDismissalAndWaitsForAgentShutdown() async {
+        let events = EventRecorder()
+        let terminated = expectation(description: "App terminates after agent shutdown")
+        let store = makeStore(
+            configExists: true,
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: { events.append("unregister-mac") },
+            healthCheck: { _ in
+                events.append("health-stopped")
+                return false
+            },
+            terminateApplication: {
+                events.append("terminate-app")
+                terminated.fulfill()
+            }
+        )
+        await store.bootstrap()
+
+        store.requestStopServiceAndQuit()
+
+        XCTAssertTrue(store.isBusy)
+        XCTAssertTrue(store.isStoppingForQuit)
+        await fulfillment(of: [terminated], timeout: 1)
+        XCTAssertEqual(events.values, [
+            "register-mac", "unregister-mac", "health-stopped", "terminate-app",
+        ])
+        XCTAssertEqual(store.lifecycle, .stopped)
+        XCTAssertEqual(store.owner, .none)
+    }
+
+    func testBootstrapReplacesOutdatedBundledAgentBeforeReportingReady() async {
+        let events = EventRecorder()
+        let registration = LaggingAgentRegistration()
+        let outdated = AgentStatus(
+            processOK: true,
+            serviceOK: false,
+            processError: nil,
+            serviceError: "运行中的 agentd 仍是旧构建",
+            version: "0.1.5+mac.240",
+            serverVersion: "0.1.5+mac.239",
+            endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath,
+            projects: Self.readyStatus.projects,
+            doctorOK: false,
+            doctor: Self.readyStatus.doctor,
+            pairExpires: nil
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registration.nextStatus() },
+            status: {
+                events.values.contains("register-mac") ? Self.readyStatus : outdated
+            },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: { events.append("unregister-mac") },
+            healthCheck: { _ in
+                events.append("health-stopped")
+                return false
+            }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "unregister-mac", "health-stopped", "register-mac",
+        ])
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.owner, .macApp)
+    }
+
+    func testBootstrapReregistersEnabledAgentWhenRegistrationRevisionIsStale() async {
+        let events = EventRecorder()
+        let registration = LaggingAgentRegistration()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { registration.nextStatus() },
+            isAgentRegistrationCurrent: { false },
+            markAgentRegistrationCurrent: { events.append("mark-registration") },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: { events.append("unregister-mac") }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, [
+            "unregister-mac", "register-mac", "mark-registration",
+        ])
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.owner, .macApp)
+    }
+
+    func testBootstrapReusesEnabledAgentWhenRegistrationRevisionIsCurrent() async {
+        let events = EventRecorder()
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            isAgentRegistrationCurrent: { true },
+            markAgentRegistrationCurrent: { events.append("mark-registration") },
+            status: {
+                events.append("status")
+                return Self.readyStatus
+            },
+            registerAgent: { events.append("register-mac") },
+            unregisterAgent: { events.append("unregister-mac") }
+        )
+
+        await store.bootstrap()
+
+        XCTAssertEqual(events.values, ["status"])
+        XCTAssertEqual(store.lifecycle, .ready)
+        XCTAssertEqual(store.owner, .macApp)
+    }
+
+    func testMenuAppearanceReusesRecentBootstrapStatus() async {
+        let events = EventRecorder()
+        let current = AgentStatus(
+            processOK: Self.readyStatus.processOK,
+            serviceOK: Self.readyStatus.serviceOK,
+            processError: Self.readyStatus.processError,
+            serviceError: Self.readyStatus.serviceError,
+            version: Self.readyStatus.version,
+            serverVersion: Self.readyStatus.serverVersion,
+            endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath,
+            projects: Self.readyStatus.projects,
+            doctorOK: Self.readyStatus.doctorOK,
+            doctor: Self.readyStatus.doctor,
+            pairExpires: Self.readyStatus.pairExpires,
+            runtimeStatus: AgentRuntimeStatusSnapshot(
+                checkedAt: "2026-07-28T02:00:00Z",
+                runtimes: [],
+                refreshing: false,
+                stale: false
+            )
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: {
+                events.append("status")
+                return current
+            }
+        )
+
+        await store.bootstrap()
+        await store.refreshIfNeeded()
+
+        XCTAssertEqual(events.values, ["status"])
+        XCTAssertEqual(store.lifecycle, .ready)
+    }
+
+    func testTransientMissingRuntimeStatusPreservesPreviousSnapshotAsStale() async {
+        let events = EventRecorder()
+        let snapshot = AgentRuntimeStatusSnapshot(
+            checkedAt: "2026-07-28T02:00:00Z",
+            runtimes: [
+                AgentRuntimeStatus(
+                    id: "codex",
+                    title: "Codex",
+                    enabled: true,
+                    state: .connected,
+                    authMode: "chatgpt",
+                    planType: "pro",
+                    reason: nil,
+                    rateLimits: nil
+                ),
+            ],
+            refreshing: false,
+            stale: false
+        )
+        let statusWithRuntime = AgentStatus(
+            processOK: Self.readyStatus.processOK,
+            serviceOK: Self.readyStatus.serviceOK,
+            processError: Self.readyStatus.processError,
+            serviceError: Self.readyStatus.serviceError,
+            version: Self.readyStatus.version,
+            serverVersion: Self.readyStatus.serverVersion,
+            endpoint: Self.readyStatus.endpoint,
+            configPath: Self.readyStatus.configPath,
+            projects: Self.readyStatus.projects,
+            doctorOK: Self.readyStatus.doctorOK,
+            doctor: Self.readyStatus.doctor,
+            pairExpires: Self.readyStatus.pairExpires,
+            runtimeStatus: snapshot
+        )
+        let store = makeStore(
+            configExists: true,
+            agentStatus: { .enabled },
+            status: {
+                events.append("status")
+                return events.values.count == 1 ? statusWithRuntime : Self.readyStatus
+            }
+        )
+
+        await store.bootstrap()
+        await store.refresh()
+
+        XCTAssertEqual(events.values, ["status", "status"])
+        XCTAssertEqual(store.status?.runtimeStatus?.runtimes.map(\.id), ["codex"])
+        XCTAssertEqual(store.status?.runtimeStatus?.stale, true)
     }
 
     private func makeStore(
         configExists: Bool,
         homebrewLoaded: Bool = false,
         agentStatus: @escaping @MainActor () -> ServiceRegistrationState = { .notRegistered },
+        isAgentRegistrationCurrent: @escaping @MainActor () -> Bool = { true },
+        markAgentRegistrationCurrent: @escaping @MainActor () -> Void = {},
+        status: @escaping @Sendable () async throws -> AgentStatus = {
+            HostStoreTests.readyStatus
+        },
         registerAgent: @escaping @MainActor () throws -> Void = {},
         unregisterAgent: @escaping @MainActor () async throws -> Void = {},
         homebrewStart: @escaping @Sendable () async throws -> Void = {},
@@ -237,22 +452,26 @@ final class HostStoreTests: XCTestCase {
         setLANAccess: @escaping @Sendable (Bool) async throws -> NetworkConfigurationResult = {
             NetworkConfigurationResult(lanEnabled: $0, changed: false, restartRequired: false)
         },
-        pair: (@Sendable (PairingNetwork) async throws -> PairingInfo)? = nil
+        pair: (@Sendable (PairingNetwork) async throws -> PairingInfo)? = nil,
+        healthCheck: @escaping @Sendable (String) async -> Bool = { _ in true },
+        terminateApplication: @escaping @MainActor () -> Void = {}
     ) -> HostStore {
-        let status = Self.readyStatus
-        let doctor = status.doctor
+        let readyStatus = Self.readyStatus
+        let doctor = readyStatus.doctor
         let agent = AgentCommandClient(
             configExists: { configExists },
             setup: { _ in Self.pairing },
-            status: { status },
-            statusAt: { _ in status },
+            status: status,
+            statusAt: { _ in readyStatus },
             doctor: { _ in DoctorFixResults(fixes: [], results: doctor) },
             setLANAccess: setLANAccess,
             pair: pair ?? { _ in Self.pairing },
-            version: { status.version }
+            version: { readyStatus.version }
         )
         let services = ServiceManagementClient(
             agentStatus: agentStatus,
+            isAgentRegistrationCurrent: isAgentRegistrationCurrent,
+            markAgentRegistrationCurrent: markAgentRegistrationCurrent,
             registerAgent: registerAgent,
             unregisterAgent: unregisterAgent,
             mainAppStatus: { .enabled },
@@ -270,12 +489,13 @@ final class HostStoreTests: XCTestCase {
             agent: agent,
             services: services,
             homebrew: homebrew,
-            health: HealthClient(check: { _ in true }, checkDirect: { _ in true }),
+            health: HealthClient(check: healthCheck, checkDirect: { _ in true }),
             logs: AgentLogClient(
                 recentLines: { _ in [] },
                 reveal: {},
                 fileURL: URL(filePath: "/tmp/mimi-remote-agentd-test.log")
-            )
+            ),
+            terminateApplication: terminateApplication
         )
     }
 

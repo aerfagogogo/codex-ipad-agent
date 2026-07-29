@@ -98,6 +98,7 @@ protocol SessionStoreAPIClient {
     func projects() async throws -> [AgentProject]
     func modelOptions() async throws -> [CodexAppServerModelOption]
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool
+    func externalActivities() async throws -> ExternalActivityResponse?
     func capabilities(path: String?, forceReload: Bool) async throws -> CapabilityListResponse
     func resolveWorkspace(path: String) async throws -> AgentWorkspace
     func createWorktree(path: String, name: String?, base: String?, branch: String?) async throws -> WorktreeCreateResponse
@@ -113,6 +114,7 @@ protocol SessionStoreAPIClient {
     func commandActions(path: String) async throws -> [AgentCommandAction]
     func runCommandAction(path: String, id: String, confirmed: Bool) async throws -> CommandActionRunResponse
     func gitStatus(path: String) async throws -> GitStatusResponse
+    func gitStatusSummary(path: String) async throws -> GitStatusResponse
     func gitAction(path: String, action: GitActionKind, files: [String]) async throws -> GitStatusResponse
     func gitPatchAction(path: String, action: GitActionKind, patch: String) async throws -> GitStatusResponse
     func gitCommit(path: String, message: String) async throws -> GitStatusResponse
@@ -154,6 +156,12 @@ protocol SessionStoreAPIClient {
 }
 
 extension SessionStoreAPIClient {
+    func externalActivities() async throws -> ExternalActivityResponse? {
+        // 旧 agentd/iOS 测试客户端没有该能力时明确返回 nil；nil 表示“不支持”，
+        // 与新 agentd 返回 activities=[]（支持但当前无活动）不能混为一谈。
+        nil
+    }
+
     func runtimeChannelAvailable(runtimeProvider: String) async throws -> Bool {
         let value = runtimeProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return value.isEmpty || value == "codex" || value == "openai"
@@ -291,6 +299,11 @@ extension SessionStoreAPIClient {
         throw AgentAPIError.invalidResponse
     }
 
+    func gitStatusSummary(path: String) async throws -> GitStatusResponse {
+        // 测试替身未关心摘要时复用完整状态；生产 client 会发送 summary_only=true。
+        try await gitStatus(path: path)
+    }
+
     func gitAction(path: String, action: GitActionKind, files: [String]) async throws -> GitStatusResponse {
         // 默认实现只服务于不直连 agentd 的测试替身；真实 client 会覆写并请求 /api/git/action。
         throw AgentAPIError.invalidResponse
@@ -380,32 +393,36 @@ extension SessionStoreAPIClient {
 @MainActor
 final class TerminalStreamStore {
     let maxBatchSize: Int
-    var eventsBySessionID: [SessionID: [AgentEvent]] = [:]
+    var eventsByLease: [HostSessionLease: [AgentEvent]] = [:]
 
     init(maxBatchSize: Int = 64) {
         self.maxBatchSize = max(1, maxBatchSize)
     }
 
-    func append(_ event: AgentEvent, sessionID: SessionID) -> Bool {
-        var events = eventsBySessionID[sessionID] ?? []
+    func append(_ event: AgentEvent, lease: HostSessionLease) -> Bool {
+        var events = eventsByLease[lease] ?? []
         if let previous = events.last,
            let merged = previous.mergingContiguous(with: event) {
             events[events.index(before: events.endIndex)] = merged
         } else {
             events.append(event)
         }
-        eventsBySessionID[sessionID] = events
+        eventsByLease[lease] = events
         return events.count >= maxBatchSize
     }
 
-    func drain(sessionID: SessionID) -> [AgentEvent] {
-        let events = eventsBySessionID[sessionID] ?? []
-        eventsBySessionID[sessionID] = []
+    func drain(lease: HostSessionLease) -> [AgentEvent] {
+        let events = eventsByLease[lease] ?? []
+        eventsByLease.removeValue(forKey: lease)
         return events
     }
 
-    func removeAll(sessionID: SessionID) {
-        eventsBySessionID.removeValue(forKey: sessionID)
+    func removeAll(lease: HostSessionLease) {
+        eventsByLease.removeValue(forKey: lease)
+    }
+
+    func removeAll(profileID: String) {
+        eventsByLease = eventsByLease.filter { $0.key.hostScope.profileID != profileID }
     }
 
 }

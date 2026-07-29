@@ -13,6 +13,35 @@ private enum AppSheetDestination: String, Identifiable {
     var id: String { rawValue }
 }
 
+/// SwiftUI 的 TabView / NavigationStack 会在自身更新事务里规范化 selection 和 path。
+/// 这里按控件分别合并到下一次主线程事件循环，避免 Binding setter 同步发布 @State。
+@MainActor
+final class WorkbenchNavigationBindingScheduler {
+    enum Lane: Hashable {
+        case splitSelection
+        case compactTab
+        case compactSessionsPath
+        case compactWorkspacesPath
+    }
+
+    private var revisions: [Lane: UInt] = [:]
+
+    func schedule(
+        on lane: Lane,
+        action: @escaping @MainActor () -> Void
+    ) {
+        let revision = revisions[lane, default: 0] &+ 1
+        revisions[lane] = revision
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.revisions[lane] == revision else {
+                return
+            }
+            self.revisions[lane] = nil
+            action()
+        }
+    }
+}
+
 enum CompactWorkbenchTab: Hashable {
     case sessions
     case workspaces
@@ -82,6 +111,17 @@ struct WorkbenchNavigationState: Equatable {
                 compactWorkspacePath = [destination]
             }
         }
+    }
+
+    /// selectedSessionID 可能在设置 Tab 或列表页继续保留，不能据此判断会话是否真的可见。
+    func visibleSessionID(usesCompactNavigation: Bool) -> SessionID? {
+        if usesCompactNavigation, compactSelectedTab == .settings {
+            return nil
+        }
+        guard case .session(let sessionID) = selection else {
+            return nil
+        }
+        return sessionID
     }
 
     @discardableResult
@@ -375,14 +415,18 @@ struct UnifiedWorkbenchShell: View {
     @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var notificationResponseAdapter: SessionNotificationResponseAdapter
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.scenePhase) private var scenePhase
 
     @Binding var showingInspector: Bool
     @Binding var restorationRoute: WorkbenchRestorationRoute
     @State private var navigationState = WorkbenchNavigationState()
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var presentedSheet: AppSheetDestination?
+    @State private var notificationVisibilitySceneID = UUID()
+    @State private var navigationBindingScheduler = WorkbenchNavigationBindingScheduler()
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -426,8 +470,10 @@ struct UnifiedWorkbenchShell: View {
                 synchronizeNavigation(for: layout)
             }
             .onChange(of: layout.usesCompactNavigation) { _, usesCompactNavigation in
-                guard usesCompactNavigation else { return }
-                synchronizeNavigation(for: layout)
+                handleLayoutModeChange(
+                    usesCompactNavigation: usesCompactNavigation,
+                    layout: layout
+                )
             }
             .onChange(of: sessionStore.lastSelectionCommit) { _, commit in
                 guard let commit else { return }
@@ -436,6 +482,17 @@ struct UnifiedWorkbenchShell: View {
             .onChange(of: restorationRoute) { _, route in
                 guard navigationState.route != route else { return }
                 applyNavigation(.synchronize(route), layout: layout)
+            }
+            .onAppear {
+                updateVisibleSessionNotificationRoute(
+                    visibleSessionNotificationRoute(layout: layout)
+                )
+            }
+            .onChange(of: visibleSessionNotificationRoute(layout: layout)) { _, route in
+                updateVisibleSessionNotificationRoute(route)
+            }
+            .onDisappear {
+                updateVisibleSessionNotificationRoute(nil)
             }
         }
         .background(tokens.background.ignoresSafeArea())
@@ -446,6 +503,34 @@ struct UnifiedWorkbenchShell: View {
                 networkUnavailableBanner(tokens: tokens)
             }
         }
+    }
+
+    private func visibleSessionNotificationRoute(
+        layout: WorkbenchLayout
+    ) -> SessionNotificationRoute? {
+        guard scenePhase == .active,
+              presentedSheet == nil,
+              !(showingInspector && !layout.usesAttachedInspector),
+              let visibleSessionID = navigationState.visibleSessionID(
+                  usesCompactNavigation: layout.usesCompactNavigation
+              ),
+              let session = sessionStore.selectedSession,
+              session.id == visibleSessionID
+        else {
+            return nil
+        }
+        return SessionNotificationRoute.current(
+            profileID: appStore.notificationRoutingProfileID,
+            projectID: session.projectID,
+            sessionID: session.id
+        )
+    }
+
+    private func updateVisibleSessionNotificationRoute(_ route: SessionNotificationRoute?) {
+        notificationResponseAdapter.setVisibleSessionRoute(
+            route,
+            for: notificationVisibilitySceneID
+        )
     }
 
     private func compactLayout(
@@ -461,17 +546,29 @@ struct UnifiedWorkbenchShell: View {
             }
             .tabItem {
                 Label(CompactWorkbenchTab.sessions.title, systemImage: CompactWorkbenchTab.sessions.systemImage)
+                    .accessibilityIdentifier("compactTab.sessions")
             }
             .tag(CompactWorkbenchTab.sessions)
 
             NavigationStack(path: compactPathBinding(for: .workspaces, layout: layout)) {
                 workspaces(layout: layout)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            HostSwitcherMenu(
+                                presentation: .toolbar,
+                                manageConnections: {
+                                    openConnectionSettings(layout: layout)
+                                }
+                            )
+                        }
+                    }
                     .navigationDestination(for: AppDestination.self) { destination in
                         compactDestination(destination, layout: layout, tokens: tokens)
                     }
             }
             .tabItem {
                 Label(CompactWorkbenchTab.workspaces.title, systemImage: CompactWorkbenchTab.workspaces.systemImage)
+                    .accessibilityIdentifier("compactTab.workspaces")
             }
             .tag(CompactWorkbenchTab.workspaces)
 
@@ -484,6 +581,7 @@ struct UnifiedWorkbenchShell: View {
             }
             .tabItem {
                 Label(CompactWorkbenchTab.settings.title, systemImage: CompactWorkbenchTab.settings.systemImage)
+                    .accessibilityIdentifier("compactTab.settings")
             }
             .tag(CompactWorkbenchTab.settings)
         }
@@ -505,6 +603,14 @@ struct UnifiedWorkbenchShell: View {
             detail(layout: layout, tokens: tokens)
         }
         .navigationSplitViewStyle(.balanced)
+    }
+
+    private func openConnectionSettings(layout: WorkbenchLayout) {
+        if layout.usesCompactNavigation {
+            applyNavigation(.compactTabChanged(.settings), layout: layout)
+        } else {
+            presentedSheet = .settings
+        }
     }
 
     private func credentialsInvalidBanner(tokens: ThemeTokens) -> some View {
@@ -629,43 +735,44 @@ struct UnifiedWorkbenchShell: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(tokens.sidebarBackground.ignoresSafeArea())
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                // 标题放进系统顶栏，才能与 iPad 的侧栏收起按钮保持同一行。
-                HStack(spacing: 8) {
-                    CodexUsageRingsControl(
-                        display: sessionStore.accountCodexUsageWindowsDisplay,
-                        onRefresh: {
-                            await sessionStore.refreshCodexUsage()
-                        }
-                    )
-
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Mimi Remote")
-                                .font(themeStore.uiFont(.headline, weight: .semibold))
-                                .foregroundStyle(tokens.primaryText)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.82)
-                            Text(connectionSubtitle)
-                                .font(themeStore.uiFont(.caption2))
-                                .foregroundStyle(tokens.tertiaryText)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.82)
-                        }
-
-                        Circle()
-                            .fill(connectionTone(tokens: tokens))
-                            .frame(width: 7, height: 7)
-                            .accessibilityHidden(true)
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(L10n.format("ui.mimi_remote_connection_accessibility", connectionSubtitle))
-                }
+            ToolbarItem(placement: .topBarLeading) {
+                sidebarBrandHeader(tokens: tokens)
             }
+            // iPadOS 26+ 会默认给 leading toolbar item 添加共享玻璃底板；
+            // 品牌标题不是独立按钮，隐藏底板后仍保留系统正确的 leading 对齐。
+            .sharedBackgroundVisibility(.hidden)
         }
         .task {
             await sessionStore.refreshSessionLibraryIndex()
         }
+    }
+
+    private func sidebarBrandHeader(tokens: ThemeTokens) -> some View {
+        let headerWidth: CGFloat = 190
+
+        return HStack(spacing: 8) {
+            AIUsageRingsControl(
+                codexDisplay: sessionStore.accountCodexUsageWindowsDisplay,
+                claudeDisplay: sessionStore.accountClaudeUsageWindowsDisplay,
+                includesClaude: sessionStore.hasClaudeRuntimeChannel,
+                onRefresh: {
+                    await sessionStore.refreshCodexUsage()
+                    if sessionStore.hasClaudeRuntimeChannel {
+                        await sessionStore.refreshClaudeUsage()
+                    }
+                }
+            )
+            .fixedSize()
+
+            HostSwitcherMenu(
+                presentation: .sidebar,
+                manageConnections: {
+                    presentedSheet = .settings
+                }
+            )
+            .layoutPriority(1)
+        }
+        .frame(width: headerWidth, alignment: .leading)
     }
 
     private func sidebarSessionLink(_ session: AgentSession) -> some View {
@@ -678,6 +785,7 @@ struct UnifiedWorkbenchShell: View {
                 isArchived: sessionStore.isSessionArchived(session.id),
                 reminder: sessionStore.sessionReminder(for: session.id),
                 isObserving: sessionStore.isSessionObserving(session),
+                isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
                 style: .sidebar
             )
         }
@@ -751,11 +859,16 @@ struct UnifiedWorkbenchShell: View {
     }
 
     private func sessionList(layout: WorkbenchLayout) -> some View {
-        SessionListView(
+        let manageConnections: (() -> Void)? = layout.usesCompactNavigation
+            ? { openConnectionSettings(layout: layout) }
+            : nil
+
+        return SessionListView(
             onNewSession: { presentedSheet = .newSession },
             onSelectSession: { session in
                 openSession(session, source: .sessions, layout: layout)
-            }
+            },
+            manageConnections: manageConnections
         )
     }
 
@@ -785,47 +898,63 @@ struct UnifiedWorkbenchShell: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 2) {
-                    Text(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
-                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                        .lineLimit(1)
+                // 会话详情优先展示当前任务；Mac 切换保留在上一级主界面，避免全局信息挤占标题。
+                Text(sessionStore.selectedSession?.title ?? L10n.text("ui.session"))
+                    .font(.headline)
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .multilineTextAlignment(.center)
+                    .frame(width: layout.titleMaxWidth)
+                    .accessibilityIdentifier("sessionDetail.title")
+            }
+            if layout.usesCompactNavigation {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            Task { await sessionStore.refreshCurrentContext() }
+                        } label: {
+                            Label(L10n.text("ui.refresh_current_session"), systemImage: "arrow.clockwise")
+                        }
+                        .disabled(sessionStore.isRefreshingSelectedSession || sessionStore.isLoading)
 
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(selectedSessionStatusColor(tokens: tokens))
-                            .frame(width: 5, height: 5)
-
-                        Text(sessionTitleSubtitle)
-                            .font(themeStore.uiFont(.caption2, weight: .medium))
-                            .foregroundStyle(tokens.tertiaryText)
-                            .lineLimit(1)
+                        Button {
+                            showingInspector.toggle()
+                        } label: {
+                            Label(
+                                showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
+                                systemImage: "sidebar.right"
+                            )
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(tokens.secondaryText)
+                    }
+                    .accessibilityLabel(L10n.text("ui.options"))
+                }
+            } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    workbenchToolbarIconButton(
+                        systemImage: "arrow.clockwise",
+                        accessibilityLabel: L10n.text("ui.refresh_current_session"),
+                        tokens: tokens,
+                        isDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading
+                    ) {
+                        Task { await sessionStore.refreshCurrentContext() }
                     }
                 }
-                .frame(maxWidth: layout.titleMaxWidth)
-                .accessibilityElement(children: .combine)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                workbenchToolbarIconButton(
-                    systemImage: "arrow.clockwise",
-                    accessibilityLabel: L10n.text("ui.refresh_current_session"),
-                    tokens: tokens,
-                    isDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading
-                ) {
-                    Task { await sessionStore.refreshCurrentContext() }
-                }
-            }
-            // iOS 26 会让相邻 toolbar item 共用一块 Liquid Glass 背景；
-            // 固定间距把刷新与详情面板拆成两个独立动作，降低误触。
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-            ToolbarItem(placement: .topBarTrailing) {
-                workbenchToolbarIconButton(
-                    systemImage: "sidebar.right",
-                    accessibilityLabel: showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
-                    tokens: tokens,
-                    isActive: showingInspector
-                ) {
-                    showingInspector.toggle()
+                // 宽屏保留两个独立动作；手机端已经收进单一更多菜单。
+                ToolbarSpacer(.fixed, placement: .topBarTrailing)
+                ToolbarItem(placement: .topBarTrailing) {
+                    workbenchToolbarIconButton(
+                        systemImage: "sidebar.right",
+                        accessibilityLabel: showingInspector ? L10n.text("ui.hide_details") : L10n.text("ui.show_details"),
+                        tokens: tokens,
+                        isActive: showingInspector
+                    ) {
+                        showingInspector.toggle()
+                    }
                 }
             }
         }
@@ -841,8 +970,14 @@ struct UnifiedWorkbenchShell: View {
             set: { destination in
                 // List 可能在数据刷新时短暂写 nil；忽略这一过渡值，避免无意关闭详情。
                 guard let destination else { return }
-                let source: WorkbenchRootPage? = if case .session = destination { .sessions } else { nil }
-                applyNavigation(.open(destination, source: source), layout: layout)
+                let expectedSelection = navigationState.selection
+                guard destination != expectedSelection else { return }
+                navigationBindingScheduler.schedule(on: .splitSelection) {
+                    // 外部恢复或会话选择若已推进导航，丢弃旧的 List 规范化回写。
+                    guard navigationState.selection == expectedSelection else { return }
+                    let source: WorkbenchRootPage? = if case .session = destination { .sessions } else { nil }
+                    applyNavigation(.open(destination, source: source), layout: layout)
+                }
             }
         )
     }
@@ -853,12 +988,19 @@ struct UnifiedWorkbenchShell: View {
     ) -> Binding<[AppDestination]> {
         Binding(
             get: {
-                tab == .workspaces
-                    ? navigationState.compactWorkspacePath
-                    : navigationState.compactSessionPath
+                compactPath(for: tab)
             },
             set: { path in
-                applyNavigation(.compactPathChanged(tab: tab, path: path), layout: layout)
+                let expectedPath = compactPath(for: tab)
+                guard path != expectedPath else { return }
+                let lane: WorkbenchNavigationBindingScheduler.Lane = tab == .workspaces
+                    ? .compactWorkspacesPath
+                    : .compactSessionsPath
+                navigationBindingScheduler.schedule(on: lane) {
+                    // 只接收基于当前 path 的最新写入，防止启动恢复后的旧 [] 覆盖详情页。
+                    guard compactPath(for: tab) == expectedPath else { return }
+                    applyNavigation(.compactPathChanged(tab: tab, path: path), layout: layout)
+                }
             }
         )
     }
@@ -867,9 +1009,20 @@ struct UnifiedWorkbenchShell: View {
         Binding(
             get: { navigationState.compactSelectedTab },
             set: { tab in
-                applyNavigation(.compactTabChanged(tab), layout: layout)
+                let expectedTab = navigationState.compactSelectedTab
+                guard tab != expectedTab else { return }
+                navigationBindingScheduler.schedule(on: .compactTab) {
+                    guard navigationState.compactSelectedTab == expectedTab else { return }
+                    applyNavigation(.compactTabChanged(tab), layout: layout)
+                }
             }
         )
+    }
+
+    private func compactPath(for tab: CompactWorkbenchTab) -> [AppDestination] {
+        tab == .workspaces
+            ? navigationState.compactWorkspacePath
+            : navigationState.compactSessionPath
     }
 
     private func open(
@@ -894,6 +1047,29 @@ struct UnifiedWorkbenchShell: View {
 
     private func synchronizeNavigation(for layout: WorkbenchLayout) {
         applyNavigation(.synchronize(restorationRoute), layout: layout)
+    }
+
+    private func handleLayoutModeChange(
+        usesCompactNavigation: Bool,
+        layout: WorkbenchLayout
+    ) {
+        if usesCompactNavigation {
+            if presentedSheet == .settings {
+                // 横屏的 split layout 用 sheet 承载设置；回到紧凑布局时把同一页面
+                // 还原为设置 Tab，避免旋转后突然跳回会话并丢失用户刚选的内容。
+                presentedSheet = nil
+                applyNavigation(.compactTabChanged(.settings), layout: layout)
+            } else {
+                synchronizeNavigation(for: layout)
+            }
+            return
+        }
+
+        if navigationState.compactSelectedTab == .settings {
+            // split layout 没有“设置”详情 destination。旋转时继续以 sheet 呈现同一
+            // SettingsView，使表单状态和 @AppStorage 选择保持可见且可操作。
+            presentedSheet = .settings
+        }
     }
 
     private func handleSelectionCommit(
@@ -1135,14 +1311,16 @@ struct WorkbenchSidebarFooter: View {
     }
 }
 
-/// 侧栏标题旁的账号剩余用量入口。图形尺寸跟随横向尺寸环境变化，
-/// 因而 iPad mini 分屏和 iPhone 会自动使用更紧凑的版本。
-private struct CodexUsageRingsControl: View {
+/// 侧栏标题旁的 AI 账号剩余用量入口。与设置页共享三环和窗口选择规则，
+/// 在窄侧栏里只缩小图形，仍保留完整的 44pt 点击区。
+private struct AIUsageRingsControl: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    let display: CodexUsageWindowsDisplay
+    let codexDisplay: CodexUsageWindowsDisplay
+    let claudeDisplay: CodexUsageWindowsDisplay
+    let includesClaude: Bool
     let onRefresh: () async -> Void
 
     @State private var showsDetails = false
@@ -1151,40 +1329,50 @@ private struct CodexUsageRingsControl: View {
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
         let metrics = CodexUsageRingMetrics(isCompact: horizontalSizeClass == .compact)
+        let items = usageItems(tokens: tokens)
 
-        Button {
+        CombinedUsageRingsGraphic(
+            items: items,
+            // 三环也是稳定的品牌识别；额度未接入时保留灰色轨道，不退化成单环。
+            expectedRingCount: 3,
+            diameter: metrics.diameter,
+            lineWidth: metrics.lineWidth,
+            ringSpacing: metrics.ringSpacing
+        )
+        .frame(width: metrics.hitSize, height: metrics.hitSize)
+        .contentShape(Rectangle())
+        .onTapGesture {
             showsDetails.toggle()
-        } label: {
-            usageRings(metrics: metrics)
-                .frame(width: metrics.hitSize, height: metrics.hitSize)
-                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(L10n.text("ui.codex_remaining_usage"))
-        .accessibilityValue(accessibilityValue)
+        .hoverEffect(.highlight)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(L10n.text("ui.token_quota"))
+        .accessibilityValue(accessibilityValue(items: items))
         .accessibilityIdentifier("sidebar.codexUsageRings")
+        .accessibilityAction {
+            showsDetails.toggle()
+        }
         .popover(isPresented: $showsDetails, arrowEdge: .top) {
             usageDetails(tokens: tokens)
                 .presentationCompactAdaptation(.sheet)
-                .presentationDetents([.height(300), .medium])
+                .presentationDetents([.height(360), .medium])
                 .presentationDragIndicator(.visible)
         }
     }
 
-    private func usageRings(metrics: CodexUsageRingMetrics) -> some View {
-        CodexUsageRingsGraphic(display: display, metrics: metrics)
-    }
-
     private func usageDetails(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let items = usageItems(tokens: tokens)
+
+        return VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n.text("ui.codex_remaining_usage"))
+                    Text(L10n.text("ui.token_quota"))
                         .font(themeStore.uiFont(.headline, weight: .semibold))
                         .foregroundStyle(tokens.primaryText)
-                    Text(display.windowSummaryText)
+                    Text(windowSummaryText)
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(2)
                 }
 
                 Spacer(minLength: 8)
@@ -1212,76 +1400,84 @@ private struct CodexUsageRingsControl: View {
                         .stroke(tokens.border.opacity(0.72), lineWidth: 1)
                 }
                 .disabled(isRefreshing)
-                .accessibilityLabel(L10n.text("ui.refresh_codex_usage_c0f2c6f0"))
+                .accessibilityLabel(L10n.format("ui.refresh_value_usage", "AI"))
             }
 
             VStack(spacing: 14) {
-                if display.windows.isEmpty {
+                if items.isEmpty {
                     Text(L10n.text("ui.after_refreshing_the_account_window_currently_returned_by"))
                         .font(themeStore.uiFont(.caption))
                         .foregroundStyle(tokens.secondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    ForEach(Array(display.windows.enumerated()), id: \.element.id) { index, window in
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         if index > 0 {
                             Divider().overlay(tokens.border.opacity(0.72))
                         }
-                        usageWindowRow(window: window, tokens: tokens)
+                        usageWindowRow(item: item, tokens: tokens)
                     }
                 }
             }
 
-            HStack(spacing: 7) {
-                Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
-                    .font(.system(size: 12, weight: .semibold))
-                Text(display.creditText)
-                    .font(themeStore.uiFont(.caption, weight: .medium))
-                    .lineLimit(2)
+            VStack(alignment: .leading, spacing: 5) {
+                usageCreditLine(name: "Codex", display: codexDisplay)
+                if includesClaude {
+                    usageCreditLine(name: "Claude", display: claudeDisplay)
+                }
             }
             .foregroundStyle(tokens.secondaryText)
         }
         .padding(16)
-        .frame(width: horizontalSizeClass == .compact ? nil : 300)
+        .frame(width: horizontalSizeClass == .compact ? nil : 320)
         .frame(maxWidth: horizontalSizeClass == .compact ? .infinity : nil, alignment: .leading)
     }
 
-    private func usageWindowRow(window: CodexUsageWindowDisplay, tokens: ThemeTokens) -> some View {
-        let progress = window.remainingProgress ?? 0
-        let tint = tint(for: window)
+    private func usageWindowRow(item: CombinedUsageItem, tokens: ThemeTokens) -> some View {
+        let progress = item.window.remainingProgress ?? 0
 
         return VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Circle()
-                    .stroke(tint, lineWidth: 2.5)
+                    .stroke(item.tint, lineWidth: 2.5)
                     .frame(width: 12, height: 12)
-                Text(window.label)
+                Text("\(item.providerName) · \(item.window.label)")
                     .font(themeStore.uiFont(.callout, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                     .monospacedDigit()
-                Text(window.title)
+                Text(item.window.title)
                     .font(themeStore.uiFont(.caption, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
 
                 Spacer(minLength: 8)
 
-                Text(window.remainingText)
+                Text(item.window.remainingText)
                     .font(themeStore.uiFont(.callout, weight: .semibold))
-                    .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
+                    .foregroundStyle(
+                        item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
+                    )
                     .monospacedDigit()
             }
 
             ProgressView(value: progress)
-                .tint(tint)
-                .opacity(window.remainingProgress == nil ? 0.3 : 1)
+                .tint(item.tint)
+                .opacity(item.window.remainingProgress == nil ? 0.3 : 1)
 
-            Text(window.resetText)
+            Text(item.window.resetText)
                 .font(themeStore.uiFont(.caption))
                 .foregroundStyle(tokens.secondaryText)
                 .lineLimit(1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(L10n.format("ui.value_remaining_usage", window.accessibilityName))
-        .accessibilityValue(L10n.format("ui.usage_window_accessibility_value", window.remainingText, window.resetText))
+        .accessibilityLabel(
+            L10n.format("ui.value_remaining_usage", item.window.accessibilityName)
+        )
+        .accessibilityValue(
+            L10n.format(
+                "ui.usage_window_accessibility_value",
+                item.window.remainingText,
+                item.window.resetText
+            )
+        )
     }
 
     private func refreshUsage() async {
@@ -1291,119 +1487,104 @@ private struct CodexUsageRingsControl: View {
         await onRefresh()
     }
 
-    private func tint(for window: CodexUsageWindowDisplay) -> Color {
-        if window.durationMinutes != nil {
-            return window.isDayScaleWindow ? .pink : .cyan
-        }
-        return window.kind == .secondary ? .pink : .cyan
+    private func usageItems(tokens: ThemeTokens) -> [CombinedUsageItem] {
+        CombinedUsageItem.make(
+            codexDisplay: codexDisplay,
+            claudeDisplay: claudeDisplay,
+            includesClaude: includesClaude,
+            claudeShortTint: tokens.accent
+        )
     }
 
-    private var accessibilityValue: String {
-        guard !display.windows.isEmpty else {
+    private var windowSummaryText: String {
+        var summaries = [codexDisplay.windowSummaryText]
+        if includesClaude {
+            summaries.append(claudeDisplay.windowSummaryText)
+        }
+        return summaries.joined(separator: " · ")
+    }
+
+    private func usageCreditLine(
+        name: String,
+        display: CodexUsageWindowsDisplay
+    ) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: display.hasLiveData ? "checkmark.seal" : "info.circle")
+                .font(.system(size: 12, weight: .semibold))
+            // name 与 creditText 已分别完成本地化；按原文组合，避免 Xcode 抽取裸 `%@: %@` key。
+            Text(verbatim: "\(name): \(display.creditText)")
+                .font(themeStore.uiFont(.caption, weight: .medium))
+                .lineLimit(2)
+        }
+    }
+
+    private func accessibilityValue(items: [CombinedUsageItem]) -> String {
+        guard !items.isEmpty else {
             return L10n.text("ui.account_usage_has_not_been_obtained_yet")
         }
-        return display.windows
-            .map { "\($0.accessibilityName)\($0.remainingText)" }
+        return items
+            .map { "\($0.providerName)\($0.window.accessibilityName)\($0.window.remainingText)" }
             .joined(separator: L10n.text("ui.list_separator"))
-    }
-}
-
-/// 首页和设置页共用同一套双圆环，避免同一份额度在不同入口出现相反或不一致的视觉语义。
-struct CodexUsageRingsGraphic: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    let display: CodexUsageWindowsDisplay
-    let metrics: CodexUsageRingMetrics
-
-    var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-        let windows = Array(display.windows.prefix(2))
-
-        ZStack {
-            ForEach(Array(windows.enumerated()), id: \.element.id) { index, window in
-                usageRing(
-                    progress: window.remainingProgress,
-                    diameter: windows.count == 1 || index == 1 ? metrics.diameter : metrics.innerDiameter,
-                    lineWidth: windows.count == 1 || index == 1 ? metrics.outerLineWidth : metrics.innerLineWidth,
-                    tint: tint(for: window),
-                    tokens: tokens
-                )
-            }
-
-            if !display.windows.contains(where: { $0.remainingProgress != nil }) {
-                Text("?")
-                    .font(.system(size: metrics.questionMarkSize, weight: .bold, design: .rounded))
-                    .foregroundStyle(tokens.tertiaryText)
-            }
-        }
-        .frame(width: metrics.diameter, height: metrics.diameter)
-        .accessibilityHidden(true)
-    }
-
-    private func usageRing(
-        progress: Double?,
-        diameter: CGFloat,
-        lineWidth: CGFloat,
-        tint: Color,
-        tokens: ThemeTokens
-    ) -> some View {
-        ZStack {
-            Circle()
-                .stroke(tokens.tertiaryText.opacity(0.18), lineWidth: lineWidth)
-
-            if let progress {
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-            }
-        }
-        .frame(width: diameter, height: diameter)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: progress)
-    }
-
-    private func tint(for window: CodexUsageWindowDisplay) -> Color {
-        if window.durationMinutes != nil {
-            return window.isDayScaleWindow ? .pink : .cyan
-        }
-        return window.kind == .secondary ? .pink : .cyan
     }
 }
 
 struct CodexUsageRingMetrics {
     let diameter: CGFloat
-    let innerDiameter: CGFloat
-    let outerLineWidth: CGFloat
-    let innerLineWidth: CGFloat
+    let lineWidth: CGFloat
+    let ringSpacing: CGFloat
     let hitSize: CGFloat
-    let questionMarkSize: CGFloat
 
     init(isCompact: Bool) {
-        diameter = isCompact ? 30 : 34
-        innerDiameter = isCompact ? 20 : 23
-        outerLineWidth = isCompact ? 3.4 : 3.8
-        innerLineWidth = isCompact ? 3 : 3.2
+        diameter = isCompact ? 32 : 36
+        lineWidth = isCompact ? 3 : 3.2
+        ringSpacing = isCompact ? 1.5 : 1.8
         // 图形在 iPhone 上收紧，但点击区始终保持 44pt，兼顾窄屏排版和触控可用性。
         hitSize = 44
-        questionMarkSize = isCompact ? 7 : 8
     }
 }
 
 #if DEBUG
-#Preview(L10n.text("ui.codex_usage_dual_loop_adaptive")) {
-    let loaded = CodexUsageWindowsDisplay.make(
-        rateLimit: RateLimitSummary(primaryUsedPercent: 62, secondaryUsedPercent: 38)
+#Preview(L10n.text("ui.token_quota")) {
+    let codex = CodexUsageWindowsDisplay.make(
+        rateLimit: RateLimitSummary(
+            limitName: "Codex",
+            secondaryUsedPercent: 44,
+            secondaryWindowDurationMins: 10_080
+        )
+    )
+    let claude = CodexUsageWindowsDisplay.make(
+        rateLimit: RateLimitSummary(
+            limitName: "Claude",
+            primaryUsedPercent: 48,
+            secondaryUsedPercent: 0,
+            primaryWindowDurationMins: 10_080,
+            secondaryWindowDurationMins: 300
+        ),
+        fallbackDisplayName: "Claude"
     )
     let pending = CodexUsageWindowsDisplay.make(rateLimit: nil)
 
     HStack(spacing: 24) {
-        CodexUsageRingsControl(display: loaded, onRefresh: {})
+        AIUsageRingsControl(
+            codexDisplay: codex,
+            claudeDisplay: claude,
+            includesClaude: true,
+            onRefresh: {}
+        )
             .environment(\.horizontalSizeClass, .regular)
-        CodexUsageRingsControl(display: loaded, onRefresh: {})
+        AIUsageRingsControl(
+            codexDisplay: codex,
+            claudeDisplay: claude,
+            includesClaude: true,
+            onRefresh: {}
+        )
             .environment(\.horizontalSizeClass, .compact)
-        CodexUsageRingsControl(display: pending, onRefresh: {})
+        AIUsageRingsControl(
+            codexDisplay: pending,
+            claudeDisplay: pending,
+            includesClaude: true,
+            onRefresh: {}
+        )
             .environment(\.horizontalSizeClass, .compact)
     }
     .environmentObject(ThemeStore())

@@ -14,6 +14,8 @@ const (
 	pairingRequestBodyMaxBytes int64 = 16 << 10
 	// 12 MiB 原始音频经过 base64 后约 16 MiB，再预留 1 MiB 给 JSON、文件名、语言和 prompt。
 	voiceRequestBodyMaxBytes int64 = 17 << 20
+	// 移动端原始文件采用流式 raw body 上传；MaxBytesReader 会额外探测 1 字节并稳定返回 413。
+	fileUploadRequestBodyMaxBytes int64 = 20 << 20
 )
 
 func limitAPIRequestBodies(next http.Handler) http.Handler {
@@ -37,6 +39,8 @@ func requestBodyLimitForPath(path string) int64 {
 		return pairingRequestBodyMaxBytes
 	case "/api/voice/transcribe":
 		return voiceRequestBodyMaxBytes
+	case "/api/file-uploads":
+		return fileUploadRequestBodyMaxBytes
 	default:
 		return defaultAPIRequestBodyMaxBytes
 	}

@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"encoding/base64"
+	"errors"
+	"io/fs"
 	"mime"
 	"net/http"
 	"os"
@@ -9,6 +11,20 @@ import (
 	"runtime"
 	"strings"
 )
+
+// pathAccessDeniedMessage 区分“路径不在 allowlist / 不存在”与“OS 拒绝访问”。
+// macOS 上照片图库（.photoslibrary）、Mail 等 TCC 保护目录：路径能 stat/EvalSymlinks，
+// 但 open/read 会以 EPERM 失败。这不是授权范围问题，应返回与当前平台匹配的可操作提示，
+// 避免用户误以为要改 browse_roots。
+func pathAccessDeniedMessage(err error) (string, bool) {
+	if !errors.Is(err, fs.ErrPermission) {
+		return "", false
+	}
+	if runtime.GOOS == "darwin" {
+		return "agentd 无法访问该路径：可能是 macOS 隐私保护目录（如“照片”图库）。请在 系统设置 → 隐私与安全性 → 完全磁盘访问 中允许 agentd（或 Mimi Remote），并重启应用后重试。", true
+	}
+	return "agentd 无法访问该路径：操作系统拒绝了读取权限。请检查 agentd 运行用户对该路径及其父目录的读取权限，并重启服务后重试。", true
+}
 
 // filePreviewMaxBytes 限制单个预览文件大小。QuickLook 适合查看产物，不适合把大文件当下载通道。
 var filePreviewMaxBytes int64 = 20 << 20
@@ -71,6 +87,10 @@ func (r *Router) fileReadHandler(w http.ResponseWriter, req *http.Request) {
 	realPath := resolved.realPath
 	stat, err := os.Stat(realPath)
 	if err != nil {
+		if msg, ok := pathAccessDeniedMessage(err); ok {
+			writeError(w, http.StatusForbidden, msg)
+			return
+		}
 		writeError(w, http.StatusForbidden, "路径不在允许范围内或不可访问")
 		return
 	}
@@ -89,6 +109,10 @@ func (r *Router) fileReadHandler(w http.ResponseWriter, req *http.Request) {
 
 	data, err := os.ReadFile(realPath)
 	if err != nil {
+		if msg, ok := pathAccessDeniedMessage(err); ok {
+			writeError(w, http.StatusForbidden, msg)
+			return
+		}
 		writeError(w, http.StatusForbidden, "路径不在允许范围内或不可访问")
 		return
 	}

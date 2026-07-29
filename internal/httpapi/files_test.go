@@ -74,6 +74,38 @@ func TestFileReadRejectsOutsidePathWithoutLeakingDetails(t *testing.T) {
 	}
 }
 
+func TestFileReadReportsPermissionDeniedWithActionableGuidance(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows 不用 Unix 权限位模拟 TCC 拒绝")
+	}
+	server := newTestServer(t)
+	projectDir := configuredProjectPath(t, server.handler)
+	filePath := filepath.Join(projectDir, "locked.txt")
+	if err := os.WriteFile(filePath, []byte("secret"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filePath, 0o644) })
+
+	rec, _ := readPreviewFile(t, server.handler, filePath)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("OS 拒绝访问应返回 403，got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	// 路径明明在授权范围内，OS 拒绝时不能再报“不在允许范围内”，否则用户会去改 browse_roots。
+	if strings.Contains(rec.Body.String(), "不在允许范围内") {
+		t.Fatalf("授权路径的权限拒绝不应报成 allowlist 问题：%s", rec.Body.String())
+	}
+	if runtime.GOOS == "darwin" {
+		if !strings.Contains(rec.Body.String(), "完全磁盘访问") {
+			t.Fatalf("macOS 权限拒绝应引导用户授予完全磁盘访问：%s", rec.Body.String())
+		}
+		return
+	}
+	if strings.Contains(rec.Body.String(), "完全磁盘访问") ||
+		!strings.Contains(rec.Body.String(), "运行用户") {
+		t.Fatalf("非 macOS 权限拒绝应提示检查服务运行用户权限：%s", rec.Body.String())
+	}
+}
+
 func TestFileReadAllowsPhotosDerivativeImage(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

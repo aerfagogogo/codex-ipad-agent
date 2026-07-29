@@ -26,21 +26,43 @@ import (
 )
 
 type Router struct {
-	cfg          config.Config
-	projects     *projects.Registry
-	sessions     *session.Manager
-	runtime      SessionRuntime
-	doctor       *doctor.Checker
-	auth         auth.Authenticator
-	version      string
-	upgrader     websocket.Upgrader
-	monitor      *relayMonitor
-	historyMedia *appServerHistoryMediaStore
+	cfg            config.Config
+	projects       *projects.Registry
+	sessions       *session.Manager
+	runtime        SessionRuntime
+	doctor         *doctor.Checker
+	auth           auth.Authenticator
+	version        string
+	installationID string
+	upgrader       websocket.Upgrader
+	monitor        *relayMonitor
+	historyMedia   *appServerHistoryMediaStore
+	fileUploads    *fileUploadStore
+	// externalActivity 只读取同一 CODEX_HOME 内 Codex Desktop 的脱敏运行态。
+	// 它与本进程 app-server runtime 分离，不能被用于 resume、审批或中断外部 turn。
+	externalActivity externalActivitySource
 	// tailscalePathLookup 只在连接验证/测速时读取一次本机 Tailscale 状态。
 	// 使用可注入函数既避免常驻轮询，也让无 Tailscale 环境下的接口行为可测试。
 	tailscalePathLookup tailscaleNetworkPathLookup
 	// upstreamReadiness 对高频 readyz 轮询做短 TTL + single-flight，避免每 300ms 都创建 WebSocket。
 	upstreamReadiness *appServerReadinessProbe
+	// runtimeStatus 只服务本机菜单栏。额度探测可能访问 OAuth/Keychain 和 provider，
+	// 必须后台 single-flight 刷新，不能阻塞 readiness 或并发创建无上限连接。
+	runtimeStatus *runtimeStatusSnapshotCache
+	// Codex app-server 由 serve 层启动、由 Router 探测。单独保存真实子进程启动时间，
+	// 让菜单栏展示运行时长，而不是误用 agentd 或 Mac App 自身的存活时间。
+	runtimeProcessMu      sync.RWMutex
+	codexRuntimeStartedAt time.Time
+	// Codex 连接探测与额度读取共用一个 app-server 会话。额度偶发超时时保留最近一次
+	// 脱敏窗口，避免菜单把三个圆环整块移除；缓存只存百分比和重置时间，不含账号信息。
+	codexRuntimeQuotaMu        sync.RWMutex
+	codexRuntimeQuota          *runtimeRateLimits
+	codexRuntimeQuotaCheckedAt time.Time
+	// 菜单只为 Claude 额度等待很短时间；慢查询完成后把脱敏结果留在 Router，
+	// 下一轮状态刷新无需依赖已经断开的匿名 bridge connection。
+	claudeRuntimeQuotaMu        sync.RWMutex
+	claudeRuntimeQuota          *runtimeRateLimits
+	claudeRuntimeQuotaCheckedAt time.Time
 	// pairingClaims 只记录短期票据的签名和过期时间，不保存长期 Token。
 	// 状态仅需覆盖当前进程内的短期重放窗口，服务重启后丢失是可接受的 MVP 取舍。
 	pairingClaimsMu sync.Mutex
@@ -55,6 +77,7 @@ type Router struct {
 	claudeMu                      sync.Mutex
 	claudeProbe                   appServerBridgeProbe
 	activeClaudeBridge            int
+	claudeBridge                  *claudeBridgeSupervisor
 	managedWorktreesMu            sync.Mutex
 	managedWorktrees              map[string]managedWorktree
 	managedWorktreeCleanupMu      sync.Mutex
@@ -68,16 +91,35 @@ type Router struct {
 }
 
 func NewRouter(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string) http.Handler {
-	return NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
+	handler, _ := NewRouterWithRuntime(cfg, registry, manager, checker, version, nil)
+	return handler
 }
 
-func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, runtime SessionRuntime) http.Handler {
+// NewRouterWithInstallationID 为生产入口注入启动阶段已加载的稳定安装身份。
+// Router 只保留内存副本，确保高频 /api/version 探测不会读磁盘或连接 upstream。
+func NewRouterWithInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string) http.Handler {
+	handler, _ := NewRouterWithRuntimeAndInstallationID(cfg, registry, manager, checker, version, installationID, nil)
+	return handler
+}
+
+// NewRouterWithRuntime also hands back the *Router so a caller that owns the
+// process lifetime can shut down what the handler started. That matters now
+// that the Claude bridge is resident: it survives individual connections by
+// design, so nothing else would ever reap it.
+func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, runtime SessionRuntime) (http.Handler, *Router) {
+	return NewRouterWithRuntimeAndInstallationID(cfg, registry, manager, checker, version, "", runtime)
+}
+
+// NewRouterWithRuntimeAndInstallationID 同时注入 runtime 与稳定安装身份。
+// 保留旧构造器作为兼容包装，现有测试和内部调用无需一次性迁移。
+func NewRouterWithRuntimeAndInstallationID(cfg config.Config, registry *projects.Registry, manager *session.Manager, checker *doctor.Checker, version string, installationID string, runtime SessionRuntime) (http.Handler, *Router) {
 	r := &Router{
-		cfg:      cfg,
-		projects: registry,
-		sessions: manager,
-		runtime:  runtime,
-		doctor:   checker,
+		cfg:            cfg,
+		projects:       registry,
+		sessions:       manager,
+		runtime:        runtime,
+		doctor:         checker,
+		installationID: installationID,
 		auth: auth.NewWithOptions(cfg.Auth.Token, cfg.DevInsecure, auth.Options{
 			AllowQueryToken: cfg.Auth.AllowQueryToken,
 		}),
@@ -87,6 +129,8 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 		},
 		monitor:                     newRelayMonitor(),
 		historyMedia:                newAppServerHistoryMediaStore(),
+		fileUploads:                 newFileUploadStore(defaultFileUploadRoot()),
+		externalActivity:            codexhistory.NewDefaultExternalActivityTracker(registry),
 		tailscalePathLookup:         defaultTailscaleNetworkPathLookup,
 		gatewayThreads:              map[string]appServerGatewayAllowedThread{},
 		managedWorktrees:            map[string]managedWorktree{},
@@ -94,9 +138,11 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 		managedWorktreePendingUses:  map[string]int{},
 		gitTestFlightJobs:           map[string]*gitTestFlightReleaseJob{},
 		pairingClaims:               map[string]time.Time{},
+		claudeBridge:                newClaudeBridgeSupervisor(),
 	}
 	r.refreshClaudeBridgeProbe(false)
 	r.upstreamReadiness = newAppServerReadinessProbe(r.probeAppServerUpstream)
+	r.runtimeStatus = newRuntimeStatusSnapshotCache(r.refreshRuntimeStatus, r.runtimeStatusPlaceholder)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", r.healthz)
@@ -117,6 +163,8 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux.Handle("/api/workspaces/resolve", r.auth.Middleware(http.HandlerFunc(r.workspaceResolveHandler)))
 	mux.Handle("/api/directories/list", r.auth.Middleware(http.HandlerFunc(r.directoryListHandler)))
 	mux.Handle("/api/files/read", r.auth.Middleware(http.HandlerFunc(r.fileReadHandler)))
+	mux.Handle("/api/file-uploads", r.auth.Middleware(http.HandlerFunc(r.fileUploadHandler)))
+	mux.Handle("/api/file-uploads/", r.auth.Middleware(http.HandlerFunc(r.fileUploadHandler)))
 	mux.Handle("/api/worktrees/list", r.auth.Middleware(http.HandlerFunc(r.worktreeListHandler)))
 	mux.Handle("/api/worktrees/branches", r.auth.Middleware(http.HandlerFunc(r.worktreeBranchListHandler)))
 	mux.Handle("/api/worktrees/create", r.auth.Middleware(http.HandlerFunc(r.worktreeCreateHandler)))
@@ -136,10 +184,24 @@ func NewRouterWithRuntime(cfg config.Config, registry *projects.Registry, manage
 	mux.Handle("/api/git/pull-request", r.auth.Middleware(http.HandlerFunc(r.gitPullRequestHandler)))
 	mux.Handle("/api/git/pull-request/status", r.auth.Middleware(http.HandlerFunc(r.gitPullRequestStatusHandler)))
 	mux.Handle("/api/voice/transcribe", r.auth.Middleware(http.HandlerFunc(r.voiceTranscribeHandler)))
+	mux.Handle("/api/runtime/status", r.auth.Middleware(http.HandlerFunc(r.runtimeStatusHandler)))
 	mux.Handle("/api/app-server/config", r.auth.Middleware(http.HandlerFunc(r.appServerConfigHandler)))
+	mux.Handle("/api/app-server/external-activity", r.auth.Middleware(http.HandlerFunc(r.externalActivityHandler)))
 	mux.Handle("/api/app-server/history-media/", r.auth.Middleware(http.HandlerFunc(r.appServerHistoryMediaHandler)))
 	mux.Handle("/api/app-server/ws", r.auth.Middleware(http.HandlerFunc(r.appServerGatewayWS)))
-	return logging(limitAPIRequestBodies(mux), r.monitor)
+	return logging(limitAPIRequestBodies(mux), r.monitor), r
+}
+
+// Shutdown releases the long-lived runtimes the router started. Call it after
+// the HTTP server has drained: the resident Claude bridge spawns Claude Code
+// children of its own, and killing it earlier would cut turns that in-flight
+// requests are still watching.
+func (r *Router) Shutdown() {
+	if r == nil {
+		return
+	}
+	r.runtimeStatus.Close()
+	r.claudeBridge.shutdown()
 }
 
 func sameOriginOrNoOrigin(r *http.Request) bool {
@@ -270,7 +332,12 @@ func (r *Router) readyz(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) versionHandler(w http.ResponseWriter, req *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"name": "agentd", "version": r.version})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":            "agentd",
+		"version":         r.version,
+		"installation_id": r.installationID,
+		"capabilities":    []string{"file_upload_v1"},
+	})
 }
 
 func (r *Router) doctorHandler(w http.ResponseWriter, req *http.Request) {

@@ -415,7 +415,8 @@ extension ConversationDataFlowTests {
         }
         XCTAssertEqual(plan.kind, .plan)
         XCTAssertEqual(plan.content, "让子 agent 生成一个短笑话。")
-        guard case .processGroup(let processGroup) = items[3] else {
+        guard case .workGroup(let workGroup) = items[3],
+              case .processGroup(let processGroup) = workGroup.entries.first else {
             return XCTFail("真实 reasoning 与后续命令应合并为可折叠阶段")
         }
         XCTAssertEqual(processGroup.header.itemID, "reasoning_processed")
@@ -425,6 +426,72 @@ extension ConversationDataFlowTests {
         }
         XCTAssertEqual(final.role, .assistant)
         XCTAssertEqual(final.content, "程序员相亲，对方问：你会浪漫吗？")
+    }
+
+    // 关掉 App 一小时后回来：bridge 的会话还活着、turn 还停在审批上，attach 时用
+    // serverRequest/replay 把未应答的请求推回来。这条路必须绕开僵尸审批检查——
+    // Claude bridge 把停在审批上的线程仍报成 idle，走那个检查会把真正在等的提示
+    // 直接 decline 掉，用户看到的就是一个永远不动的任务。
+    func testDirectRuntimeRestoresReplayedServerRequestOnIdleReportingThread() async throws {
+        let project = AgentProject(id: "proj_replay", name: "Replay", path: "/tmp/replay")
+        let transport = FakeCodexAppServerTransport()
+        let runtime = CodexAppServerSessionRuntime(
+            endpoint: "http://127.0.0.1:8787",
+            token: "outer-token",
+            transportFactory: { transport },
+            configProvider: { makeDirectAppServerConfig(project: project) }
+        )
+        let client = CodexAppServerSessionAPIClient(runtime: runtime)
+
+        let sessionTask = Task {
+            try await client.session(id: "thr_replay")
+        }
+
+        let initializeMessages = try await waitForFakeAppServerMessages(transport, count: 1)
+        let initialize = try decodeAppServerRequest(initializeMessages[0])
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: initialize.id)),"result":{"userAgent":"fake-codex","platformFamily":"macos"}}"#)
+
+        let readMessages = try await waitForFakeAppServerMessages(transport, count: 3)
+        let read = try decodeAppServerRequest(readMessages[2])
+        XCTAssertEqual(read.method, "thread/read")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: read.id)),"result":{"thread":{"id":"thr_replay","sessionId":"thr_replay","preview":"等审批","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/replay","cliVersion":"0.0.0","source":"claude","threadSource":"user","name":"等审批","turns":[]}}}"#)
+        _ = try await sessionTask.value
+
+        let socket = CodexAppServerSessionWebSocketClient(runtime: runtime)
+        var statuses: [WebSocketStatus] = []
+        var events: [AgentEvent] = []
+        socket.onStatus = { statuses.append($0) }
+        socket.onEvent = { events.append($0) }
+        socket.connect(sessionID: "thr_replay")
+
+        let resumeMessages = try await waitForFakeAppServerMessages(transport, count: 4)
+        let resume = try decodeAppServerRequest(resumeMessages[3])
+        XCTAssertEqual(resume.method, "thread/resume")
+        transport.enqueue(#"{"id":\#(try jsonFragment(for: resume.id)),"result":{"thread":{"id":"thr_replay","sessionId":"thr_replay","preview":"等审批","ephemeral":false,"modelProvider":"anthropic","createdAt":1780490000,"updatedAt":1780490001,"status":{"type":"idle"},"path":null,"cwd":"/tmp/replay","cliVersion":"0.0.0","source":"claude","threadSource":"user","name":"等审批","turns":[]}}}"#)
+
+        for _ in 0..<200 where !statuses.contains(.connected) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(statuses.contains(.connected))
+
+        transport.enqueue(#"{"jsonrpc":"2.0","method":"serverRequest/replay","params":{"outstanding":[{"id":"req-abc","method":"item/commandExecution/requestApproval","params":{"threadId":"thr_replay","turnId":"turn_live","itemId":"cmd_live","command":"cargo install --path ."}}]}}"#)
+
+        for _ in 0..<200 where !events.contains(where: { if case .approvalRequest = $0 { return true } else { return false } }) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(events.contains {
+            if case .approvalRequest = $0 {
+                return true
+            }
+            return false
+        }, "重放的未应答审批应当重新弹出审批卡")
+
+        // 它是活的，不能被当成僵尸请求自动 decline 掉。
+        let sent = await transport.sentMessages()
+        XCTAssertFalse(sent.contains { $0.contains("\"decision\":\"decline\"") },
+                       "重放的审批不应被自动拒绝")
+
+        socket.disconnect()
     }
 
     func testDirectRuntimeDropsStaleReplayedApprovalForIdleThread() async throws {
@@ -1548,6 +1615,23 @@ extension ConversationDataFlowTests {
         let firstTurnID = try await firstTurnTask.value
         XCTAssertEqual(firstTurnID, "turn_resume_guard")
 
+        let events = await runtime.attachEvents(sessionID: "thr_idle_guard")
+        defer { events.cancel() }
+        let firstTurnCompleted = expectation(description: "第一轮完成后允许启动下一轮")
+        let eventTask = Task { @MainActor in
+            for await event in events {
+                guard case .turnCompleted(let metadata) = event,
+                      metadata.turnID == "turn_resume_guard" else {
+                    continue
+                }
+                firstTurnCompleted.fulfill()
+                return
+            }
+        }
+        transport.enqueue(#"{"method":"turn/completed","params":{"threadId":"thr_idle_guard","turnId":"turn_resume_guard"}}"#)
+        await fulfillment(of: [firstTurnCompleted], timeout: 2)
+        eventTask.cancel()
+
         // 同一连接内第二次发送不应再 resume，只发 turn/start。
         let secondTurnTask = Task {
             try await runtime.startTurn(sessionID: "thr_idle_guard", prompt: "再来一次", clientMessageID: nil)
@@ -1871,6 +1955,46 @@ extension ConversationDataFlowTests {
         XCTAssertEqual(context?.status?.activeFlags, ["waitingOnApproval"])
     }
 
+    func testSessionContextStoreScopesSameSessionByProfile() {
+        let store = SessionContextStore()
+        let sessionID = "shared_session"
+
+        store.activate(profileID: "mac-a")
+        store.upsert(
+            SessionContextSnapshot(
+                sessionID: sessionID,
+                environment: SessionContextEnvironment(
+                    id: "local-a",
+                    kind: "local",
+                    label: "Mac A",
+                    cwd: "/tmp/a",
+                    provider: "openai"
+                )
+            ),
+            fallbackSessionID: nil
+        )
+
+        store.activate(profileID: "mac-b")
+        XCTAssertNil(store.context(for: sessionID))
+        store.upsert(
+            SessionContextSnapshot(
+                sessionID: sessionID,
+                environment: SessionContextEnvironment(
+                    id: "local-b",
+                    kind: "local",
+                    label: "Mac B",
+                    cwd: "/tmp/b",
+                    provider: "openai"
+                )
+            ),
+            fallbackSessionID: nil
+        )
+        XCTAssertEqual(store.context(for: sessionID)?.environment?.cwd, "/tmp/b")
+
+        store.activate(profileID: "mac-a")
+        XCTAssertEqual(store.context(for: sessionID)?.environment?.cwd, "/tmp/a")
+    }
+
     func testCodexAppServerRequestBuildersUseRemoteSafeDefaults() throws {
         let project = AgentProject(id: "proj_safe", name: "Safe", path: "/tmp/safe-project")
         let builder = CodexAppServerRequestBuilder(allowlistedProjects: [project])
@@ -2088,13 +2212,15 @@ extension ConversationDataFlowTests {
 
     func testUsageRingMetricsAdaptToIPadMiniAndIPhone() {
         let iPadMini = CodexUsageRingMetrics(isCompact: false)
-        XCTAssertEqual(iPadMini.diameter, 34)
-        XCTAssertEqual(iPadMini.innerDiameter, 23)
+        XCTAssertEqual(iPadMini.diameter, 36)
+        XCTAssertEqual(iPadMini.lineWidth, 3.2)
+        XCTAssertEqual(iPadMini.ringSpacing, 1.8)
         XCTAssertEqual(iPadMini.hitSize, 44)
 
         let iPhone = CodexUsageRingMetrics(isCompact: true)
-        XCTAssertEqual(iPhone.diameter, 30)
-        XCTAssertEqual(iPhone.innerDiameter, 20)
+        XCTAssertEqual(iPhone.diameter, 32)
+        XCTAssertEqual(iPhone.lineWidth, 3)
+        XCTAssertEqual(iPhone.ringSpacing, 1.5)
         XCTAssertEqual(iPhone.hitSize, 44)
     }
 

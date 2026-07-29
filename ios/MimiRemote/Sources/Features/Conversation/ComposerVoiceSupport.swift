@@ -25,17 +25,23 @@ struct VoiceMicButton: View {
                     Image(systemName: isRecording ? "stop.fill" : "mic.fill")
                 }
             }
-            .foregroundStyle(tokens.primaryAction)
+            .font(themeStore.uiFont(size: 16, weight: .semibold))
+            // 空闲态和其它工具按钮保持中性；录音、准备和转写才使用主题紫表达活动状态。
+            .foregroundStyle(
+                isRecording || isPreparing || isTranscribing
+                    ? tokens.primaryAction
+                    : tokens.primaryText
+            )
             .frame(width: 44, height: 44)
-            .background(tokens.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(Color.clear, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .modifier(
                 ComposerFlatControlSurface(
                     tokens: tokens,
-                    cornerRadius: 12,
+                    cornerRadius: 22,
                     isEmphasized: false
                 )
             )
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(isPreparing || isTranscribing)
@@ -81,8 +87,9 @@ struct ComposerPressButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            // 平铺控件只用明度变化响应触摸，不再通过缩放和下沉模拟实体键程。
-            .opacity(configuration.isPressed ? 0.68 : 1)
+            // 玻璃键帽用很短的缩放和明度变化确认按压；降低动态效果时只保留明度反馈。
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.82 : 1)
             .animation(
                 .easeOut(duration: reduceMotion ? 0 : 0.08),
                 value: configuration.isPressed
@@ -90,27 +97,38 @@ struct ComposerPressButtonStyle: ButtonStyle {
     }
 }
 
-/// Composer 控件统一使用实色和细边界分组，层级来自布局关系而不是高光或投影。
+/// Composer 控件使用页面背景色，在输入卡内部形成一层安静但明确的操作表面。
 struct ComposerFlatControlSurface: ViewModifier {
     let tokens: ThemeTokens
     let cornerRadius: CGFloat
     let isEmphasized: Bool
 
+    init(
+        tokens: ThemeTokens,
+        cornerRadius: CGFloat,
+        isEmphasized: Bool
+    ) {
+        self.tokens = tokens
+        self.cornerRadius = cornerRadius
+        self.isEmphasized = isEmphasized
+    }
+
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
-    private var borderColor: Color {
-        if isEmphasized {
-            return .clear
-        }
-        return tokens.border.opacity(tokens.resolvedScheme == .light ? 0.62 : 0.82)
+    private var restingFill: Color {
+        guard !isEmphasized else { return .clear }
+        return tokens.background
     }
 
     func body(content: Content) -> some View {
         content
-            .overlay {
-                shape.strokeBorder(borderColor, lineWidth: 0.75)
+            .background {
+                // 可见键帽约 36pt，但外层 contentShape 仍保持 44pt 命中面积。
+                shape
+                    .fill(restingFill)
+                    .padding(4)
             }
     }
 }
@@ -322,6 +340,28 @@ struct AdvancedTurnOptionsSheet: View {
                     TextField(L10n.text("ui.service_name"), text: optionalStringBinding(\.serviceName))
                 }
 
+                Section(L10n.text("ui.reasoning_and_service_tier")) {
+                    // 标准选择器只暴露四档；完整协议值集中在开发者高级选项中，
+                    // 让 Low、Codex Max、auto 和 flex 仍可显式配置而不污染普通入口。
+                    Picker(L10n.text("ui.reasoning_effort"), selection: $draft.reasoningEffort) {
+                        Text(L10n.text("ui.default_option"))
+                            .tag(Optional<CodexAppServerReasoningEffort>.none)
+                        ForEach(CodexAppServerReasoningEffort.allCases) { effort in
+                            Text(ModelReasoningGridCatalog.effortTitle(effort))
+                                .tag(Optional(effort))
+                        }
+                    }
+
+                    Picker(L10n.text("ui.service_tier"), selection: $draft.serviceTier) {
+                        Text(L10n.text("ui.default_option"))
+                            .tag(Optional<String>.none)
+                        // Service tier 是协议枚举值，展示时保持原值，不能参与本地化。
+                        Text(verbatim: "auto").tag(Optional("auto"))
+                        Text(verbatim: "priority").tag(Optional("priority"))
+                        Text(verbatim: "flex").tag(Optional("flex"))
+                    }
+                }
+
                 Section(L10n.text("ui.thread_source")) {
                     TextField(L10n.text("ui.session_start_source"), text: optionalStringBinding(\.sessionStartSource))
                     TextField(L10n.text("ui.thread_source"), text: optionalStringBinding(\.threadSource))
@@ -389,6 +429,8 @@ struct AdvancedTurnOptionsSheet: View {
     private func clearAdvancedOptions() {
         draft.runtimeProvider = nil
         draft.modelProvider = nil
+        draft.reasoningEffort = nil
+        draft.serviceTier = nil
         draft.config = nil
         draft.baseInstructions = nil
         draft.developerInstructions = nil
@@ -437,6 +479,72 @@ enum AdvancedTurnOptionsError: LocalizedError {
     }
 }
 
+/// 将系统音频会话调用隔离在非 MainActor 的串行执行域中。
+///
+/// AVAudioSession 的 category/active 切换可能阻塞；UI 与录音器生命周期仍由 MainActor 管理，
+/// 这里只负责不可并发的系统会话状态，避免阻塞界面或发生旧清理关闭新录音的竞态。
+protocol VoiceAudioSessionBackend: Sendable {
+    func prepareForRecording() throws
+    func activateForRecording() throws
+    func deactivateRecording() throws
+}
+
+final class SystemVoiceAudioSessionBackend: VoiceAudioSessionBackend, @unchecked Sendable {
+    private let audioSession: AVAudioSession
+
+    init(audioSession: AVAudioSession = .sharedInstance()) {
+        self.audioSession = audioSession
+    }
+
+    func prepareForRecording() throws {
+        try audioSession.setCategory(.record, mode: .measurement, options: [.duckOthers])
+    }
+
+    func activateForRecording() throws {
+        try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    func deactivateRecording() throws {
+        try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+    }
+}
+
+actor VoiceAudioSessionCoordinator {
+    struct Activation: Sendable, Equatable {
+        fileprivate let id: UUID
+    }
+
+    static let shared = VoiceAudioSessionCoordinator()
+
+    private let backend: any VoiceAudioSessionBackend
+    private var currentActivationID: UUID?
+
+    init(backend: any VoiceAudioSessionBackend = SystemVoiceAudioSessionBackend()) {
+        self.backend = backend
+    }
+
+    func prewarm() throws {
+        try backend.prepareForRecording()
+    }
+
+    func activate() throws -> Activation {
+        try backend.prepareForRecording()
+        try backend.activateForRecording()
+        let activation = Activation(id: UUID())
+        currentActivationID = activation.id
+        return activation
+    }
+
+    func deactivate(_ activation: Activation) {
+        // 快速停止后重新开始时，旧清理任务可能晚到；租约不匹配就不能关闭新会话。
+        guard currentActivationID == activation.id else {
+            return
+        }
+        currentActivationID = nil
+        try? backend.deactivateRecording()
+    }
+}
+
 @MainActor
 final class VoiceInputController: NSObject, ObservableObject {
     @Published private(set) var isPreparing = false
@@ -459,6 +567,14 @@ final class VoiceInputController: NSObject, ObservableObject {
     private var appleSession: AppleSpeechTranscriptionSession?
     private var appleLifecycleTask: Task<Void, Never>?
     private var appleFinishHandler: (() -> Void)?
+    private let audioSessionCoordinator: VoiceAudioSessionCoordinator
+    private var audioSessionActivation: VoiceAudioSessionCoordinator.Activation?
+    private var audioSessionCleanupTask: Task<Void, Never>?
+
+    init(audioSessionCoordinator: VoiceAudioSessionCoordinator = .shared) {
+        self.audioSessionCoordinator = audioSessionCoordinator
+        super.init()
+    }
 
     func start(onFinish: @escaping (VoiceRecordingResult?) -> Void) {
         guard activeProvider == nil, !isRecording, finishHandler == nil else {
@@ -501,7 +617,13 @@ final class VoiceInputController: NSObject, ObservableObject {
         isPreparing = true
         VoiceHaptics.prepareRecordingStarted()
 
+        let pendingAudioSessionCleanup = audioSessionCleanupTask
         Task {
+            // 新一轮录音必须等待上一轮清理落地，避免 category/active 状态交叉。
+            await pendingAudioSessionCleanup?.value
+            guard startRequestID == requestID else {
+                return
+            }
             // 按住说话时权限弹窗可能晚于松手返回；用 requestID 防止松手后又启动录音。
             guard await requestRecordPermission() else {
                 guard startRequestID == requestID else {
@@ -515,7 +637,7 @@ final class VoiceInputController: NSObject, ObservableObject {
                 return
             }
             do {
-                try startRecording()
+                try await startRecording(requestID: requestID)
             } catch {
                 guard startRequestID == requestID else {
                     return
@@ -543,11 +665,15 @@ final class VoiceInputController: NSObject, ObservableObject {
 
         isPreparing = true
         VoiceHaptics.prepareRecordingStarted()
-        let session = AppleSpeechTranscriptionSession()
+        let session = AppleSpeechTranscriptionSession(audioSessionCoordinator: audioSessionCoordinator)
         appleSession = session
+        let pendingAudioSessionCleanup = audioSessionCleanupTask
         appleLifecycleTask = Task { [weak self, weak session] in
             guard let self, let session else { return }
             do {
+                // cancel() 会立即恢复 UI；真正开始下一轮前仍需等旧音频会话清理完毕。
+                await pendingAudioSessionCleanup?.value
+                guard startRequestID == requestID else { return }
                 guard await requestRecordPermission() else {
                     guard startRequestID == requestID else { return }
                     errorMessage = L10n.text("ui.microphone_permission_is_not_enabled_please_allow_it")
@@ -657,12 +783,17 @@ final class VoiceInputController: NSObject, ObservableObject {
 
     private func cancelAppleTranscription(notifyFinish: Bool) {
         let session = appleSession
-        appleLifecycleTask?.cancel()
-        appleLifecycleTask = nil
-        completeAppleInteraction(notifyFinish: notifyFinish)
-        Task {
+        let lifecycleTask = appleLifecycleTask
+        lifecycleTask?.cancel()
+        let previousCleanup = audioSessionCleanupTask
+        audioSessionCleanupTask = Task {
+            // 等被取消的 start/finish 任务真正退出后再补一次幂等清理；
+            // 下一次 start 会等待这条任务链，避免旧 Apple 会话与新录音交叉。
+            await previousCleanup?.value
+            await lifecycleTask?.value
             await session?.cancel()
         }
+        completeAppleInteraction(notifyFinish: notifyFinish)
     }
 
     private func completeAppleInteraction(notifyFinish: Bool) {
@@ -675,7 +806,6 @@ final class VoiceInputController: NSObject, ObservableObject {
         isPreparing = false
         isRecording = false
         levelMeter.reset()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         if notifyFinish {
             handler?()
         }
@@ -713,37 +843,47 @@ final class VoiceInputController: NSObject, ObservableObject {
         guard recorder == nil, !isRecording else {
             return
         }
-        try? AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: [.duckOthers])
+        Task {
+            try? await audioSessionCoordinator.prewarm()
+        }
         VoiceHaptics.prepareRecordingStarted()
     }
 
-    private func startRecording() throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
-        try session.setActive(true, options: .notifyOthersOnDeactivation)
+    private func startRecording(requestID: UUID) async throws {
+        let activation = try await audioSessionCoordinator.activate()
+        do {
+            try Task.checkCancellation()
+            guard startRequestID == requestID else {
+                throw CancellationError()
+            }
 
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voice-\(UUID().uuidString)")
-            .appendingPathExtension("m4a")
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44_100,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-        ]
-        let recorder = try AVAudioRecorder(url: url, settings: settings)
-        recorder.isMeteringEnabled = true
-        guard recorder.record() else {
-            throw VoiceInputError.recordingFailed
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("voice-\(UUID().uuidString)")
+                .appendingPathExtension("m4a")
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 44_100,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            ]
+            let recorder = try AVAudioRecorder(url: url, settings: settings)
+            recorder.isMeteringEnabled = true
+            guard recorder.record() else {
+                throw VoiceInputError.recordingFailed
+            }
+            self.recorder = recorder
+            audioSessionActivation = activation
+            recordingURL = url
+            recordingStartedAt = Date()
+            levelMeter.prepareForRecording()
+            isPreparing = false
+            isRecording = true
+            VoiceHaptics.recordingStarted()
+            startMetering()
+        } catch {
+            await audioSessionCoordinator.deactivate(activation)
+            throw error
         }
-        self.recorder = recorder
-        recordingURL = url
-        recordingStartedAt = Date()
-        levelMeter.prepareForRecording()
-        isPreparing = false
-        isRecording = true
-        VoiceHaptics.recordingStarted()
-        startMetering()
     }
 
     private func startMetering() {
@@ -829,7 +969,8 @@ final class VoiceInputController: NSObject, ObservableObject {
         isRecording = false
         activeProvider = nil
         levelMeter.reset()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        scheduleAudioSessionCleanup(audioSessionActivation)
+        audioSessionActivation = nil
         if let fileURL {
             finishHandler?(VoiceRecordingResult(
                 fileURL: fileURL,
@@ -840,6 +981,18 @@ final class VoiceInputController: NSObject, ObservableObject {
             finishHandler?(nil)
         }
         finishHandler = nil
+    }
+
+    private func scheduleAudioSessionCleanup(_ activation: VoiceAudioSessionCoordinator.Activation?) {
+        guard let activation else {
+            return
+        }
+        let previousCleanup = audioSessionCleanupTask
+        audioSessionCleanupTask = Task { [audioSessionCoordinator] in
+            // 清理任务排成一条链；即使用户快速点按，也不会并发改动系统音频会话。
+            await previousCleanup?.value
+            await audioSessionCoordinator.deactivate(activation)
+        }
     }
 
     nonisolated private static func normalizedPower(average: Float, peak: Float) -> CGFloat {

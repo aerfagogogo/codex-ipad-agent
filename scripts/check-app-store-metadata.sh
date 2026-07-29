@@ -67,7 +67,7 @@ for document in required_documents:
 
 link_source = Path("ios/MimiRemote/Sources/Core/AppExternalLinks.swift").read_text(encoding="utf-8")
 for relative_path in ("privacy-policy.md", "terms-of-use.md", "support.md"):
-    expected = f"https://github.com/gaixianggeng/mimi-remote/blob/main/docs/{relative_path}"
+    expected = f"https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/{relative_path}"
     if expected not in link_source:
         errors.append(f"AppExternalLinks.swift is missing stable URL: {expected}")
 
@@ -100,12 +100,6 @@ if 'SWIFT_EMIT_LOC_STRINGS: "NO"' not in project_spec:
 build_match = re.search(r'CURRENT_PROJECT_VERSION:\s*"(\d+)"', project_spec)
 if not build_match or int(build_match.group(1)) < 100048:
     errors.append("CURRENT_PROJECT_VERSION must be numeric and at least 100048")
-
-voice_preferences = Path(
-    "ios/MimiRemote/Sources/State/VoiceInputPreferences.swift"
-).read_text(encoding="utf-8")
-if "storeAvailableCases: [VoiceInputProvider] = [.apple]" not in voice_preferences:
-    errors.append("Store build must expose on-device voice transcription only")
 
 if errors:
     print("App Store metadata gate failed:", file=sys.stderr)

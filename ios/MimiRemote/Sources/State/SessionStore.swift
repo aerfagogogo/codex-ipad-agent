@@ -7,6 +7,12 @@ struct MissingRunningSessionState: Equatable {
     var consecutiveRefreshMisses: Int
 }
 
+struct FileUploadCompletionEvent: Equatable {
+    let id = UUID()
+    let attachment: UploadedFileAttachment
+    let targetScope: ComposerDraftScopeKey
+}
+
 @MainActor
 final class SessionStore: ObservableObject {
     @Published var projects: [AgentProject] = [] {
@@ -32,6 +38,7 @@ final class SessionStore: ObservableObject {
             rebuildSessionIndexes()
         }
     }
+    @Published var externalActivityBySessionID: [SessionID: ExternalSessionActivity] = [:]
     @Published var remoteSessionSearchResults: [AgentSession] = [] {
         didSet {
             rebuildProjectSessionListSnapshots()
@@ -92,6 +99,9 @@ final class SessionStore: ObservableObject {
     @Published var worktreeErrorMessage: String?
     @Published var gitStatusByPath: [String: GitStatusResponse] = [:]
     @Published var gitStatusErrorByPath: [String: String] = [:]
+    @Published var workspaceGitSummaryByPath: [String: GitStatusResponse] = [:]
+    @Published var workspaceGitSummaryUpdatedAtByPath: [String: Date] = [:]
+    @Published var refreshingWorkspaceGitSummaryPaths: Set<String> = []
     @Published var isRefreshingGitStatus = false
     @Published var gitActionErrorByPath: [String: String] = [:]
     @Published var commandActionsByPath: [String: [AgentCommandAction]] = [:]
@@ -124,6 +134,20 @@ final class SessionStore: ObservableObject {
     @Published var sessionControlStateByID: [SessionID: SessionControlState] = [:]
     @Published var queuedRunningTurnsBySessionID: [SessionID: [QueuedTurnEntry]] = [:]
     @Published var queuedTurnStorageErrorMessage: String?
+    /// 只驱动主机选择器和写操作禁用态，不承载探活结果，避免状态圆点刷新整棵工作台。
+    @Published private(set) var connectionSwitchTargetProfileID: String?
+    @Published private(set) var latestFileUploadCompletion: FileUploadCompletionEvent?
+
+    var isConnectionSwitchInProgress: Bool {
+        connectionSwitchTargetProfileID != nil
+    }
+
+    func setConnectionSwitchTargetProfileID(_ profileID: String?) {
+        guard connectionSwitchTargetProfileID != profileID else {
+            return
+        }
+        connectionSwitchTargetProfileID = profileID
+    }
 
     let appStore: AppStore
     let conversationStore: ConversationStore
@@ -136,15 +160,47 @@ final class SessionStore: ObservableObject {
     let sessionReminderStore: SessionReminderStore
     let sessionReminderScheduler: any SessionReminderScheduling
     let sessionReminderNow: () -> Date
+    let runtimeCompletionNotificationsEnabled: Bool
     let historySavingsNoticeStore: HistorySavingsNoticeStore
     let queuedTurnStore: any QueuedTurnPersisting
     let terminalStreamStore = TerminalStreamStore()
+    let hostWarmSnapshotCache = HostWarmSnapshotCache()
+    // 文件上传任务跨 ComposerView 重建持续存在，避免旋转、Split View 或切会话时丢失进度。
+    let fileUploadStore: FileUploadStore
     // 草稿跟随 SessionStore 生命周期，避免窗口 resize 或详情页重建时随 ComposerView 的 @State 一起丢失。
     // 不使用 @Published，防止每次键入都触发整个工作台刷新。
     var composerDraftCache = ComposerDraftCache()
+    // 模型与推理强度按会话保留，但只存在当前连接的内存生命周期内。
+    // 与内容草稿分开后，空输入或发送成功也不会误删模型偏好。
+    var composerModelSelectionCache = ComposerModelSelectionCache()
+
+    func storeCompletedFileUpload(_ attachment: UploadedFileAttachment, for scope: ComposerDraftScopeKey) {
+        guard scope != .none else {
+            return
+        }
+        var snapshot = composerDraftCache.snapshot(for: scope)
+        guard !snapshot.attachments.contains(where: { $0.id == "uploadedFile:\(attachment.uploadID)" }) else {
+            return
+        }
+        snapshot.attachments.append(.uploadedFile(attachment))
+        composerDraftCache.save(snapshot, for: scope)
+        latestFileUploadCompletion = FileUploadCompletionEvent(
+            attachment: attachment,
+            targetScope: scope
+        )
+    }
+
+    func clearFileUploadsForConnectionChange() {
+        fileUploadStore.cancelAll()
+        latestFileUploadCompletion = nil
+    }
+
     // Goal / Plan 选择同样需要跨横竖屏 View 重建，但不应持久化到下次启动。
     // 保持非 @Published，ComposerView 自己维持当前可见状态，避免放大刷新范围。
     var composerSendModeCache = ComposerSendModeCache()
+    // 补充信息可能包含 isSecret 答案，只在 SessionStore 生命周期内暂存，绝不落盘。
+    // 这样既能跨横竖屏导致的 ComposerView 重建恢复，又不会扩大敏感数据存储范围。
+    var pendingUserInputFormStateCache = PendingUserInputFormState()
     let clientFactory: () throws -> any SessionStoreAPIClient
     let webSocketFactory: () -> any SessionWebSocketClient
     let sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)?
@@ -155,23 +211,36 @@ final class SessionStore: ObservableObject {
     let sessionListSleep: (UInt64) async -> Void
     let sessionSearchDebounceNanoseconds: UInt64
     let sessionSearchSleep: (UInt64) async throws -> Void
+    let externalActivitySleep: (UInt64) async -> Void
     var webSocket: (any SessionWebSocketClient)?
     var connectedSessionID: String?
+    var connectedHostScope: HostScope?
     var selectionGeneration: UInt64 = 0
     var webSocketConnectionGeneration = 0
     var webSocketReconnectTask: Task<Void, Never>?
     var webSocketReconnectAttemptBySessionID: [SessionID: Int] = [:]
     var lastAppliedNetworkPathSequence: UInt64 = 0
     var networkPathGeneration = 0
+    /// 前台/网络恢复各自推进一次代次；同一代次对当前会话只做一次强制历史对账。
+    var recoveryHistoryGeneration: UInt64 = 0
+    var reconciledRecoveryGenerationBySessionID: [SessionID: UInt64] = [:]
+    var recoveryHistorySucceededBySessionID: [SessionID: Bool] = [:]
     var networkSuspendedSessionID: SessionID?
     var networkRecoveryTask: Task<Void, Never>?
     var appLifecycleSuspendedSessionID: SessionID?
     var isAppInBackground = false
+    // 终态刷新期间 activity 已从服务端快照消失，但历史还没补齐；这段窗口仍必须保持只读，
+    // 防止旧的持久化 `.takenOver` 状态抢先触发 thread/resume。
+    var externalReadOnlySessionIDs: Set<SessionID> = []
+    var isRefreshingExternalActivity = false
+    var externalActivityCapabilityUnavailable = false
     var connectionChangeGeneration = 0
     var inFlightConnectionChangeGeneration: Int?
+    var connectionSwitchTargetGeneration: Int?
+    var preparedConnectionTask: Task<PreparedConnectionSettings, Error>?
     var lastSeenEventSeqBySessionID: [SessionID: EventSequence] = [:]
     var historySnapshotSeqBySessionID: [SessionID: EventSequence] = [:]
-    var runtimeEventFlushTasks: [SessionID: Task<Void, Never>] = [:]
+    var runtimeEventFlushTasks: [HostSessionLease: Task<Void, Never>] = [:]
     var foregroundActivityClearTasks: [SessionID: Task<Void, Never>] = [:]
 #if DEBUG
     var didApplyDebugWorkbenchUISeed = false
@@ -203,8 +272,6 @@ final class SessionStore: ObservableObject {
     var hiddenSessionCountByProjectID: [String: Int] = [:]
     @Published var sessionVisibleLimitByProjectID: [String: Int] = [:]
     var sessionListSnapshotsByProjectID: [String: ProjectSessionListSnapshot] = [:]
-    var frozenAllSessionOrder: [SessionID] = []
-    var frozenSessionOrderByProjectID: [String: [SessionID]] = [:]
     var sessionPageCursorByProjectID: [String: String] = [:]
     var sessionHasMoreByProjectID: [String: Bool] = [:]
     /// 工作区详情独立于侧栏展开状态记录已经加载过旧页的项目，供下拉刷新保留分页窗口。
@@ -232,6 +299,9 @@ final class SessionStore: ObservableObject {
     var historyLoadJobTokenBySessionID: [SessionID: Int] = [:]
     var historyLoadedSignatureBySessionID: [SessionID: HistoryLoadSignature] = [:]
     var historyLoadedQualityBySessionID: [SessionID: HistoryLoadQuality] = [:]
+    /// 运行中的 full 历史可能暂时携带大量过程输出。命中网关单包上限后先显示 summary，
+    /// 等对应 Turn 完成再补拉 canonical full，避免把临时膨胀误判成永久大历史。
+    var deferredFullHistorySessionIDs: Set<SessionID> = []
     var freshEmptyHistorySignatureBySessionID: [SessionID: HistoryLoadSignature] = [:]
     var initialHistoryLoadingSessionIDs: Set<SessionID> = []
     @Published var historyLoadProgressBySessionID: [SessionID: HistoryLoadProgress] = [:]
@@ -244,6 +314,8 @@ final class SessionStore: ObservableObject {
     let runtimeEventFlushDelayNanoseconds: UInt64 = 80_000_000
     let sessionListConnectedPollingDelayNanoseconds: UInt64 = 60_000_000_000
     let sessionListDisconnectedPollingDelayNanoseconds: UInt64 = 8_000_000_000
+    let externalActivityDefaultPollingDelayNanoseconds: UInt64 = 8_000_000_000
+    let externalActivitySelectedPollingDelayNanoseconds: UInt64 = 5_000_000_000
     let sessionListFirstPageCacheTTL: TimeInterval = 2
     let sessionLibraryIndexPollingInterval: TimeInterval = 60
     let sessionListReconciliationDelayNanoseconds: UInt64 = 1_500_000_000
@@ -264,6 +336,8 @@ final class SessionStore: ObservableObject {
     static let maximumUnverifiedRunningSessionMisses = 3
     static let commandActionHistoryLimit = 10
     static let queuedTurnLimitPerSession = 20
+    static let workspaceGitSummaryTTL: TimeInterval = 60
+    static let workspaceGitSummaryConcurrencyLimit = 3
 
     init(
         appStore: AppStore,
@@ -278,6 +352,8 @@ final class SessionStore: ObservableObject {
         queuedTurnStore: (any QueuedTurnPersisting)? = nil,
         sessionReminderScheduler: (any SessionReminderScheduling)? = nil,
         sessionReminderNow: @escaping () -> Date = Date.init,
+        runtimeCompletionNotificationsEnabled: Bool = false,
+        fileUploadStore: FileUploadStore? = nil,
         clientFactory: (() throws -> any SessionStoreAPIClient)? = nil,
         webSocketFactory: (() -> any SessionWebSocketClient)? = nil,
         sessionWebSocketFactory: ((AgentSession) -> any SessionWebSocketClient)? = nil,
@@ -294,12 +370,22 @@ final class SessionStore: ObservableObject {
         sessionSearchDebounceNanoseconds: UInt64 = 300_000_000,
         sessionSearchSleep: @escaping (UInt64) async throws -> Void = { nanoseconds in
             try await Task.sleep(nanoseconds: nanoseconds)
+        },
+        externalActivitySleep: @escaping (UInt64) async -> Void = { nanoseconds in
+            try? await Task.sleep(nanoseconds: nanoseconds)
         }
     ) {
         self.appStore = appStore
         self.conversationStore = conversationStore
         self.logStore = logStore
+        self.fileUploadStore = fileUploadStore ?? FileUploadStore()
         self.contextStore = contextStore ?? SessionContextStore()
+        let initialProfileID = appStore.activeHostScope.profileID
+        // 三个高频内存 Store 共用全局预算，但所有读写必须先绑定当前 Profile namespace。
+        // 初始化阶段完成绑定，避免首批 bootstrap 数据落入空字符串兼容命名空间。
+        conversationStore.activate(profileID: initialProfileID)
+        logStore.activate(profileID: initialProfileID)
+        self.contextStore.activate(profileID: initialProfileID)
         self.eventReducer = EventReducer()
         if let recentWorkspaceStore {
             self.recentWorkspaceStore = recentWorkspaceStore
@@ -359,6 +445,8 @@ final class SessionStore: ObservableObject {
             self.sessionReminderScheduler = UserNotificationSessionReminderScheduler()
         }
         self.sessionReminderNow = sessionReminderNow
+        // 审批和补充信息始终允许提醒；完成/失败属于高频日常事件，首版默认关闭。
+        self.runtimeCompletionNotificationsEnabled = runtimeCompletionNotificationsEnabled
         self.clientFactory = clientFactory ?? { try appStore.makeSessionStoreAPIClient() }
         self.webSocketFactory = webSocketFactory ?? { appStore.makeSessionWebSocketClient() }
         if let sessionWebSocketFactory {
@@ -390,6 +478,7 @@ final class SessionStore: ObservableObject {
         self.sessionListSleep = sessionListSleep
         self.sessionSearchDebounceNanoseconds = sessionSearchDebounceNanoseconds
         self.sessionSearchSleep = sessionSearchSleep
+        self.externalActivitySleep = externalActivitySleep
         self.dismissedHistorySavingsNoticeEndpoints = self.historySavingsNoticeStore.loadDismissedEndpoints()
         reloadSessionListPreferences()
         reloadSessionControlStates()
@@ -509,6 +598,23 @@ final class SessionStore: ObservableObject {
 
     func removeComposerDraft(for scope: ComposerDraftScopeKey) {
         composerDraftCache.remove(scope: scope)
+    }
+
+    func saveComposerModelSelection(
+        _ snapshot: ComposerModelSelectionSnapshot,
+        for scope: ComposerDraftScopeKey
+    ) {
+        composerModelSelectionCache.save(snapshot, for: scope)
+    }
+
+    func composerModelSelection(
+        for scope: ComposerDraftScopeKey
+    ) -> ComposerModelSelectionSnapshot? {
+        composerModelSelectionCache.snapshot(for: scope)
+    }
+
+    func removeComposerModelSelection(for scope: ComposerDraftScopeKey) {
+        composerModelSelectionCache.remove(scope: scope)
     }
 
     func composerSendModeForScopeActivation(
@@ -956,6 +1062,9 @@ final class SessionStore: ObservableObject {
         guard let selectedSession else {
             return nil
         }
+        if selectedSession.isLocalDraft {
+            return L10n.text("ui.new_session")
+        }
         guard selectedSession.isRunning else {
             if selectedSession.isAppServerHistory {
                 return L10n.text("ui.history")
@@ -987,12 +1096,12 @@ final class SessionStore: ObservableObject {
 
     /// 进行中的任务不能被“最近 8 条”截断；侧栏始终展示当前已加载索引里的全部运行态。
     var activeSessions: [AgentSession] {
-        Self.sortedSessions(sessions.filter { isListableSession($0) && $0.isRunning })
+        Self.sortedSessions(sessions.filter { isListableSession($0) && ($0.isRunning || $0.isLocalDraft) })
     }
 
     /// 历史区单独保留最近 8 条，避免运行任务占掉历史预览名额。
     var recentHistorySessions: [AgentSession] {
-        Array(Self.sortedSessions(sessions.filter { isListableSession($0) && !$0.isRunning }).prefix(8))
+        Array(Self.sortedSessions(sessions.filter { isListableSession($0) && !$0.isRunning && !$0.isLocalDraft }).prefix(8))
     }
 
     var filteredSidebarProjects: [AgentProject] {
@@ -1110,6 +1219,9 @@ final class SessionStore: ObservableObject {
     }
 
     func controlState(for session: AgentSession) -> SessionControlState {
+        if isExternalReadOnlySession(session) {
+            return .observing
+        }
         if let state = sessionControlStateByID[session.id] {
             return state
         }
@@ -1117,8 +1229,14 @@ final class SessionStore: ObservableObject {
     }
 
     func canControlSession(_ session: AgentSession?) -> Bool {
+        guard !isConnectionSwitchInProgress else {
+            return false
+        }
         guard let session else {
             return true
+        }
+        guard !isExternalReadOnlySession(session) else {
+            return false
         }
         guard session.isRunning else {
             return true
@@ -1187,10 +1305,28 @@ final class SessionStore: ObservableObject {
         guard isSelectedSessionObserving else {
             return nil
         }
+        if let session = selectedSession, isExternalReadOnlySession(session) {
+            return L10n.text("ui.mac_observe_only")
+        }
         return L10n.text("ui.this_session_is_running_on_other_clients_the")
     }
 
+    var selectedSessionAllowsTakeOver: Bool {
+        guard let session = selectedSession else {
+            return false
+        }
+        return !isExternalReadOnlySession(session)
+    }
+
+    func isExternalReadOnlySession(_ session: AgentSession) -> Bool {
+        externalReadOnlySessionIDs.contains(session.id)
+    }
+
     func takeOverSession(_ session: AgentSession) {
+        guard !isExternalReadOnlySession(session) else {
+            setStatusMessage(L10n.text("ui.mac_observe_only"))
+            return
+        }
         setSessionControlState(.takenOver, sessionID: session.id)
         if session.id == selectedSessionID, session.isRunning {
             // 接管前消息区已经由 selectSession/刷新用 thread/read 快照兜底；backlog 走状态级

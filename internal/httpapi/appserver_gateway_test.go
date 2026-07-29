@@ -11,9 +11,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -86,8 +88,9 @@ func TestAppServerConfigRequiresAuthAndReturnsSanitizedMetadata(t *testing.T) {
 		t.Fatalf("config metadata 应返回 Codex channel：%v", body)
 	}
 	capabilities, ok := channels[0].(map[string]any)["capabilities"].(map[string]any)
-	if !ok || capabilities["rename"] != true || capabilities["compact"] != true || capabilities["review"] != true {
-		t.Fatalf("Codex channel 应声明 rename/compact/review 能力：%v", channels[0])
+	if !ok || capabilities["rename"] != true || capabilities["compact"] != true ||
+		capabilities["review"] != true || capabilities["external_activity"] != true {
+		t.Fatalf("Codex channel 应声明 rename/compact/review/external_activity 能力：%v", channels[0])
 	}
 }
 
@@ -122,7 +125,8 @@ func TestAppServerConfigIncludesClaudeChannelWhenEnabled(t *testing.T) {
 		t.Fatalf("Claude bridge metadata 异常：%v", bridge)
 	}
 	capabilities := claude["capabilities"].(map[string]any)
-	if capabilities["rename"] != false || capabilities["compact"] != false || capabilities["review"] != false || capabilities["rate_limits"] != true {
+	if capabilities["rename"] != false || capabilities["compact"] != false || capabilities["review"] != false ||
+		capabilities["rate_limits"] != true || capabilities["external_activity"] != false {
 		t.Fatalf("Claude channel 不应声明 Codex 专属能力：%v", capabilities)
 	}
 	methods := claude["methods"].([]any)
@@ -276,7 +280,7 @@ while IFS= read -r line; do :; done
 		!bytes.Contains(raw, []byte(`"model":"sonnet"`)) ||
 		!bytes.Contains(raw, []byte(`"model":"opus"`)) ||
 		!bytes.Contains(raw, []byte(`"Claude Fable 5"`)) ||
-		!bytes.Contains(raw, []byte(`"Claude Opus 4.8"`)) ||
+		!bytes.Contains(raw, []byte(`"Claude Opus 5"`)) ||
 		bytes.Contains(raw, []byte(`"models":[]`)) {
 		t.Fatalf("Claude model/list 应由 gateway 覆盖成当前模型目录：%s", raw)
 	}
@@ -386,7 +390,128 @@ while IFS= read -r line; do sleep 10; done
 	}
 }
 
-func TestClaudeGatewayDisconnectTerminatesBridgeProcessGroup(t *testing.T) {
+// The bridge is resident: a client dropping its WebSocket must not take the
+// process down, because the turn it started is still running inside it.
+func TestClaudeGatewayDisconnectLeavesBridgeRunning(t *testing.T) {
+	dir := t.TempDir()
+	startsPath := filepath.Join(dir, "starts")
+	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
+printf 'x' >> %q
+while IFS= read -r line; do :; done
+`, startsPath))
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridge
+		cfg.Claude.MaxConcurrentBridges = 3
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	t.Cleanup(router.claudeBridge.shutdown)
+
+	conn := dialAuthedGatewayRuntime(t, server.URL, "claude")
+	readTestFileEventually(t, startsPath)
+	bridgePID := claudeBridgePID(t, router)
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Give a would-be teardown time to land, then confirm the process is still
+	// there and a second client reuses it rather than spawning a replacement.
+	time.Sleep(300 * time.Millisecond)
+	if err := syscall.Kill(bridgePID, 0); err != nil {
+		t.Fatalf("断开 WS 后 Claude bridge 不应退出：pid=%d err=%v", bridgePID, err)
+	}
+	second := dialAuthedGatewayRuntime(t, server.URL, "claude")
+	defer second.Close()
+	if got := claudeBridgePID(t, router); got != bridgePID {
+		t.Fatalf("重连应复用常驻 bridge：first=%d second=%d", bridgePID, got)
+	}
+}
+
+// Shutting the supervisor down is what reaps the bridge, and it must take the
+// whole process group so Claude Code children do not outlive agentd.
+// An installed app ships its own bridge next to agentd. A fresh machine has
+// no ~/.cargo/bin, and a config carrying someone else's absolute path would
+// otherwise leave Claude unavailable on a complete install.
+func TestResolveClaudeBridgeFallsBackToTheBundledCopy(t *testing.T) {
+	sibling := bundledClaudeBridgeSiblingPath()
+	if sibling == "" {
+		t.Skip("拿不到可执行文件路径")
+	}
+	if _, err := os.Stat(sibling); err == nil {
+		t.Skip("测试二进制旁已存在同名文件，跳过以免干扰")
+	}
+	if err := os.WriteFile(sibling, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Skip("无法在测试二进制旁写入：" + err.Error())
+	}
+	t.Cleanup(func() { _ = os.Remove(sibling) })
+
+	missing := filepath.Join(t.TempDir(), "not-installed")
+	got, ok := resolveClaudeBridgePath(missing)
+	if !ok || got != sibling {
+		t.Fatalf("配置路径不存在时应回退到随包 bridge：got=%q ok=%v want=%q", got, ok, sibling)
+	}
+	if got, ok := resolveClaudeBridgePath(""); !ok || got != sibling {
+		t.Fatalf("未配置时应使用随包 bridge：got=%q ok=%v", got, ok)
+	}
+
+	// 显式配置了一个能用的 bridge 时必须原样使用它，不能被随包的顶掉。
+	configured := filepath.Join(t.TempDir(), "my-bridge")
+	if err := os.WriteFile(configured, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := resolveClaudeBridgePath(configured); !ok || got != configured {
+		t.Fatalf("显式配置应优先：got=%q ok=%v want=%q", got, ok, configured)
+	}
+}
+
+// A bridge that starts but never binds its socket must fail the start and
+// leave the supervisor usable. ensure() holds the supervisor lock across
+// start(), so anything in there that waits on the reaper — which takes the
+// same lock — wedges every later connection, not just this one.
+func TestClaudeBridgeStartTimeoutDoesNotWedgeSupervisor(t *testing.T) {
+	previous := claudeBridgeStartTimeout
+	claudeBridgeStartTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { claudeBridgeStartTimeout = previous })
+
+	// 这里不能使用 writeTestBridge：它会通过 fakebridge helper 主动监听 socket，
+	// 在较快的 CI runner 上反而让 ensure 成功，掩盖真正要验证的启动超时路径。
+	silent := filepath.Join(t.TempDir(), "silent-bridge")
+	if err := os.WriteFile(silent, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	supervisor := newClaudeBridgeSupervisor()
+	t.Cleanup(supervisor.shutdown)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := supervisor.ensure(silent, nil, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("bridge 从未监听 socket，ensure 应当失败")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ensure 在启动超时后卡死，supervisor 锁没有释放")
+	}
+
+	// The supervisor must still be able to take another attempt.
+	second := make(chan error, 1)
+	go func() {
+		_, err := supervisor.ensure(silent, nil, nil)
+		second <- err
+	}()
+	select {
+	case <-second:
+	case <-time.After(10 * time.Second):
+		t.Fatal("首次启动失败后 supervisor 不再接受新的启动请求")
+	}
+}
+
+func TestClaudeBridgeShutdownTerminatesProcessGroup(t *testing.T) {
 	childPIDPath := filepath.Join(t.TempDir(), "child.pid")
 	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
 sleep 30 &
@@ -394,7 +519,7 @@ echo $! > %q
 while IFS= read -r line; do sleep 30; done
 `, childPIDPath))
 	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
-	handler, _ := appServerGatewayRouterFixtureWithConfig(t, upstreamURL, func(cfg *config.Config) {
+	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
 		cfg.Claude.Enabled = true
 		cfg.Claude.BridgeBin = bridge
 		cfg.Claude.MaxConcurrentBridges = 3
@@ -403,12 +528,277 @@ while IFS= read -r line; do sleep 30; done
 	defer server.Close()
 
 	conn := dialAuthedGatewayRuntime(t, server.URL, "claude")
+	defer conn.Close()
 	childPID := parseTestPID(t, string(readTestFileEventually(t, childPIDPath)))
 	t.Cleanup(func() { _ = syscall.Kill(childPID, syscall.SIGKILL) })
-	if err := conn.Close(); err != nil {
+
+	router.claudeBridge.shutdown()
+	waitForProcessExit(t, childPID)
+}
+
+func claudeBridgePID(t *testing.T, router *Router) int {
+	t.Helper()
+	router.claudeBridge.mu.Lock()
+	defer router.claudeBridge.mu.Unlock()
+	if router.claudeBridge.cmd == nil || router.claudeBridge.cmd.Process == nil {
+		t.Fatal("Claude bridge 未运行")
+	}
+	return router.claudeBridge.cmd.Process.Pid
+}
+
+// A client-confirmed cursor wins over Go's higher WebSocket-write watermark.
+func TestClaudeGatewayAttachesNamedSessionAndResumesFromClientCursor(t *testing.T) {
+	attachPath := filepath.Join(t.TempDir(), "attach.jsonl")
+	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
+IFS= read -r line
+printf '%%s\n' "$line" >> %q
+printf '{"jsonrpc":"2.0","method":"_alleycat/attached","params":{"sessionKey":"dev-1","kind":"fresh","currentSeq":0,"floorSeq":0}}\n'
+printf '{"jsonrpc":"2.0","id":42,"result":{"ok":true},"_alleycat_seq":7}\n'
+while IFS= read -r line; do :; done
+`, attachPath))
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridge
+		cfg.Claude.MaxConcurrentBridges = 3
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGatewaySession(t, server.URL, "claude", "dev-1")
+	first := readTestFileLineEventually(t, attachPath, `_alleycat/attach`)
+	if !bytes.Contains(first, []byte(`"sessionKey":"dev-1"`)) {
+		t.Fatalf("首次 attach 应带上客户端会话名：%s", first)
+	}
+	if !bytes.Contains(first, []byte(`"lastSeen":0`)) {
+		t.Fatalf("命名 attach 尚无可信 cursor 时必须从 ring 起点恢复：%s", first)
+	}
+	// Wait until the seq-stamped frame has been relayed, so the cursor is set.
+	if raw := readGatewayRaw(t, conn); bytes.Contains(raw, []byte("_alleycat/attached")) {
+		t.Fatalf("attach 应答属于传输层，不应转发给客户端：%s", raw)
+	}
+	_ = conn.Close()
+
+	target := wsURL(server.URL, appServerGatewayPath) + "?runtime=claude&session=dev-1&last_seen=3"
+	second, _, err := websocket.DefaultDialer.Dial(target, http.Header{
+		"Authorization": []string{"Bearer " + testToken},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	waitForProcessExit(t, childPID)
+	defer second.Close()
+	resumed := readTestFileLineEventually(t, attachPath, `"lastSeen":3`)
+	if !bytes.Contains(resumed, []byte(`"lastSeen":3`)) {
+		t.Fatalf("重连应从客户端确认的序号续传，而不是 Go 写成功的 7：%s", resumed)
+	}
+	reset := readGatewayRaw(t, second)
+	if !bytes.Contains(reset, []byte(`"_mimi/claudeReplayCursor/reset"`)) ||
+		!bytes.Contains(reset, []byte(`"sequence":0`)) {
+		t.Fatalf("bridge 返回 fresh 时必须先让客户端清空旧 epoch cursor：%s", reset)
+	}
+}
+
+func TestClaudeBridgeSupervisorResetClearsCursorNamespace(t *testing.T) {
+	supervisor := newClaudeBridgeSupervisor()
+	supervisor.cursorMu.Lock()
+	oldEpoch := supervisor.cursorEpoch
+	supervisor.cursorMu.Unlock()
+	supervisor.noteDelivered("dev-reset", 9, oldEpoch)
+	if _, ok := supervisor.resumeCursor("dev-reset"); !ok {
+		t.Fatal("测试前置 cursor 未写入")
+	}
+
+	supervisor.mu.Lock()
+	supervisor.reset()
+	supervisor.mu.Unlock()
+
+	if _, ok := supervisor.resumeCursor("dev-reset"); ok {
+		t.Fatal("bridge 重启后不应保留旧实例 sequence cursor")
+	}
+	supervisor.noteDelivered("dev-reset", 10, oldEpoch)
+	if _, ok := supervisor.resumeCursor("dev-reset"); ok {
+		t.Fatal("旧 bridge 连接的迟到 delivered 不能污染新实例 cursor namespace")
+	}
+}
+
+// Without a session name nothing is claimed, so the bridge keeps giving the
+// connection an isolated session.
+func TestClaudeGatewayOmitsAttachWithoutSessionName(t *testing.T) {
+	receivedPath := filepath.Join(t.TempDir(), "received.jsonl")
+	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
+while IFS= read -r line; do
+  printf '%%s\n' "$line" >> %q
+done
+`, receivedPath))
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridge
+		cfg.Claude.MaxConcurrentBridges = 3
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	conn := dialAuthedGatewayRuntime(t, server.URL, "claude")
+	defer conn.Close()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"id":5,"method":"model/list","params":{}}`)); err != nil {
+		t.Fatal(err)
+	}
+	received := readTestFileLineEventually(t, receivedPath, "model/list")
+	if bytes.Contains(received, []byte("_alleycat/attach")) {
+		t.Fatalf("未命名会话不应发送 attach 前导帧：%s", received)
+	}
+}
+
+// A cursor only means something inside the sequence it came from. If the
+// bridge answers with anything but "resumed" it is counting from scratch, and
+// holding on to the old number is worse than having none: the replay ring
+// answers a cursor above its current sequence with an empty slice and no
+// error, so the next attach would look successful while skipping everything.
+func TestClaudeGatewayDropsCursorWhenBridgeRenumbers(t *testing.T) {
+	dir := t.TempDir()
+	attachPath := filepath.Join(dir, "attach.jsonl")
+	markPath := filepath.Join(dir, "emitted")
+	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
+IFS= read -r line
+printf '%%s\n' "$line" >> %q
+printf '{"jsonrpc":"2.0","method":"_alleycat/attached","params":{"sessionKey":"dev-2","kind":"fresh","currentSeq":0,"floorSeq":0}}\n'
+if [ ! -f %q ]; then
+  : > %q
+  printf '{"jsonrpc":"2.0","id":9,"result":{"ok":true},"_alleycat_seq":7}\n'
+fi
+while IFS= read -r line; do :; done
+`, attachPath, markPath, markPath))
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, router := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridge
+		cfg.Claude.MaxConcurrentBridges = 3
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	// First connection records a relay watermark at seq 7.
+	conn := dialAuthedGatewaySession(t, server.URL, "claude", "dev-2")
+	readGatewayRaw(t, conn)
+	_ = conn.Close()
+
+	// Without a client confirmation the second connection starts from ring
+	// floor instead of skipping to Go's write watermark. The bridge then says
+	// the session was minted fresh, so the watermark must not survive it.
+	second := dialAuthedGatewaySession(t, server.URL, "claude", "dev-2")
+	defer second.Close()
+	resumed := readTestFileLineEventually(t, attachPath, "lastSeen")
+	if !bytes.Contains(resumed, []byte(`"lastSeen":0`)) {
+		t.Fatalf("无客户端确认时第二次 attach 应从 ring 起点恢复：%s", resumed)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, ok := router.claudeBridge.resumeCursor("dev-2"); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("attach 应答为 fresh 后应丢弃过期游标")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The iPad app already names its connection with `thread_id`. Resume has to
+// work off that, or the whole resident-bridge path stays dead for the only
+// client we ship.
+func TestClaudeGatewayAttachesUsingThreadIDWhenUnnamed(t *testing.T) {
+	attachPath := filepath.Join(t.TempDir(), "attach.jsonl")
+	bridge := writeTestBridge(t, fmt.Sprintf(`#!/bin/sh
+IFS= read -r line
+printf '%%s\n' "$line" >> %q
+printf '{"jsonrpc":"2.0","method":"_alleycat/attached","params":{"sessionKey":"thr_abc","kind":"fresh","currentSeq":0,"floorSeq":0}}\n'
+while IFS= read -r line; do :; done
+`, attachPath))
+	upstreamURL, _, _ := fakeAppServerUpstream(t, nil)
+	handler, _ := appServerGatewayRouterFixtureWithRouter(t, upstreamURL, func(cfg *config.Config) {
+		cfg.Claude.Enabled = true
+		cfg.Claude.BridgeBin = bridge
+		cfg.Claude.MaxConcurrentBridges = 3
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	target := wsURL(server.URL, appServerGatewayPath) + "?runtime=claude&thread_id=thr_abc"
+	conn, _, err := websocket.DefaultDialer.Dial(target, http.Header{
+		"Authorization": []string{"Bearer " + testToken},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	first := readTestFileLineEventually(t, attachPath, `_alleycat/attach`)
+	if !bytes.Contains(first, []byte(`"sessionKey":"thr_abc"`)) {
+		t.Fatalf("未带 session 时应回退用 thread_id 作为会话名：%s", first)
+	}
+}
+
+func TestClaudeGatewaySessionKeySelection(t *testing.T) {
+	cases := []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{"显式 session 优先于 thread_id", "session=dev-1&thread_id=thr_abc", "dev-1"},
+		{"缺 session 时回退 thread_id", "thread_id=thr_abc", "thr_abc"},
+		{"空 session 视作未指定", "session=&thread_id=thr_abc", "thr_abc"},
+		// 显式指定就以它为准：非法的 session 不静默改用另一个会话名，
+		// 否则客户端会以为自己续上了实际没续上的会话。
+		{"非法 session 不回退", "session=bad/name&thread_id=thr_abc", ""},
+		{"非法 thread_id 退化为匿名", "thread_id=bad:name", ""},
+		{"超长键退化为匿名", "thread_id=" + strings.Repeat("a", 129), ""},
+		{"两者都无", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/app-server/ws?"+tc.query, nil)
+			if got := claudeGatewaySessionKey(req); got != tc.want {
+				t.Fatalf("claudeGatewaySessionKey(%q) = %q，期望 %q", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClaudeGatewayLastSeenParsing(t *testing.T) {
+	cases := []struct {
+		query string
+		want  uint64
+		ok    bool
+	}{
+		{"last_seen=42", 42, true},
+		{"last_seen=0", 0, true},
+		{"last_seen=", 0, false},
+		{"last_seen=-1", 0, false},
+		{"last_seen=not-a-number", 0, false},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/api/app-server/ws?"+tc.query, nil)
+		got, ok := claudeGatewayLastSeen(req)
+		if got != tc.want || ok != tc.ok {
+			t.Fatalf("claudeGatewayLastSeen(%q) = (%d,%v)，期望 (%d,%v)", tc.query, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func dialAuthedGatewaySession(t *testing.T, serverURL string, runtimeID string, sessionKey string) *websocket.Conn {
+	t.Helper()
+	target := wsURL(serverURL, appServerGatewayPath) +
+		"?runtime=" + url.QueryEscape(runtimeID) +
+		"&session=" + url.QueryEscape(sessionKey)
+	conn, _, err := websocket.DefaultDialer.Dial(target, http.Header{
+		"Authorization": []string{"Bearer " + testToken},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conn
 }
 
 func TestClaudeGatewayRejectsUnsupportedMethod(t *testing.T) {
@@ -2112,6 +2502,20 @@ func appServerGatewayRouterFixtureWithTokenFile(t *testing.T, upstreamURL string
 
 func appServerGatewayRouterFixtureWithConfig(t *testing.T, upstreamURL string, customize func(*config.Config)) (http.Handler, string) {
 	t.Helper()
+	handler, _, projectDir := buildAppServerGatewayFixture(t, upstreamURL, customize)
+	return handler, projectDir
+}
+
+// appServerGatewayRouterFixtureWithRouter is for tests that need to reach the
+// Router's long-lived state, such as the resident Claude bridge.
+func appServerGatewayRouterFixtureWithRouter(t *testing.T, upstreamURL string, customize func(*config.Config)) (http.Handler, *Router) {
+	t.Helper()
+	handler, router, _ := buildAppServerGatewayFixture(t, upstreamURL, customize)
+	return handler, router
+}
+
+func buildAppServerGatewayFixture(t *testing.T, upstreamURL string, customize func(*config.Config)) (http.Handler, *Router, string) {
+	t.Helper()
 	cfg, registry, manager, checker, projectDir := appServerGatewayBaseFixture(t)
 	cfg.AppServer = config.AppServerConfig{
 		Transport:   "ws",
@@ -2122,7 +2526,11 @@ func appServerGatewayRouterFixtureWithConfig(t *testing.T, upstreamURL string, c
 	if customize != nil {
 		customize(&cfg)
 	}
-	return NewRouterWithRuntime(cfg, registry, manager, checker, "test", nil), projectDir
+	handler, router := NewRouterWithRuntime(cfg, registry, manager, checker, "test", nil)
+	// Any fixture that reaches the Claude gateway starts a resident bridge;
+	// without this they leak a process per test.
+	t.Cleanup(router.claudeBridge.shutdown)
+	return handler, router, projectDir
 }
 
 func testAppServerTokenFile(t *testing.T, token string) string {
@@ -2243,22 +2651,62 @@ func dialAuthedGatewayRuntime(t *testing.T, serverURL string, runtimeID string) 
 	return conn
 }
 
+// writeTestBridge produces a stand-in for alleycat-claude-bridge. `body` is a
+// line-oriented shell script describing how the bridge answers one connection,
+// exactly as when the bridge spoke stdio; the wrapper hands it to the
+// fakebridge helper, which owns the Unix socket agentd now dials.
 func writeTestBridge(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "fake-claude-bridge")
+	dir := t.TempDir()
 	const shebang = "#!/bin/sh\n"
-	if strings.HasPrefix(body, shebang) {
-		body = strings.TrimPrefix(body, shebang)
+	body = shebang + strings.TrimPrefix(body, shebang)
+	bodyPath := filepath.Join(dir, "connection.sh")
+	if err := os.WriteFile(bodyPath, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	body = shebang + `if [ "${1:-}" = "--version" ]; then
+
+	path := filepath.Join(dir, "fake-claude-bridge")
+	wrapper := fmt.Sprintf(`#!/bin/sh
+if [ "${1:-}" = "--version" ]; then
   printf 'alleycat-claude-bridge 0.2.1\n'
   exit 0
 fi
-` + body
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+exec %q -body %q "$@"
+`, fakeBridgeHelper(t), bodyPath)
+	if err := os.WriteFile(path, []byte(wrapper), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
+}
+
+var (
+	fakeBridgeOnce sync.Once
+	fakeBridgePath string
+	fakeBridgeErr  error
+)
+
+// fakeBridgeHelper builds the socket-serving helper once for the whole package
+// and returns its path.
+func fakeBridgeHelper(t *testing.T) string {
+	t.Helper()
+	fakeBridgeOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "fakebridge")
+		if err != nil {
+			fakeBridgeErr = err
+			return
+		}
+		out := filepath.Join(dir, "fakebridge")
+		cmd := exec.Command("go", "build", "-o", out, "./testdata/fakebridge")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			fakeBridgeErr = fmt.Errorf("building fakebridge: %v\n%s", err, output)
+			return
+		}
+		fakeBridgePath = out
+	})
+	if fakeBridgeErr != nil {
+		t.Fatal(fakeBridgeErr)
+	}
+	return fakeBridgePath
 }
 
 type gatewayErrorFrame struct {

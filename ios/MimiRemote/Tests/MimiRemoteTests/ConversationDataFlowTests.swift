@@ -53,8 +53,8 @@ final class ConversationDataFlowTests: XCTestCase {
 
         // 模拟系统 Keychain 暂时不可写。提交失败后不能先拆旧 WebSocket，也不能清空会话列表。
         keychain.forcedUpdateStatus = errSecInteractionNotAllowed
-        XCTAssertThrowsError(
-            try store.commitPreparedConnection(
+        await XCTAssertThrowsErrorAsync(
+            try await store.commitPreparedConnection(
                 PreparedConnectionSettings(
                     endpoint: "http://100.64.0.20:8787",
                     token: "new-token"
@@ -115,7 +115,7 @@ final class ConversationDataFlowTests: XCTestCase {
         try await waitForWebSocketStatus(.connected, store: store)
         let validatedAt = Date(timeIntervalSince1970: 1_720_000_000)
 
-        let changed = try store.commitPreparedConnection(PreparedConnectionSettings(
+        let changed = try await store.commitPreparedConnection(PreparedConnectionSettings(
             endpoint: profiles[1].endpoint,
             token: "token-b",
             profileTarget: .existingProfile(id: "mac-b"),
@@ -172,9 +172,9 @@ final class ConversationDataFlowTests: XCTestCase {
         try await waitForWebSocketStatus(.connected, store: store)
         keychain.forcedUpdateStatus = errSecInteractionNotAllowed
 
-        XCTAssertThrowsError(try store.commitPreparedConnection(PreparedConnectionSettings(
+        await XCTAssertThrowsErrorAsync(try await store.commitPreparedConnection(PreparedConnectionSettings(
             endpoint: profiles[1].endpoint,
-            token: "token-b",
+            token: "replacement-token-b",
             profileTarget: .existingProfile(id: "mac-b")
         )))
 
@@ -589,14 +589,16 @@ final class ConversationDataFlowTests: XCTestCase {
     func testConversationTimelineStartsAtTailAfterSwitchingFromScrolledSession() async throws {
         let firstSessionID = "tail-position-first"
         let secondSessionID = "tail-position-second"
+        let appStore = AppStore()
         let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         for index in 0..<36 {
             conversationStore.appendSystem("会话 A 消息 \(index)", sessionID: firstSessionID)
             conversationStore.appendSystem("会话 B 消息 \(index)", sessionID: secondSessionID)
         }
 
         let sessionStore = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -656,7 +658,9 @@ final class ConversationDataFlowTests: XCTestCase {
 #endif
         let longSessionID = "tail-race-long"
         let shortSessionID = "tail-race-short"
+        let appStore = AppStore()
         let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         for index in 0..<72 {
             conversationStore.appendSystem("长会话消息 \(index)", sessionID: longSessionID)
         }
@@ -665,7 +669,7 @@ final class ConversationDataFlowTests: XCTestCase {
         }
 
         let sessionStore = SessionStore(
-            appStore: AppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -1163,7 +1167,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [user, command, diff, assistant])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [user, command, diff, assistant]))
 
         XCTAssertEqual(items.count, 4)
         if case .message(let first) = items[0] {
@@ -1207,7 +1211,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, assistant]))
 
         XCTAssertEqual(items.count, 2)
         if case .activityBatch(let activity) = items[0] {
@@ -1249,7 +1253,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [user, assistant, diff])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [user, assistant, diff]))
 
         XCTAssertEqual(items.count, 3)
         if case .message(let first) = items[0] {
@@ -1288,7 +1292,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .sending
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, assistant]))
 
         XCTAssertEqual(items.count, 2)
         guard case .activityBatch(let visibleCommands) = items[0] else {
@@ -1361,7 +1365,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let activeItems = ConversationTimelineItemBuilder.items(from: [read, search, build])
+        let activeItems = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [read, search, build]))
         XCTAssertEqual(activeItems.count, 1)
         let activeGroup: ConversationActivityBatch
         if case .activityBatch(let group) = activeItems[0] {
@@ -1373,7 +1377,7 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertEqual(activeGroup.kind, .execution, "混合探索和真实执行时使用更稳妥的执行语义")
         XCTAssertEqual(activeGroup.status, .running)
 
-        let completedItems = ConversationTimelineItemBuilder.items(from: [read, search, build, assistant])
+        let completedItems = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [read, search, build, assistant]))
         guard case .activityBatch(let completedGroup) = completedItems[0] else {
             return XCTFail("完成后仍应保留活动进度行")
         }
@@ -1412,7 +1416,7 @@ final class ConversationDataFlowTests: XCTestCase {
         )
         let messages = Array((0..<12).map(command)) + [commentary] + Array((12..<20).map(command))
 
-        let items = ConversationTimelineItemBuilder.items(from: messages)
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: messages))
 
         XCTAssertEqual(items.count, 3, "20 条命令只应形成 commentary 前后的两个稳定活动批次")
         guard case .activityBatch(let firstBatch) = items[0],
@@ -1456,7 +1460,7 @@ final class ConversationDataFlowTests: XCTestCase {
             turnLifecycle: .inProgress
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [command, commentary])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, commentary]))
 
         XCTAssertEqual(items.count, 2)
         guard case .activityBatch(let batch) = items[0], case .message = items[1] else {
@@ -1502,7 +1506,7 @@ final class ConversationDataFlowTests: XCTestCase {
             turnLifecycle: .inProgress
         )
 
-        let runningItems = ConversationTimelineItemBuilder.items(from: [first, second])
+        let runningItems = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [first, second]))
         guard case .activityBatch(let runningBatch) = runningItems.first else {
             return XCTFail("恢复过程应显示为活动批次")
         }
@@ -1514,7 +1518,7 @@ final class ConversationDataFlowTests: XCTestCase {
             next.turnLifecycle = .completed
             return next
         }
-        guard case .activityBatch(let completedBatch) = ConversationTimelineItemBuilder.items(from: completedMessages).first else {
+        guard case .activityBatch(let completedBatch) = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: completedMessages)).first else {
             return XCTFail("恢复成功后仍应保留活动批次")
         }
         XCTAssertEqual(completedBatch.id, runningBatch.id)
@@ -1526,7 +1530,7 @@ final class ConversationDataFlowTests: XCTestCase {
             next.turnLifecycle = .failed
             return next
         }
-        guard case .activityBatch(let failedBatch) = ConversationTimelineItemBuilder.items(from: failedMessages).first else {
+        guard case .activityBatch(let failedBatch) = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: failedMessages)).first else {
             return XCTFail("turn 失败后仍应保留活动批次")
         }
         XCTAssertEqual(failedBatch.status, .failed)
@@ -1536,7 +1540,7 @@ final class ConversationDataFlowTests: XCTestCase {
             next.turnLifecycle = .interrupted
             return next
         }
-        guard case .activityBatch(let interruptedBatch) = ConversationTimelineItemBuilder.items(from: interruptedMessages).first else {
+        guard case .activityBatch(let interruptedBatch) = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: interruptedMessages)).first else {
             return XCTFail("turn 中断后仍应保留活动批次")
         }
         XCTAssertEqual(interruptedBatch.status, .interrupted)
@@ -1642,7 +1646,7 @@ final class ConversationDataFlowTests: XCTestCase {
             )
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [first, second])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [first, second]))
 
         XCTAssertEqual(items.count, 2)
         guard case .activityBatch(let firstGroup) = items[0],
@@ -1676,7 +1680,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [pending, submitted])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [pending, submitted]))
 
         XCTAssertEqual(items.count, 2)
         guard case .message(let visiblePending) = items[0] else {
@@ -1718,7 +1722,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .sending
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [command, approval, assistant])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, approval, assistant]))
 
         // 命令、审批和 streaming assistant 都直接可见；审批仍然保留交互卡片。
         XCTAssertEqual(items.count, 3)
@@ -1756,7 +1760,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .failed
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [command, assistant])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [command, assistant]))
 
         XCTAssertEqual(items.count, 2)
         guard case .activityBatch(let failedCommands) = items[0] else {
@@ -1788,7 +1792,7 @@ final class ConversationDataFlowTests: XCTestCase {
             sendStatus: .confirmed
         )
 
-        let items = ConversationTimelineItemBuilder.items(from: [error, assistant])
+        let items = flattenWorkGroups(ConversationTimelineItemBuilder.items(from: [error, assistant]))
 
         XCTAssertEqual(items.count, 2)
         if case .message(let first) = items[0] {
@@ -2430,6 +2434,56 @@ final class ConversationDataFlowTests: XCTestCase {
         XCTAssertTrue(composerState.isGoalModeSelected)
     }
 
+    func testComposerModelSelectionCacheRestoresEachSessionIndependently() throws {
+        let codexScope = ComposerDraftScopeKey.session("thread-codex")
+        let claudeScope = ComposerDraftScopeKey.session("thread-claude")
+        var cache = ComposerModelSelectionCache()
+        var codexOptions = CodexAppServerTurnOptions.default
+        codexOptions.model = "gpt-5.6-sol"
+        codexOptions.modelProvider = "openai"
+        codexOptions.reasoningEffort = .xhigh
+        var claudeOptions = CodexAppServerTurnOptions.default
+        claudeOptions.runtimeProvider = "claude"
+        claudeOptions.model = "claude-opus-5"
+        claudeOptions.modelProvider = "anthropic"
+        claudeOptions.reasoningEffort = .high
+
+        cache.save(ComposerModelSelectionSnapshot(options: codexOptions), for: codexScope)
+        cache.save(ComposerModelSelectionSnapshot(options: claudeOptions), for: claudeScope)
+
+        var recreatedComposer = ComposerState()
+        recreatedComposer.restoreModelSelectionSnapshot(
+            try XCTUnwrap(cache.snapshot(for: claudeScope))
+        )
+        XCTAssertEqual(recreatedComposer.turnOptions.runtimeProvider, "claude")
+        XCTAssertEqual(recreatedComposer.turnOptions.model, "claude-opus-5")
+        XCTAssertEqual(recreatedComposer.turnOptions.reasoningEffort, .high)
+
+        recreatedComposer.restoreModelSelectionSnapshot(
+            try XCTUnwrap(cache.snapshot(for: codexScope))
+        )
+        XCTAssertEqual(recreatedComposer.turnOptions.runtimeProvider, codexOptions.runtimeProvider)
+        XCTAssertEqual(recreatedComposer.turnOptions.model, "gpt-5.6-sol")
+        XCTAssertEqual(recreatedComposer.turnOptions.reasoningEffort, .xhigh)
+    }
+
+    func testComposerModelSelectionCacheKeepsExplicitDefaultWhenDraftIsEmpty() throws {
+        let scope = ComposerDraftScopeKey.session("thread-server-default")
+        var cache = ComposerModelSelectionCache()
+        var options = CodexAppServerTurnOptions.default
+        options.model = nil
+        options.modelProvider = nil
+        options.reasoningEffort = .high
+        options.serviceTier = "priority"
+
+        cache.save(ComposerModelSelectionSnapshot(options: options), for: scope)
+
+        let restored = try XCTUnwrap(cache.snapshot(for: scope))
+        XCTAssertNil(restored.model, "显式选择服务端默认模型时必须保留 nil 语义")
+        XCTAssertEqual(restored.reasoningEffort, .high)
+        XCTAssertEqual(restored.serviceTier, "priority")
+    }
+
     func testComposerDraftCacheKeepsDraftsScopedToSessionOrNewProject() {
         let sessionScope = ComposerDraftScopeKey.current(selectedSessionID: "thread-a", selectedProjectID: "project-1")
         let newProjectScope = ComposerDraftScopeKey.current(selectedSessionID: nil, selectedProjectID: "project-1")
@@ -2556,6 +2610,56 @@ final class ConversationDataFlowTests: XCTestCase {
 
         sessionStore.removeComposerDraft(for: scope)
         XCTAssertEqual(sessionStore.composerDraft(for: scope), .empty)
+    }
+
+    func testSessionStoreRetainsComposerModelSelectionAcrossComposerRecreation() throws {
+        let sessionStore = SessionStore(
+            appStore: AppStore(),
+            conversationStore: ConversationStore(),
+            logStore: LogStore()
+        )
+        let scope = ComposerDraftScopeKey.session("thread-model-recreation")
+        var options = CodexAppServerTurnOptions.default
+        options.runtimeProvider = "claude"
+        options.model = "opus"
+        options.modelProvider = "anthropic"
+        options.reasoningEffort = .high
+        let expected = ComposerModelSelectionSnapshot(options: options)
+
+        sessionStore.saveComposerModelSelection(expected, for: scope)
+
+        var recreatedComposer = ComposerState()
+        recreatedComposer.restoreModelSelectionSnapshot(
+            try XCTUnwrap(sessionStore.composerModelSelection(for: scope))
+        )
+        XCTAssertEqual(recreatedComposer.modelSelectionSnapshot(), expected)
+
+        sessionStore.removeComposerModelSelection(for: scope)
+        XCTAssertNil(sessionStore.composerModelSelection(for: scope))
+    }
+
+    /// 这些旧回归专注验证第一遍 activity/process 聚合；外层 work-group 语义由
+    /// ConversationProcessGrouperTests 单独覆盖。展开 entry 后可继续锁住原有细节。
+    private func flattenWorkGroups(
+        _ items: [ConversationTimelineItem]
+    ) -> [ConversationTimelineItem] {
+        items.flatMap { item in
+            guard case .workGroup(let group) = item else {
+                return [item]
+            }
+            return group.entries.map { entry in
+                switch entry {
+                case .commentary(let message):
+                    return .message(message)
+                case .activity(let message):
+                    return .activity(message)
+                case .activityBatch(let batch):
+                    return .activityBatch(batch)
+                case .processGroup(let process):
+                    return .processGroup(process)
+                }
+            }
+        }
     }
 
 }

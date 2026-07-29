@@ -7,6 +7,58 @@ import UIKit
 
 @MainActor
 extension ConversationDataFlowTests {
+    func testQueuedTurnActiveConflictReturnsToWaitingWithoutFailingSession() async throws {
+        let project = makeProject(id: "proj_active_conflict_queue")
+        let staleIdle = makeSession(
+            id: "sess_active_conflict_queue",
+            projectID: project.id,
+            title: "Stale Idle",
+            status: "running",
+            source: "claude"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let client = MockSessionStoreClient(projects: [project], sessions: [staleIdle], messagesResult: [])
+        let conversationStore = ConversationStore()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            clientFactory: { client },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(staleIdle)
+        await store.selectSession(staleIdle)
+        sockets[0].emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        let didQueue = await store.sendTurn(CodexAppServerTurnPayload(prompt: "等旧任务完成后发送"))
+        XCTAssertTrue(didQueue)
+        let clientMessageID = try XCTUnwrap(sockets[0].sentTurns.first?.clientMessageID)
+        sockets[0].onTurnSendOutcome?(
+            clientMessageID,
+            .activeTurnConflict(activeTurnID: "turn-live", message: "already active")
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(store.selectedSession?.status, "running")
+        XCTAssertEqual(store.selectedSession?.activeTurnID, "turn-live")
+        XCTAssertEqual(store.selectedQueuedTurns.first?.dispatchState, .waiting)
+        XCTAssertEqual(store.selectedQueuedTurns.first?.expectedTurnID, "turn-live")
+        XCTAssertEqual(
+            conversationStore.messages(for: staleIdle.id).first { $0.clientMessageID == clientMessageID }?.sendStatus,
+            .local
+        )
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testRunningSessionGuidedDeliverySteersActiveTurn() async throws {
         let project = makeProject(id: "proj_ws_guided")
         let running = makeSession(
@@ -1441,7 +1493,7 @@ extension ConversationDataFlowTests {
 
         let failedMessage = try XCTUnwrap(conversationStore.messages(for: running.id).first { $0.clientMessageID == clientMessageID })
         XCTAssertEqual(failedMessage.turnPayload?.input, payload.input)
-        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-5.5")
+        XCTAssertEqual(failedMessage.turnPayload?.options.model, "gpt-5.6-sol")
         XCTAssertTrue(payloadContainsInlineImage(failedMessage.turnPayload))
         XCTAssertTrue(payloadContainsMention(failedMessage.turnPayload, name: "README"))
         let expectedError = "待发送消息结果不确定，请确认后重试：app-server 错误 -32000：no rollout found"
@@ -1613,6 +1665,77 @@ extension ConversationDataFlowTests {
         })
     }
 
+    func testClaudeApprovalRequestUsesSharedRuntimeNotificationPipeline() async throws {
+        let project = makeProject(id: "proj_claude_approval_notice")
+        let running = makeSession(
+            id: "sess_claude_approval_notice",
+            projectID: project.id,
+            title: "Claude 运行中",
+            status: "running",
+            source: "claude",
+            runtimeProvider: "claude"
+        )
+        let appStore = AppStore()
+        appStore.token = "test-token"
+        let scheduler = FakeSessionReminderScheduler()
+        var sockets: [MockWebSocketClient] = []
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: ConversationStore(),
+            logStore: LogStore(),
+            sessionReminderScheduler: scheduler,
+            clientFactory: {
+                MockSessionStoreClient(projects: [project], sessions: [running])
+            },
+            webSocketFactory: {
+                let socket = MockWebSocketClient()
+                sockets.append(socket)
+                return socket
+            }
+        )
+
+        await store.refreshAll(autoAttach: false)
+        store.takeOverSession(running)
+        await store.selectSession(running)
+        let socket = try XCTUnwrap(sockets.first)
+        socket.emitStatus(.connected)
+        try await waitForWebSocketStatus(.connected, store: store)
+
+        socket.emitEvent(.approvalRequest(
+            AgentApprovalRequest(
+                id: "claude-tool-approval",
+                title: "运行 Bash",
+                body: "go test ./...",
+                kind: "command",
+                risk: "medium"
+            ),
+            AgentEventMetadata(
+                seq: 22,
+                sessionID: running.id,
+                turnID: "claude-turn-approval",
+                itemID: "claude-tool-approval",
+                messageID: nil,
+                clientMessageID: nil,
+                revision: nil,
+                createdAt: nil
+            )
+        ))
+        for _ in 0..<80 where scheduler.runtimeNotifications.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertEqual(scheduler.runtimeNotifications, [
+            SessionRuntimeNotification(
+                id: "approval:\(running.id):claude-tool-approval",
+                sessionID: running.id,
+                title: "等待审批",
+                body: "\(running.title)：运行 Bash",
+                kind: .approval
+            )
+        ])
+        XCTAssertEqual(store.selectedSession?.pendingApproval?.id, "claude-tool-approval")
+    }
+
     func testApprovalRequestSurvivesLateRunningStatusAndRefresh() async throws {
         let project = makeProject(id: "proj_approval_race")
         let running = makeSession(id: "sess_approval_race", projectID: project.id, title: "运行中", status: "running", source: "codex")
@@ -1696,6 +1819,7 @@ extension ConversationDataFlowTests {
             conversationStore: conversationStore,
             logStore: LogStore(),
             sessionReminderScheduler: scheduler,
+            runtimeCompletionNotificationsEnabled: true,
             clientFactory: { client },
             webSocketFactory: {
                 let socket = MockWebSocketClient()
@@ -1983,6 +2107,7 @@ extension ConversationDataFlowTests {
         let appStore = AppStore()
         appStore.token = "test-token"
         let conversationStore = ConversationStore()
+        conversationStore.activate(profileID: appStore.activeHostScope.profileID)
         conversationStore.appendSystem("等待审批：运行危险命令，风险：high", sessionID: waiting.id, kind: .approval)
         let client = MockSessionStoreClient(projects: [project], sessions: [waiting])
         var sockets: [MockWebSocketClient] = []

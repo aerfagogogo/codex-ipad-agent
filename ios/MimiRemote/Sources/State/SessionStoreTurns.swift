@@ -122,9 +122,10 @@ extension SessionStore {
             isClaudeRuntimeChannelAvailable = (try? await client.runtimeChannelAvailable(runtimeProvider: "claude")) == true
             didRefreshRuntimeAvailability = true
             if !force,
-               !appServerModelOptions.isEmpty,
                let appServerModelOptionsLastRefresh,
                Date().timeIntervalSince(appServerModelOptionsLastRefresh) < 300 {
+                // 成功、空列表和失败都做短期负缓存。同一次 sendTurn 会经过发送入口和
+                // createSession 两层解析，失败时不能因此连续请求 model/list 两次。
                 return
             }
             let options = try await client.modelOptions()
@@ -161,12 +162,13 @@ extension SessionStore {
                 resolved.options.runtimeProvider = Self.payloadRuntimeProvider(lockedRuntimeProvider)
             }
         }
-        if let model = resolved.options.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+        if resolved.options.modelSelectionPolicy == .allowUnlisted,
+           let model = resolved.options.model?.trimmingCharacters(in: .whitespacesAndNewlines),
            !model.isEmpty {
+            // 开发者模式明确允许未列入 model/list 的自定义模型；普通模式才执行目录校验和回落。
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
         }
-
         if appServerModelOptions.isEmpty {
             await refreshAppServerModelOptions()
         }
@@ -183,6 +185,20 @@ extension SessionStore {
         } else {
             candidateOptions = options.isEmpty ? allOptions : options
         }
+
+        if let requestedModel = resolved.options.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !requestedModel.isEmpty,
+           let matched = candidateOptions.first(where: {
+               $0.model.caseInsensitiveCompare(requestedModel) == .orderedSame
+           }) {
+            // 目录命中后使用服务端返回的 canonical id/provider，避免旧草稿或跨渠道残留
+            // 把不可识别 UUID/alias 直接送进 turn/start。
+            resolved.options.model = matched.model
+            resolved.options.modelProvider = matched.provider
+            resolved.options = resolved.options.sanitizedForRuntimePolicy()
+            return resolved
+        }
+
         guard let selected = candidateOptions.first(where: \.isDefault) ?? candidateOptions.first else {
             resolved.options = resolved.options.sanitizedForRuntimePolicy()
             return resolved
@@ -307,6 +323,9 @@ extension SessionStore {
             sessionID: nil,
             reason: .invalidation
         )
+        if let previousSession, previousSession.isLocalDraft {
+            discardLocalDraft(previousSession)
+        }
         guard !wasAlreadyOnList else {
             return
         }
@@ -319,173 +338,6 @@ extension SessionStore {
                 unsubscribeThreadInBackground(previousSession.id)
             }
         }
-    }
-
-    func resetConnectionForSettingsChange(clearData: Bool = false) {
-        invalidatePreparedConnectionChange()
-        connectionTermination = nil
-        appLifecycleSuspendedSessionID = nil
-        networkSuspendedSessionID = nil
-        disconnectWebSocket()
-        if clearData {
-            if !appStore.isConfigured, let profileID = currentQueuedTurnProfileID {
-                do {
-                    try queuedTurnStore.remove(profileID: profileID)
-                    queuedTurnStorageErrorMessage = nil
-                } catch {
-                    reportQueuedTurnStorageError(error)
-                }
-            }
-            clearConnectionData()
-        }
-        setErrorMessage(nil)
-        setStatusMessage(nil)
-    }
-
-    @discardableResult
-    func applyConnectionSettings(
-        endpoint: String,
-        token: String
-    ) async throws -> Bool {
-        try await performPreparedConnectionChange {
-            try await appStore.prepareConnectionSettings(
-                endpoint: endpoint,
-                token: token
-            )
-        }
-    }
-
-    @discardableResult
-    func addConnectionProfile(
-        endpoint: String,
-        token: String,
-        displayName: String
-    ) async throws -> Bool {
-        try await performPreparedConnectionChange {
-            try await appStore.prepareNewConnectionProfile(
-                endpoint: endpoint,
-                token: token,
-                displayName: displayName
-            )
-        }
-    }
-
-    @discardableResult
-    func switchConnectionProfile(id: String) async throws -> Bool {
-        // 切换前完整验证目标 Mac；只有验证和 Keychain/元数据提交都成功，
-        // commitPreparedConnection 才会退役旧 WebSocket 并清理旧 Mac 的会话数据。
-        try await performPreparedConnectionChange {
-            try await appStore.prepareConnectionProfileSwitch(id: id)
-        }
-    }
-
-    func deleteConnectionProfile(id: String) throws {
-        try appStore.deleteConnectionProfile(id: id)
-        do {
-            try queuedTurnStore.remove(profileID: id)
-            queuedTurnStorageErrorMessage = nil
-        } catch {
-            // 档案凭据已经按 AppStore 的事务边界删除；本地队列清理失败不回滚凭据，
-            // 只显式提示残留，避免界面误以为 Mac 连接仍然存在。
-            reportQueuedTurnStorageError(error)
-        }
-    }
-
-    @discardableResult
-    func applyPairingURL(_ url: URL) async throws -> Bool {
-        try await performPreparedConnectionChange {
-            try await appStore.preparePairingURL(url)
-        }
-    }
-
-    @discardableResult
-    func addConnectionProfile(pairingURL url: URL, displayName: String) async throws -> Bool {
-        try await performPreparedConnectionChange {
-            try await appStore.prepareNewPairingURL(url, displayName: displayName)
-        }
-    }
-
-    /// 串行化所有“验证新凭据后提交”的入口。该方法保持 internal 是为了让 XCTest 能用
-    /// 可控 prepare 闭包确定性复现取消/并发，不把测试钩子带进线上分支。
-    @discardableResult
-    func performPreparedConnectionChange(
-        _ prepare: () async throws -> PreparedConnectionSettings
-    ) async throws -> Bool {
-        let operationGeneration = try beginPreparedConnectionChange()
-        let previousStatus = appStore.connectionStatus
-        let previousError = appStore.lastError
-        let previousDuration = appStore.lastConnectionTestDurationMillis
-        let previousReport = appStore.lastConnectionTestReport
-        let previousRecentReports = appStore.recentConnectionTestReports
-        let previousSessionTermination = connectionTermination
-        let previousAppTermination = appStore.connectionTermination
-        defer { finishPreparedConnectionChange(operationGeneration) }
-
-        do {
-            let prepared = try await prepare()
-            try Task.checkCancellation()
-            guard operationGeneration == connectionChangeGeneration,
-                  inFlightConnectionChangeGeneration == operationGeneration,
-                  !isAppInBackground else {
-                throw CancellationError()
-            }
-            return try commitPreparedConnection(prepared)
-        } catch {
-            // 失败时恢复验证前的展示状态，但若等待期间旧 WS 已进入鉴权终态，必须保留
-            // 新终态；否则一次失败的切换会把“访问码已失效”错误覆盖回已连接。
-            if connectionTermination == previousSessionTermination,
-               appStore.connectionTermination == previousAppTermination {
-                appStore.connectionStatus = previousStatus
-                appStore.lastError = previousError
-                appStore.lastConnectionTestDurationMillis = previousDuration
-                appStore.lastConnectionTestReport = previousReport
-                appStore.recentConnectionTestReports = previousRecentReports
-            }
-            if Task.isCancelled || error is CancellationError {
-                throw CancellationError()
-            }
-            throw error
-        }
-    }
-
-    func beginPreparedConnectionChange() throws -> Int {
-        guard !isAppInBackground else {
-            throw CancellationError()
-        }
-        guard inFlightConnectionChangeGeneration == nil else {
-            throw ConnectionProfileError.operationInProgress
-        }
-        connectionChangeGeneration += 1
-        inFlightConnectionChangeGeneration = connectionChangeGeneration
-        return connectionChangeGeneration
-    }
-
-    func finishPreparedConnectionChange(_ generation: Int) {
-        guard inFlightConnectionChangeGeneration == generation else { return }
-        inFlightConnectionChangeGeneration = nil
-    }
-
-    func invalidatePreparedConnectionChange() {
-        // 不提前释放占用：旧 prepare 可能仍在网络回调中。等它返回并在提交门前发现代次失效，
-        // 才允许下一项操作开始，避免两个 validateConnection 同时改写 AppStore 状态。
-        connectionChangeGeneration += 1
-    }
-
-    func commitPreparedConnection(_ prepared: PreparedConnectionSettings) throws -> Bool {
-        // 必须先原子提交 Keychain/endpoint，再退役旧连接。若 Keychain 写入失败，
-        // 旧 WebSocket、runtime bundle、connectionGeneration 和当前会话数据都保持不变。
-        let didChange = try appStore.commitConnectionSettings(prepared)
-        connectionTermination = nil
-        appLifecycleSuspendedSessionID = nil
-        networkSuspendedSessionID = nil
-        disconnectWebSocket()
-        if didChange {
-            clearConnectionData()
-            reloadQueuedTurns()
-        }
-        setErrorMessage(nil)
-        setStatusMessage(nil)
-        return didChange
     }
 
     /// 打开本地通知对应会话。安全边界：只允许当前 profile，最多做一次有界首屏刷新，绝不自动切 Mac。
@@ -644,6 +496,11 @@ extension SessionStore {
                 unsubscribeThreadInBackground(previousSession.id)
             }
         }
+        if let previousSession,
+           previousSession.id != session.id,
+           previousSession.isLocalDraft {
+            discardLocalDraft(previousSession)
+        }
         stopQueuedSessionMonitoring(sessionID: session.id)
         revealProjectInSidebar(session.projectID)
         setErrorMessage(nil)
@@ -653,6 +510,11 @@ extension SessionStore {
         }
         conversationStore.retainSessionCache(sessionID: session.id)
         logStore.retainSessionCache(sessionID: session.id)
+        if session.isLocalDraft {
+            // 草稿只存在本机内存；选中时不读历史、不订阅 WebSocket。
+            disconnectWebSocket()
+            return true
+        }
 #if DEBUG
         guard !isDebugWorkbenchUISeedActive else {
             setStatusMessage(L10n.format("ui.debug_session_value_selected", session.title))
@@ -689,8 +551,8 @@ extension SessionStore {
         return true
     }
 
-    // 新建会话在点击瞬间就急切创建空线程并绑定 runtime；不传 runtimeProvider 时由默认模型
-    // 决定（当前是 Codex）。要开 Claude 会话必须在这里显式指定，事后无法把线程迁到另一条通道。
+    // 新建会话先创建本地草稿；runtime 选择随草稿保留，到首条消息发送时才原子执行
+    // thread/start + turn/start，避免空线程闲置后因没有 rollout 而无法恢复。
     func startNewSession(runtimeProvider: String? = nil) async {
         guard let selectedProjectID else {
             setErrorMessage(L10n.text("ui.please_select_the_project_first"))
@@ -727,6 +589,10 @@ extension SessionStore {
         tokenBudget: Int64? = nil,
         runningDelivery: RunningTurnDelivery = .queued
     ) async -> Bool {
+        if let session = selectedSession, isExternalReadOnlySession(session) {
+            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
+            return false
+        }
         let normalizedObjective = objective.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedObjective.isEmpty else {
             threadGoalErrorMessage = L10n.text("ui.target_content_cannot_be_empty")
@@ -776,8 +642,9 @@ extension SessionStore {
             return sent
         }
 
-        let resume = selectedSession
-        let projectID = resume?.projectID ?? selectedProjectID
+        let localDraft = selectedSession?.isLocalDraft == true ? selectedSession : nil
+        let resume = localDraft == nil ? selectedSession : nil
+        let projectID = localDraft?.projectID ?? resume?.projectID ?? selectedProjectID
         guard let projectID else {
             setErrorMessage(L10n.text("ui.please_select_the_project_first"))
             return false
@@ -787,7 +654,8 @@ extension SessionStore {
             payload: payload,
             resume: resume,
             clientMessageID: UUID().uuidString,
-            initialGoalObjective: normalizedObjective
+            initialGoalObjective: normalizedObjective,
+            replacingLocalDraft: localDraft
         )
         if started {
             setStatusMessage(L10n.text("ui.the_target_task_has_been_started"))
@@ -813,12 +681,26 @@ extension SessionStore {
         guard !payload.isEmpty else {
             return false
         }
+        if let session = selectedSession, isExternalReadOnlySession(session) {
+            setErrorMessage(L10n.text("ui.mac_observe_only"))
+            return false
+        }
         if let notice = selectedQuotaNotice, notice.blocksSending {
             setErrorMessage(notice.message)
             return false
         }
         let payload = runningDelivery == .queued ? await payloadResolvingRequiredModel(payload) : payload
         let prompt = payload.previewText
+
+        if let localDraft = selectedSession, localDraft.isLocalDraft {
+            return await createSession(
+                projectID: localDraft.projectID,
+                payload: payload,
+                resume: nil,
+                clientMessageID: UUID().uuidString,
+                replacingLocalDraft: localDraft
+            )
+        }
 
         let selectedSessionHasQueuedTurns = selectedSession.map {
             queuedRunningTurnsBySessionID[$0.id]?.isEmpty == false
@@ -989,14 +871,8 @@ extension SessionStore {
             clientMessageID: item.clientMessageID
         )
 
-        // turn/started 可能稍后才到；先把本地状态推进为 running，避免窗口期重复派发下一项。
-        locallyCompletedSessionIDs.remove(session.id)
-        updateSession(session.id) { item in
-            item.status = SessionStatus.running.rawValue
-            item.pendingApproval = nil
-            item.pendingUserInput = nil
-        }
-        contextStore.updateStatus(sessionID: session.id, status: SessionStatus.running.rawValue)
+        // dispatching + awaitingStart 已能阻止重复派发。只有 accepted 回调或 turn/started
+        // 才能证明上游接收，派发窗口内不再乐观伪造 running。
         freshEmptyHistorySignatureBySessionID.removeValue(forKey: session.id)
         setStatusMessage(L10n.text("ui.the_queued_message_has_been_sent_waiting_for"))
     }
@@ -1080,6 +956,10 @@ extension SessionStore {
 
         let generation = (queuedSessionSocketGenerationByID[sessionID] ?? 0) + 1
         queuedSessionSocketGenerationByID[sessionID] = generation
+        let eventLease = HostSessionLease(
+            hostScope: appStore.activeHostScope,
+            sessionID: sessionID
+        )
         let socket = sessionWebSocketFactory?(session) ?? webSocketFactory()
         socket.onStatus = { [weak self] status in
             Task { @MainActor in
@@ -1110,7 +990,7 @@ extension SessionStore {
                 guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true else {
                     return
                 }
-                await self?.applyRuntimeEvent(event, sessionID: sessionID)
+                await self?.applyRuntimeEvent(event, lease: eventLease)
             }
         }
         socket.onSendAccepted = { [weak self] clientMessageID in
@@ -1128,6 +1008,18 @@ extension SessionStore {
                     clientMessageID: clientMessageID,
                     sessionID: sessionID,
                     message: message
+                )
+            }
+        }
+        socket.onTurnSendOutcome = { [weak self] clientMessageID, outcome in
+            Task { @MainActor in
+                guard self?.isCurrentQueuedSessionSocket(sessionID: sessionID, generation: generation) == true else {
+                    return
+                }
+                self?.handleTurnSendOutcome(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID,
+                    outcome: outcome
                 )
             }
         }
@@ -1295,6 +1187,152 @@ extension SessionStore {
         queuedTurnAwaitingStartSessionIDs.remove(sessionID)
         queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
         setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
+        return true
+    }
+
+    func handleTurnSendOutcome(
+        clientMessageID: ClientMessageID?,
+        sessionID: SessionID,
+        outcome: TurnSendOutcome
+    ) {
+        guard let clientMessageID else { return }
+        switch outcome {
+        case .accepted:
+            if !handleQueuedSendAccepted(clientMessageID: clientMessageID, sessionID: sessionID) {
+                conversationStore.updateSendStatus(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID,
+                    status: .sent
+                )
+                conversationStore.compactTurnPayloadAfterSendAccepted(
+                    clientMessageID: clientMessageID,
+                    sessionID: sessionID
+                )
+            }
+        case .activeTurnConflict(let activeTurnID, let message):
+            // 这是“新消息未被接受”，不是原会话失败。恢复权威 active turn，
+            // 并保留已有审批/补充问题；排队项回到等待态，待原 turn 完成后再发。
+            updateSession(sessionID) { item in
+                item.activeTurnID = activeTurnID
+                if item.pendingUserInput != nil {
+                    item.status = "waiting_for_input"
+                } else if item.pendingApproval != nil {
+                    item.status = "waiting_for_approval"
+                } else {
+                    item.status = "running"
+                }
+            }
+            if handleQueuedActiveTurnConflict(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                activeTurnID: activeTurnID
+            ) {
+                setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            setStatusMessage(message)
+        case .rejected(let message):
+            if handleQueuedSendRejected(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                message: message
+            ) {
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            clearForegroundActivity(sessionID: sessionID)
+            setErrorMessage(L10n.format("ui.sending_failed_value", message))
+        case .uncertain(let message):
+            if handleQueuedSendFailure(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                message: message
+            ) {
+                return
+            }
+            conversationStore.updateSendStatus(
+                clientMessageID: clientMessageID,
+                sessionID: sessionID,
+                status: .failed
+            )
+            clearForegroundActivity(sessionID: sessionID)
+            setErrorMessage(L10n.format("ui.the_result_of_the_message_to_be_sent", message))
+        }
+    }
+
+    @discardableResult
+    func handleQueuedActiveTurnConflict(
+        clientMessageID: ClientMessageID,
+        sessionID: SessionID,
+        activeTurnID: TurnID
+    ) -> Bool {
+        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
+              location.sessionID == sessionID,
+              let item = queuedRunningTurnsBySessionID[sessionID]?[location.index],
+              item.dispatchState == .dispatching else {
+            return false
+        }
+        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+        guard mutateAndPersistQueuedTurns({
+            guard var queue = queuedRunningTurnsBySessionID[sessionID],
+                  queue.indices.contains(location.index) else { return }
+            queue[location.index].dispatchState = .waiting
+            queue[location.index].expectedTurnID = activeTurnID
+            queue[location.index].lastError = nil
+            queuedRunningTurnsBySessionID[sessionID] = queue
+        }) else {
+            return true
+        }
+        conversationStore.appendLocalUser(
+            item.previewText,
+            sessionID: sessionID,
+            clientMessageID: clientMessageID,
+            sendStatus: .local,
+            turnPayload: item.payload,
+            userDelivery: .queued
+        )
+        ensureQueuedSessionMonitoring(sessionID: sessionID)
+        return true
+    }
+
+    @discardableResult
+    func handleQueuedSendRejected(
+        clientMessageID: ClientMessageID,
+        sessionID: SessionID,
+        message: String
+    ) -> Bool {
+        guard let location = queuedTurnLocation(clientMessageID: clientMessageID),
+              location.sessionID == sessionID,
+              queuedRunningTurnsBySessionID[sessionID]?[location.index].dispatchState == .dispatching else {
+            return false
+        }
+        queuedTurnAwaitingStartSessionIDs.remove(sessionID)
+        queuedTurnBlockedCompletionIDBySessionID.removeValue(forKey: sessionID)
+        _ = mutateAndPersistQueuedTurns {
+            guard var queue = queuedRunningTurnsBySessionID[sessionID],
+                  queue.indices.contains(location.index) else { return }
+            queue.remove(at: location.index)
+            setQueuedTurns(queue, sessionID: sessionID)
+        }
+        conversationStore.updateSendStatus(
+            clientMessageID: clientMessageID,
+            sessionID: sessionID,
+            status: .failed
+        )
+        clearForegroundActivity(sessionID: sessionID)
+        clearSessionListProjection(sessionID: sessionID, clientMessageID: clientMessageID)
+        setErrorMessage(L10n.format("ui.sending_failed_value", message))
+        stopQueuedSessionMonitoringIfIdle(sessionID: sessionID)
         return true
     }
 
@@ -1494,6 +1532,48 @@ extension SessionStore {
                 setErrorMessage(L10n.text("ui.this_session_is_running_on_another_client_please_c95578ac"))
                 return false
             }
+            let payload = message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt)
+            let resolvedPayload = await payloadResolvingRequiredModel(payload)
+            if let activeTurnID = session.activeTurnID {
+                let queueCount = queuedRunningTurnsBySessionID[session.id]?.count ?? 0
+                guard queueCount < Self.queuedTurnLimitPerSession else {
+                    setErrorMessage(L10n.format("ui.each_session_retains_a_maximum_of_value_messages", Self.queuedTurnLimitPerSession))
+                    return false
+                }
+                let intent: QueuedTurnIntent = resolvedPayload.options.collaborationMode == .plan
+                    ? .plan
+                    : .standard
+                let item = QueuedTurnEntry(
+                    sessionID: session.id,
+                    projectID: session.projectID,
+                    payload: resolvedPayload,
+                    clientMessageID: clientMessageID,
+                    intent: intent,
+                    expectedTurnID: activeTurnID
+                )
+                guard mutateAndPersistQueuedTurns({
+                    queuedRunningTurnsBySessionID[session.id, default: []].append(item)
+                }) else {
+                    return false
+                }
+                conversationStore.appendLocalUser(
+                    item.previewText,
+                    sessionID: session.id,
+                    clientMessageID: clientMessageID,
+                    sendStatus: .local,
+                    turnPayload: resolvedPayload,
+                    userDelivery: .queued
+                )
+                setSessionListProjection(
+                    sessionID: session.id,
+                    preview: prompt,
+                    source: .localUser,
+                    clientMessageID: clientMessageID
+                )
+                ensureQueuedSessionMonitoring(sessionID: session.id)
+                setStatusMessage(L10n.text("ui.saved_to_this_machine_and_will_be_sent"))
+                return true
+            }
             guard let socket = readyWebSocket(for: session) else {
                 return false
             }
@@ -1501,8 +1581,6 @@ extension SessionStore {
             conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .sending)
             setSessionListProjection(sessionID: session.id, preview: prompt, source: .localUser, clientMessageID: clientMessageID)
             setForegroundActivity(.waitingForAssistant, sessionID: session.id)
-            let payload = message.turnPayload ?? CodexAppServerTurnPayload(prompt: prompt)
-            let resolvedPayload = await payloadResolvingRequiredModel(payload)
             guard socket.sendTurn(resolvedPayload, clientMessageID: clientMessageID) else {
                 conversationStore.updateSendStatus(clientMessageID: clientMessageID, sessionID: session.id, status: .failed)
                 clearSessionListProjection(sessionID: session.id, clientMessageID: clientMessageID)
@@ -1550,6 +1628,10 @@ extension SessionStore {
         let socket = webSocket
         webSocket = nil
         connectedSessionID = nil
+        connectedHostScope = nil
+        runtimeEventFlushTasks.values.forEach { $0.cancel() }
+        runtimeEventFlushTasks.removeAll(keepingCapacity: false)
+        terminalStreamStore.removeAll(profileID: appStore.activeHostScope.profileID)
         socket?.disconnect()
         if let reconnectSessionID {
             markDispatchingQueuedTurnsNeedsConfirmation(
@@ -1579,6 +1661,7 @@ extension SessionStore {
         }
 
         let foregroundSelectionLease = currentSelectionLease()
+        let recoveryGeneration = beginRecoveryHistoryGeneration()
         let reconnectSessionID = appLifecycleSuspendedSessionID ?? networkSuspendedSessionID
         appLifecycleSuspendedSessionID = nil
         networkSuspendedSessionID = nil
@@ -1592,7 +1675,14 @@ extension SessionStore {
         }
         // 回前台同样可能赶上 gateway 还没恢复；做几秒的高频重试，避免单次失败后又卡到下次切换。
         // 正常情况下首次 refreshAll 就成功（errorMessage 为 nil），立即返回，不会有额外开销。
-        await refreshUntilLoaded(maxWait: 10, autoAttach: true)
+        await refreshUntilLoaded(maxWait: 10, autoAttach: false)
+        var didReconcileFullHistory = false
+        if let reconnectSessionID, selectedSessionID == reconnectSessionID {
+            didReconcileFullHistory = await reconcileHistoryForRecovery(
+                sessionID: reconnectSessionID,
+                generation: recoveryGeneration
+            )
+        }
         ensureAllQueuedSessionMonitoring()
 
         guard connectionTermination == nil,
@@ -1601,16 +1691,15 @@ extension SessionStore {
               isSelectionLeaseCurrent(foregroundSelectionLease),
               let reconnectSessionID,
               selectedSessionID == reconnectSessionID,
-              let session = sessionsByID[reconnectSessionID],
-              connectedSessionID != reconnectSessionID || webSocket == nil else {
+              let session = sessionsByID[reconnectSessionID] else {
             return
         }
-        // REST 即使在短时 gateway 故障下没恢复，也用本地会话兜底重建监听；状态级回放会校准
-        // 离开期间的完成/审批事件，且不会把旧内容 backlog 再直播一遍。
+        // 完整历史已成功落地时只回放状态；若历史读取失败，必须 full replay，不能再次静默
+        // 丢掉 detached 期间的 assistant/process 内容。
         connectWebSocket(
             session,
             isReconnectAttempt: true,
-            replayBufferedEvents: false,
+            replayBufferedEvents: !didReconcileFullHistory,
             allowNonRunning: true
         )
     }
@@ -1668,6 +1757,10 @@ extension SessionStore {
         status: ThreadGoalStatus?,
         tokenBudget: Int64?
     ) async -> Bool {
+        if let session = sessionsByID[threadID], isExternalReadOnlySession(session) {
+            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
+            return false
+        }
         let normalizedObjective = objective?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let normalizedObjective, normalizedObjective.isEmpty {
             threadGoalErrorMessage = L10n.text("ui.target_content_cannot_be_empty")
@@ -1721,6 +1814,10 @@ extension SessionStore {
 
     func clearSelectedThreadGoal() async {
         guard let sessionID = selectedSessionID else {
+            return
+        }
+        if let session = sessionsByID[sessionID], isExternalReadOnlySession(session) {
+            threadGoalErrorMessage = L10n.text("ui.mac_observe_only")
             return
         }
         isUpdatingThreadGoal = true

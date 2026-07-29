@@ -283,13 +283,27 @@ struct AgentAPIClient {
         )
     }
 
-    func version() async throws -> VersionResponse {
-        try await request(path: "/api/version", method: "GET", body: Optional<Data>.none)
+    func version(timeout: TimeInterval = 20) async throws -> VersionResponse {
+        try await request(
+            path: "/api/version",
+            method: "GET",
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
     }
 
     func appServerConfig(timeout: TimeInterval = 20) async throws -> CodexAppServerConfigResponse {
         try await request(
             path: "/api/app-server/config",
+            method: "GET",
+            body: Optional<Data>.none,
+            timeout: timeout
+        )
+    }
+
+    func externalActivities(timeout: TimeInterval = 10) async throws -> ExternalActivityResponse {
+        try await request(
+            path: "/api/app-server/external-activity",
             method: "GET",
             body: Optional<Data>.none,
             timeout: timeout
@@ -381,8 +395,8 @@ struct AgentAPIClient {
         return try await request(path: "/api/actions/run", method: "POST", body: body)
     }
 
-    func gitStatus(path: String) async throws -> GitStatusResponse {
-        let body = try JSONEncoder().encode(GitStatusRequest(path: path))
+    func gitStatus(path: String, summaryOnly: Bool = false) async throws -> GitStatusResponse {
+        let body = try JSONEncoder().encode(GitStatusRequest(path: path, summaryOnly: summaryOnly))
         return try await request(path: "/api/git/status", method: "POST", body: body)
     }
 

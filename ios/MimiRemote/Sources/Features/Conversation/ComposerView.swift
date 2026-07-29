@@ -22,11 +22,17 @@ struct ComposerView: View {
     @Environment(\.colorScheme) var colorScheme
     @Environment(\.horizontalSizeClass) var horizontalSizeClass
     @Environment(\.accessibilityReduceMotion) var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) var reduceTransparency
     @State var composerState = ComposerState()
     @State var activeComposerDraftScope = ComposerDraftScopeKey.none
     @State var composerTextExternalRevision = 0
     @StateObject var voiceInput = VoiceInputController()
     @State var photoLibraryPickerRequest: PhotoLibraryPickerRequest?
+    @State var cameraAttachmentPickerRequest: CameraAttachmentPickerRequest?
+    @State var cameraAttachmentAccessIssue: CameraAttachmentAccessIssue?
+    @State var isRequestingCameraAuthorization = false
+    @State var fileImporterPresentation = FileImporterPresentationState()
+    @State var pendingAddContentAction: PendingAddContentAction?
     @State var showsAddContentPanel = false
     @State var showsSkillPicker = false
     @State var showsModelGridPicker = false
@@ -37,7 +43,6 @@ struct ComposerView: View {
     @State var presentedPendingUserInput: PendingUserInputPresentation?
     @State var pendingUserInputFormState = PendingUserInputFormState()
     @State var isGoalStatusExpanded = false
-    @State var hiddenCompletedGoalIDs: Set<SessionID> = []
     @State var attachmentErrorMessage: String?
     @State var isVoicePressActive = false
     @State var isVoiceTranscribing = false
@@ -53,12 +58,11 @@ struct ComposerView: View {
     @State var selectedSkillSuggestionIndex = 0
     @AppStorage("agentd.developerMode") var developerModeEnabled = false
     @AppStorage(ComposerPermissionMode.defaultStorageKey) var defaultPermissionModeID = ComposerPermissionMode.defaultMode.rawValue
-    @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
-    // 快捷行默认收起：展开与否是用户的全局偏好，不再被宽度变化反向改写。
-    @AppStorage("composer.shortcuts.expanded") var prefersExpandedShortcutBar = false
+    @AppStorage(VoiceInputProvider.storageKey) var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
     @State var guidedFollowUpEnabled = false
     @State var editingQueuedTurn: QueuedTurnEditorDraft?
     @State var showsQueuedTurnManager = false
+    @State var isSelectingVoiceDraftText = false
 
     var availableWidth: CGFloat?
 
@@ -70,7 +74,6 @@ struct ComposerView: View {
     }
 
     static let minimumUsableVoiceDuration: TimeInterval = 0.35
-    static let completedGoalAutoHideDelayNanoseconds: UInt64 = 3_500_000_000
     static let maximumImageAttachmentCount = 8
 
     var composerMotionAnimation: Animation {
@@ -92,6 +95,8 @@ struct ComposerView: View {
             voiceErrorMessage
             voiceNoticeMessage
             attachmentErrorNotice
+            FileUploadJobsStrip(store: sessionStore.fileUploadStore, scope: activeComposerDraftScope)
+                .environmentObject(themeStore)
             attachmentStrip
             composerStatusRow
             composerInputRow(tokens: tokens)
@@ -123,7 +128,7 @@ struct ComposerView: View {
             PendingUserInputSheet(
                 presentation: presentation,
                 isSubmitting: sessionStore.isUserInputResponsePending(presentation.request),
-                draft: $pendingUserInputFormState.draft,
+                draft: pendingUserInputDraftBinding,
                 onSubmit: { answers in
                     sessionStore.respondToUserInput(presentation.request, answers: answers)
                 }
@@ -165,12 +170,57 @@ struct ComposerView: View {
             }
             .ignoresSafeArea()
         }
+        .fullScreenCover(item: $cameraAttachmentPickerRequest) { request in
+            CameraAttachmentPicker { result in
+                handleCameraAttachmentCapture(result, targetScope: request.targetScope)
+            }
+            .ignoresSafeArea()
+        }
+        .fileImporter(
+            isPresented: $fileImporterPresentation.isPresented,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: false
+        ) { result in
+            guard let request = fileImporterPresentation.consumeRequest() else {
+                return
+            }
+            handleSelectedFile(result, targetScope: request.targetScope)
+        }
+        .confirmationDialog(
+            cameraAttachmentAccessIssue?.title ?? "",
+            isPresented: Binding(
+                get: { cameraAttachmentAccessIssue != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        cameraAttachmentAccessIssue = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible,
+            presenting: cameraAttachmentAccessIssue
+        ) { issue in
+            Button(L10n.text("ui.choose_photos")) {
+                choosePhotosAfterCameraIssue(issue)
+            }
+            if issue.canOpenSettings {
+                Button(L10n.text("ui.open_settings")) {
+                    cameraAttachmentAccessIssue = nil
+                    openCameraPrivacySettings()
+                }
+            }
+            Button(L10n.text("ui.cancel"), role: .cancel) {
+                cameraAttachmentAccessIssue = nil
+            }
+        } message: { issue in
+            Text(issue.message)
+        }
         .onChange(of: developerModeEnabled) { _, enabled in
             guard !enabled else {
                 return
             }
             composerState.updateTurnOptions { options in
                 options = options.sanitizedForStandardComposer()
+                normalizeModelControlsForStandardComposer(&options)
             }
             showsAdvancedOptionsSheet = false
         }
@@ -191,12 +241,35 @@ struct ComposerView: View {
             // 每次确认文字或附件变化都写入稳定内存仓，视图突然重建时也能恢复最新草稿。
             sessionStore.saveComposerDraft(snapshot, for: activeComposerDraftScope)
         }
+        .onChange(of: composerState.modelSelectionSnapshot()) { _, snapshot in
+            // 模型偏好独立于正文保存；空输入、发送成功和视图重建都不能清掉会话选择。
+            sessionStore.saveComposerModelSelection(snapshot, for: activeComposerDraftScope)
+        }
+        .onChange(of: sessionStore.latestFileUploadCompletion) { _, completion in
+            guard let completion,
+                  completion.targetScope == activeComposerDraftScope,
+                  !composerState.attachments.contains(where: {
+                      $0.id == "uploadedFile:\(completion.attachment.uploadID)"
+                  })
+            else {
+                return
+            }
+            composerState.addAttachment(.uploadedFile(completion.attachment))
+        }
         .onChange(of: selectedSessionRuntimeProviderForModelMenu) { _, _ in
+            // 会话 scope 的 onChange 可能稍晚到达。此时仍显示旧 Composer，不能先用新
+            // runtime 改写并保存旧会话的模型；scope 切换完成后会统一恢复并校验。
+            guard activeComposerDraftScope == currentComposerDraftScope else {
+                return
+            }
             clampModelSelectionToSelectedSessionRuntime()
             clampPermissionSelectionToSelectedSessionRuntime()
         }
         .onChange(of: modelOptionsForMenu) { _, _ in
             // model/list 刷新后能力元数据可能变化；立即清理当前模型已不支持的推理强度。
+            guard activeComposerDraftScope == currentComposerDraftScope else {
+                return
+            }
             clampModelSelectionToSelectedSessionRuntime()
         }
         .onChange(of: canUseGuidedFollowUp) { _, canGuide in
@@ -210,13 +283,14 @@ struct ComposerView: View {
             guidedFollowUpEnabled = false
         }
         .onChange(of: sessionStore.selectedThreadGoal) { previousGoal, goal in
-            syncGoalStatusBarVisibility(from: previousGoal, to: goal)
+            syncGoalStatusBarExpansion(from: previousGoal, to: goal)
         }
         .task(id: voiceInput.errorMessage) {
             await autoDismissVoiceErrorIfNeeded(voiceInput.errorMessage)
         }
         .onAppear {
             switchComposerDraftScope(to: currentComposerDraftScope)
+            restorePendingUserInputFormStateFromCache()
             synchronizePendingUserInputPresentation(previous: nil, current: pendingUserInputSelectionIdentity)
             clampModelSelectionToSelectedSessionRuntime()
             clampPermissionSelectionToSelectedSessionRuntime()
@@ -232,6 +306,10 @@ struct ComposerView: View {
         .onDisappear {
             synchronizeComposerTextBeforeDraftScopeChange()
             sessionStore.saveComposerDraft(composerState.draftSnapshot(), for: activeComposerDraftScope)
+            sessionStore.saveComposerModelSelection(
+                composerState.modelSelectionSnapshot(),
+                for: activeComposerDraftScope
+            )
             cancelVoiceInteraction(clearStatus: true)
             activeSkillQuery = nil
         }
@@ -240,6 +318,17 @@ struct ComposerView: View {
     @discardableResult
     func submitDraft() -> Bool {
         guard synchronizeComposerTextBeforeSubmit() else {
+            return false
+        }
+        guard !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope) else {
+            attachmentErrorMessage = L10n.text("ui.wait_for_file_upload_to_complete")
+            return false
+        }
+        let pendingPayload = CodexAppServerTurnPayload(
+            input: CodexAppServerTurnPayload.defaultInput(for: composerState.draft) + composerState.attachments
+        )
+        guard pendingPayload.encodedAppServerInputByteCount <= CodexAppServerTurnPayload.maximumEncodedInputBytes else {
+            attachmentErrorMessage = L10n.text("ui.message_attachments_are_too_large")
             return false
         }
         if composerState.isGoalModeSelected {
@@ -279,7 +368,6 @@ struct ComposerView: View {
         // 目标模式不是 Plan Mode：目标元数据走 thread/goal/set，turn/start 仍显式声明 default，
         // 防止 app-server 沿用上一轮规划协作状态。
         options.collaborationMode = .default
-        options.planGuidanceEnabled = false
         let submittedDraftScope = activeComposerDraftScope
         guard let submitted = composerState.takeDraftForSubmit(
             isLoading: sessionStore.isLoading || sessionStore.isUpdatingThreadGoal,
@@ -354,12 +442,16 @@ struct ComposerView: View {
         )
         synchronizeComposerTextBeforeDraftScopeChange()
         let outgoingDraft = composerState.draftSnapshot()
+        let outgoingModelSelection = composerState.modelSelectionSnapshot()
         sessionStore.saveComposerDraft(outgoingDraft, for: previousScope)
+        sessionStore.saveComposerModelSelection(outgoingModelSelection, for: previousScope)
         if isOptimisticHandoff {
             // local:* 只是创建接口返回前的临时身份。服务端 ID 回来时迁移当前可见草稿，
-            // 避免用户正在输入的追加指令被新 scope 的空草稿覆盖。
+            // 避免用户正在输入的追加指令和模型选择被新 scope 的默认值覆盖。
             sessionStore.saveComposerDraft(outgoingDraft, for: nextScope)
+            sessionStore.saveComposerModelSelection(outgoingModelSelection, for: nextScope)
             sessionStore.removeComposerDraft(for: previousScope)
+            sessionStore.removeComposerModelSelection(for: previousScope)
         }
         cancelVoiceInteraction(clearStatus: true)
 
@@ -369,6 +461,8 @@ struct ComposerView: View {
         composerState.setSendMode(restoredSendMode)
         persistComposerSendMode(restoredSendMode, for: nextScope)
         composerState.restoreDraftSnapshot(sessionStore.composerDraft(for: nextScope))
+        restoreComposerModelSelection(for: nextScope)
+        clampModelSelectionToSelectedSessionRuntime()
         composerTextExternalRevision += 1
         guidedFollowUpEnabled = false
         measuredComposerTextHeight = 0
@@ -392,6 +486,19 @@ struct ComposerView: View {
 
     func persistComposerSendMode(_ mode: ComposerSendMode, for scope: ComposerDraftScopeKey) {
         sessionStore.saveComposerSendMode(mode, for: scope)
+    }
+
+    func restoreComposerModelSelection(for scope: ComposerDraftScopeKey) {
+        if let snapshot = sessionStore.composerModelSelection(for: scope) {
+            composerState.restoreModelSelectionSnapshot(snapshot)
+            return
+        }
+
+        let runtimeProvider = selectedSessionRuntimeProviderForModelMenu
+            ?? normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider)
+        composerState.updateTurnOptions { options in
+            applyPreferredDefaultModel(runtimeProvider: runtimeProvider, to: &options)
+        }
     }
 
     func resetComposerSendModeAfterSubmit() {
@@ -440,18 +547,20 @@ struct ComposerView: View {
 
     func preparedTurnOptionsForSubmit() -> CodexAppServerTurnOptions {
         var options = developerModeEnabled ? composerState.turnOptions : composerState.turnOptions.sanitizedForStandardComposer()
-        if let effort = options.reasoningEffort,
+        options.modelSelectionPolicy = developerModeEnabled ? .allowUnlisted : .catalogOnly
+        if developerModeEnabled,
+           let effort = options.reasoningEffort,
            !supportsReasoningEffort(effort, modelID: options.model ?? effectiveModelID) {
             // 提交边界再做一次兜底，避免模型列表刷新与点击发送之间的竞态把非法组合发给 runtime。
             options.reasoningEffort = nil
+        } else if !developerModeEnabled {
+            normalizeModelControlsForStandardComposer(&options)
         }
         if composerState.isPlanModeSelected {
             options.collaborationMode = .plan
-            options.planGuidanceEnabled = true
         } else {
             // 普通发送也必须显式退出 Plan Mode，不能依赖 nil/absent。
             options.collaborationMode = .default
-            options.planGuidanceEnabled = false
         }
         return options
     }
@@ -486,6 +595,7 @@ struct ComposerView: View {
         return sessionStore.canSendInSelectedSession
             && hasComposerContentForSubmit
             && !sessionStore.isLoading
+            && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
     }
 
     var canSubmitGoalDraft: Bool {
@@ -493,6 +603,7 @@ struct ComposerView: View {
             && hasNonWhitespaceComposerTextForSubmit
             && !sessionStore.isLoading
             && !sessionStore.isUpdatingThreadGoal
+            && !sessionStore.fileUploadStore.hasBlockingJob(for: activeComposerDraftScope)
     }
 
     var hasNonWhitespaceComposerTextForSubmit: Bool {
@@ -643,6 +754,7 @@ struct ComposerView: View {
                 isGoalUpdating: sessionStore.isUpdatingThreadGoal,
                 goalErrorMessage: sessionStore.threadGoalErrorMessage,
                 isRefreshDisabled: sessionStore.isRefreshingSelectedSession || sessionStore.isLoading,
+                allowsTakeOver: sessionStore.selectedSessionAllowsTakeOver,
                 onTakeOver: {
                     sessionStore.takeOverSelectedSession()
                 },
@@ -675,11 +787,6 @@ struct ComposerView: View {
             )
             .environmentObject(themeStore)
             .transition(.move(edge: .top).combined(with: .opacity))
-            .task(id: visibleGoal.map { completedGoalAutoHideTaskID(for: $0) } ?? "no-goal") {
-                if let visibleGoal {
-                    await autoHideCompletedGoalIfNeeded(visibleGoal)
-                }
-            }
         }
     }
 
@@ -695,10 +802,9 @@ struct ComposerView: View {
     }
 
     var selectedVisibleThreadGoal: ThreadGoal? {
-        guard let goal = sessionStore.selectedThreadGoal, shouldShowGoalStatusBar(goal) else {
-            return nil
-        }
-        return goal
+        // Goal 是 thread 级状态，不是单个 turn 的瞬时提示。即使已经完成也保留状态条，
+        // 直到用户明确清除目标或切换 thread，避免一次回复结束后 UI 无故消失。
+        sessionStore.selectedThreadGoal
     }
 
     // 输入框上方只保留瞬时状态和必要控制。模型、权限、seq/usage 已有其他入口，
@@ -740,76 +846,13 @@ struct ComposerView: View {
             sessionStore.webSocketStatus == .connected
     }
 
-    var runningControls: some View {
-        HStack(spacing: 8) {
-            if canInterruptSelectedSession {
-                Button {
-                    sessionStore.sendCtrlC()
-                } label: {
-                    Label("Ctrl-C", systemImage: "stop.circle")
-                }
-                .buttonStyle(.bordered)
-                .tint(.secondary)
-                .accessibilityLabel(L10n.text("ui.send_ctrl_c"))
-            }
-
-            Button {
-                Task { await sessionStore.stopSelectedSession() }
-            } label: {
-                Label(L10n.text("ui.stop"), systemImage: "xmark.circle")
-            }
-            .buttonStyle(.bordered)
-            .tint(themeStore.tokens(for: colorScheme).primaryAction)
-            .accessibilityLabel(L10n.text("ui.stop_current_session"))
-        }
-        .controlSize(.small)
-        .font(themeStore.uiFont(.caption, weight: .medium))
-        .layoutPriority(1)
-    }
-
-    func shouldShowGoalStatusBar(_ goal: ThreadGoal) -> Bool {
-        goal.status != .complete || !hiddenCompletedGoalIDs.contains(goal.threadID)
-    }
-
-    func completedGoalAutoHideTaskID(for goal: ThreadGoal) -> String {
-        [
-            goal.threadID,
-            goal.status.rawValue,
-            goal.updatedAt.map { String($0.timeIntervalSince1970) } ?? "no-update"
-        ].joined(separator: "#")
-    }
-
-    func syncGoalStatusBarVisibility(from previousGoal: ThreadGoal?, to goal: ThreadGoal?) {
+    func syncGoalStatusBarExpansion(from previousGoal: ThreadGoal?, to goal: ThreadGoal?) {
         guard let goal else {
             isGoalStatusExpanded = false
             return
         }
         if previousGoal?.threadID != goal.threadID {
             isGoalStatusExpanded = false
-        }
-        // 目标重新进入非完成态时，恢复 composer 上方的常驻状态条。
-        if goal.status != .complete {
-            hiddenCompletedGoalIDs.remove(goal.threadID)
-        }
-    }
-
-    func autoHideCompletedGoalIfNeeded(_ goal: ThreadGoal) async {
-        guard goal.status == .complete else {
-            return
-        }
-        try? await Task.sleep(nanoseconds: Self.completedGoalAutoHideDelayNanoseconds)
-        guard !Task.isCancelled else {
-            return
-        }
-        await MainActor.run {
-            guard sessionStore.selectedThreadGoal?.threadID == goal.threadID,
-                  sessionStore.selectedThreadGoal?.status == .complete else {
-                return
-            }
-            withAnimation(.easeInOut(duration: 0.18)) {
-                hiddenCompletedGoalIDs.insert(goal.threadID)
-                isGoalStatusExpanded = false
-            }
         }
     }
 
@@ -824,83 +867,128 @@ struct ComposerView: View {
 
     func composerInputRow(tokens: ThemeTokens) -> some View {
         Group {
-            if usesCollapsedPhoneComposer {
-                collapsedPhoneComposerCard(tokens: tokens)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
+            if isPhoneComposer {
+                phoneComposerCard(tokens: tokens)
             } else {
                 composerCard(tokens: tokens)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
             }
         }
         .layoutPriority(1)
         .animation(composerMotionAnimation, value: usesCollapsedPhoneComposer)
     }
 
-    func collapsedPhoneComposerCard(tokens: ThemeTokens) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+    /// iPhone 的收起态和编辑态共用同一个卡片与工具栏。过去在两棵完整 View 树之间
+    /// 切换，即使按钮的声明尺寸相同，SwiftUI 仍会把它们当成退出/进入元素并参与缩放，
+    /// 视觉上就像聚焦后整排图标突然变大。现在只替换上方内容区，底部工具栏身份稳定。
+    func phoneComposerCard(tokens: ThemeTokens) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
-        return HStack(spacing: 8) {
-            addContentButton
-
-            Button(action: expandPhoneComposer) {
-                HStack(spacing: 8) {
-                    Text(collapsedPhoneComposerText)
-                        .font(themeStore.uiFont(.body))
-                        .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    Image(systemName: "chevron.up")
-                        .font(themeStore.uiFont(.caption2, weight: .bold))
-                        .foregroundStyle(tokens.tertiaryText)
+        return VStack(alignment: .leading, spacing: 8) {
+            Group {
+                if usesCollapsedPhoneComposer {
+                    collapsedPhoneComposerContent(tokens: tokens)
+                        .transition(.opacity)
+                } else {
+                    expandedPhoneComposerContent(tokens: tokens)
+                        .transition(.opacity)
                 }
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .modifier(
-                    ComposerFlatControlSurface(
-                        tokens: tokens,
-                        cornerRadius: 12,
-                        isEmphasized: false
-                    )
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-            .accessibilityLabel(L10n.text("ui.expand_input_box"))
-            .accessibilityValue(collapsedPhoneComposerText)
 
-            voiceMicControl
-            sendButton(showLabels: false)
+            // 工具栏始终位于同一个父视图和源码位置，展开输入区时只向上生长，
+            // 不重新插入按钮，也不对按钮做 scale transition。
+            compactPrimaryComposerToolbar(showsModelTitle: compactToolbarShowsModelTitle)
         }
         .padding(8)
         .frame(maxWidth: .infinity)
-        .background(tokens.elevatedSurface, in: shape)
+        .background {
+            composerContainerBackground(shape: shape, tokens: tokens)
+        }
         .overlay {
             shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
         }
+        .tint(tokens.accent)
+    }
+
+    func collapsedPhoneComposerContent(tokens: ThemeTokens) -> some View {
+        Button(action: expandPhoneComposer) {
+            HStack(spacing: 8) {
+                Text(collapsedPhoneComposerText)
+                    .font(themeStore.uiFont(.body))
+                    .foregroundStyle(composerState.draft.isEmpty ? tokens.tertiaryText : tokens.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Image(systemName: "chevron.up")
+                    .font(themeStore.uiFont(.caption2, weight: .bold))
+                    .foregroundStyle(tokens.tertiaryText)
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
+        .accessibilityLabel(L10n.text("ui.expand_input_box"))
+        .accessibilityValue(collapsedPhoneComposerText)
+        .accessibilityIdentifier("composer.expand")
+    }
+
+    func expandedPhoneComposerContent(tokens: ThemeTokens) -> some View {
+        let skillSuggestions = filteredSkillSuggestions
+        return VStack(alignment: .leading, spacing: composerCardSpacing) {
+            composerTextArea(tokens: tokens, skillSuggestions: skillSuggestions)
+            skillAutocompletePanel(skills: skillSuggestions)
+            voiceReviewNotice
+        }
+        // 卡片外缘在两态都固定为 8pt；编辑区额外补 4pt，使正文仍与原先
+        // 12pt 的阅读边距一致，而工具栏不会因聚焦改变位置或视觉尺寸。
+        .padding(.horizontal, 4)
+        .padding(.top, 4)
     }
 
     func composerCard(tokens: ThemeTokens) -> some View {
         let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
+        let skillSuggestions = filteredSkillSuggestions
         return VStack(alignment: .leading, spacing: composerCardSpacing) {
-            composerShortcutRow
-            composerTextArea(tokens: tokens)
-            skillAutocompletePanel
+            // iPad、iPad mini 与 Catalyst 有稳定的横向空间，直接展示发送上下文；
+            // iPhone 则统一收进底部「+」，不再保留需要二次展开的“快捷”状态。
+            if !isPhoneComposer {
+                composerContextControlsRow
+            }
+            composerTextArea(tokens: tokens, skillSuggestions: skillSuggestions)
+            skillAutocompletePanel(skills: skillSuggestions)
             voiceReviewNotice
             primaryComposerToolbar
         }
         .padding(composerCardPadding)
         .frame(maxWidth: .infinity)
-        .background(tokens.elevatedSurface, in: shape)
+        .background {
+            composerContainerBackground(shape: shape, tokens: tokens)
+        }
         .tint(tokens.accent)
         .overlay {
             shape.strokeBorder(composerCardBorderColor(tokens), lineWidth: composerCardBorderWidth)
         }
     }
 
-    func composerTextArea(tokens: ThemeTokens) -> some View {
+    @ViewBuilder
+    func composerContainerBackground(
+        shape: RoundedRectangle,
+        tokens: ThemeTokens
+    ) -> some View {
+        if reduceTransparency {
+            shape.fill(tokens.elevatedSurface)
+        } else {
+            // 输入区是底部唯一的功能材质层；主题色只轻覆一层，避免再形成白色卡片叠卡片。
+            shape
+                .fill(.thinMaterial)
+                .overlay {
+                    shape.fill(tokens.elevatedSurface.opacity(colorScheme == .light ? 0.58 : 0.46))
+                }
+        }
+    }
+
+    func composerTextArea(tokens: ThemeTokens, skillSuggestions: [SkillCapability]) -> some View {
         ZStack(alignment: .topLeading) {
             ComposerTextView(
                 text: composerDraftBinding,
@@ -930,7 +1018,7 @@ struct ComposerView: View {
                         endHoldToTalk()
                     }
                 },
-                skillAutocompleteActive: activeSkillQuery != nil && !filteredSkillSuggestions.isEmpty,
+                skillAutocompleteActive: activeSkillQuery != nil && !skillSuggestions.isEmpty,
                 onSkillQueryChange: { query in
                     if query != activeSkillQuery {
                         activeSkillQuery = query
@@ -974,11 +1062,11 @@ struct ComposerView: View {
     }
 
     @ViewBuilder
-    var skillAutocompletePanel: some View {
-        if activeSkillQuery != nil, !filteredSkillSuggestions.isEmpty {
+    func skillAutocompletePanel(skills: [SkillCapability]) -> some View {
+        if activeSkillQuery != nil, !skills.isEmpty {
             SkillAutocompletePanel(
-                skills: filteredSkillSuggestions,
-                selectedIndex: min(selectedSkillSuggestionIndex, filteredSkillSuggestions.count - 1),
+                skills: skills,
+                selectedIndex: min(selectedSkillSuggestionIndex, skills.count - 1),
                 onSelect: { skill in
                     selectSkillFromAutocomplete(skill)
                 }
@@ -1001,16 +1089,18 @@ struct ComposerView: View {
     }
 
     func moveSkillSuggestion(by offset: Int) {
-        guard !filteredSkillSuggestions.isEmpty else { return }
-        let count = filteredSkillSuggestions.count
+        let suggestions = filteredSkillSuggestions
+        guard !suggestions.isEmpty else { return }
+        let count = suggestions.count
         selectedSkillSuggestionIndex = (selectedSkillSuggestionIndex + offset + count) % count
         UISelectionFeedbackGenerator().selectionChanged()
     }
 
     func commitSelectedSkillSuggestion() {
-        guard !filteredSkillSuggestions.isEmpty else { return }
-        let index = min(selectedSkillSuggestionIndex, filteredSkillSuggestions.count - 1)
-        selectSkillFromAutocomplete(filteredSkillSuggestions[index])
+        let suggestions = filteredSkillSuggestions
+        guard !suggestions.isEmpty else { return }
+        let index = min(selectedSkillSuggestionIndex, suggestions.count - 1)
+        selectSkillFromAutocomplete(suggestions[index])
     }
 
     func selectSkillFromAutocomplete(_ skill: SkillCapability) {
@@ -1035,7 +1125,7 @@ struct ComposerView: View {
         if isVoiceTranscribing {
             return tokens.accent.opacity(0.5)
         }
-        return tokens.border.opacity(0.84)
+        return tokens.border.opacity(0.58)
     }
 
     var composerPlaceholderText: String {
@@ -1059,88 +1149,91 @@ struct ComposerView: View {
         if voiceInput.isPreparing || isVoicePressActive {
             return 1.5
         }
-        return voiceInput.isRecording ? 1.25 : 1
+        return voiceInput.isRecording ? 1.25 : 0.75
     }
 
-    // 快捷行固定在输入区上方：开关在行首，选项从它右侧展开；主操作行只保留发送链路，
-    // 上下两行不再有重复入口。展开与否只跟随用户偏好，与宽度无关，横竖屏表现一致。
-    var composerShortcutRow: some View {
-        HStack(spacing: 8) {
-            shortcutBarToggle
-            if prefersExpandedShortcutBar {
-                // 固定宽度的快捷按钮放入横向滚动容器，内容再长也不能反向撑大 Composer。
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        skillPickerButton
-                        modelPickerControl
-                        permissionMenu
-                        // GPT-5.6 的九宫格已经同时负责模型和推理强度，模型按钮也会显示当前强度；
-                        // 只有其它模型仍保留独立入口，避免为了去重而丢失低频配置能力。
-                        if showsStandaloneReasoningEffortControl {
-                            reasoningEffortMenu
-                        }
-                    }
-                }
-                .scrollIndicators(.hidden)
-                .transition(.move(edge: .leading).combined(with: .opacity))
-            }
-
-            if canCollapsePhoneComposer {
-                Spacer(minLength: 0)
-                collapsePhoneComposerButton
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // 快捷选项只在这一行内动画；模型、权限等值变更不触发整张输入卡重排动画。
-        .animation(composerMotionAnimation, value: prefersExpandedShortcutBar)
-    }
-
-    var collapsePhoneComposerButton: some View {
-        Button(action: collapsePhoneComposer) {
-            composerToolbarControlLabel(
-                title: nil,
-                systemImage: "chevron.down",
-                accessibilityLabel: L10n.text("ui.collapse_input_box")
-            )
-        }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.collapse_input_box"))
-    }
-
+    @ViewBuilder
     var primaryComposerToolbar: some View {
-        HStack(spacing: usesCompactComposerMetrics ? 8 : 10) {
-            addContentButton
-            followUpDeliveryMenu
-            Spacer(minLength: 0)
-            composerOptionsMenu
-            voiceMicControl
-            sendButton(showLabels: !usesCompactComposerMetrics)
+        if usesCompactComposerMetrics {
+            compactPrimaryComposerToolbar(showsModelTitle: compactToolbarShowsModelTitle)
+        } else {
+            HStack(spacing: 10) {
+                addContentButton
+                modelPickerControl
+                followUpDeliveryMenu
+                Spacer(minLength: 0)
+                composerOptionsMenu
+                voiceMicControl
+                sendButton(showLabels: true)
+            }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
     }
 
-    var shortcutBarToggle: some View {
-        Button {
-            prefersExpandedShortcutBar.toggle()
-            if !prefersExpandedShortcutBar {
-                showsSkillPicker = false
-                showsModelGridPicker = false
-            }
-        } label: {
-            composerToolbarControlLabel(
-                title: L10n.text("ui.quick"),
-                systemImage: prefersExpandedShortcutBar ? "chevron.left" : "chevron.right",
-                isSelected: prefersExpandedShortcutBar,
-                accessibilityLabel: prefersExpandedShortcutBar ? L10n.text("ui.close_shortcut_button") : L10n.text("ui.expand_shortcut_button")
+    var compactToolbarShowsModelTitle: Bool {
+        ConversationLayout.compactComposerShowsModelTitle(availableWidth: availableWidth)
+    }
+
+    func compactPrimaryComposerToolbar(showsModelTitle: Bool) -> some View {
+        CompactComposerToolbarShell(
+            leadingControls: compactLeadingControlsBox(showsModelTitle: showsModelTitle),
+            optionsControl: compactOptionsControlBox(),
+            microphoneControl: compactMicrophoneControlBox(),
+            submitControl: compactSubmitControlBox()
+        )
+    }
+
+    @inline(never)
+    func compactLeadingControlsBox(showsModelTitle: Bool) -> AnyView {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let deliveryControl = canChooseRunningFollowUpDelivery
+            ? compactDeliveryControlBox()
+            : nil
+        return AnyView(
+            CompactComposerLeadingControlsShell(
+                addControl: compactAddContentControlBox(),
+                modelControl: compactModelControlBox(showsTitle: showsModelTitle),
+                deliveryControl: deliveryControl,
+                backgroundColor: tokens.background
             )
-        }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(prefersExpandedShortcutBar ? L10n.text("ui.close_shortcut_button") : L10n.text("ui.expand_shortcut_button"))
+        )
+    }
+
+    // 每个复杂控件单独进入一个不可内联的栈帧；返回后父层只保留小型 AnyView，
+    // 这是对真机泛型元数据栈溢出的边界修复，不用于普通组件的类型兼容。
+    @inline(never)
+    func compactAddContentControlBox() -> AnyView {
+        AnyView(addContentButton)
+    }
+
+    @inline(never)
+    func compactModelControlBox(showsTitle: Bool) -> AnyView {
+        AnyView(modelPickerControl(showsTitle: showsTitle))
+    }
+
+    @inline(never)
+    func compactDeliveryControlBox() -> AnyView {
+        AnyView(followUpDeliveryMenu)
+    }
+
+    @inline(never)
+    func compactOptionsControlBox() -> AnyView {
+        AnyView(composerOptionsMenu)
+    }
+
+    @inline(never)
+    func compactMicrophoneControlBox() -> AnyView {
+        AnyView(voiceMicControl)
+    }
+
+    @inline(never)
+    func compactSubmitControlBox() -> AnyView {
+        AnyView(sendButton(showLabels: false))
     }
 
     var composerOptionsMenu: some View {
-        // 模型、权限、推理强度已由输入区上方的快捷行承担，这里不再重复入口，
-        // 只保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
+        // 模型固定在底部主工具栏；权限与 Skill 在 iPad 上平铺、在 iPhone 上进入「+」。
+        // 这里仅保留低频运行参数和发送模式，避免同一屏幕出现两套配置面。
         Menu {
             runSettingsMenu
 
@@ -1151,11 +1244,20 @@ struct ComposerView: View {
             } label: {
                 Label(composerState.isPlanModeSelected ? L10n.text("ui.turn_off_planning_mode") : L10n.text("ui.planning_mode"), systemImage: composerState.isPlanModeSelected ? "checkmark" : "list.clipboard")
             }
+            .accessibilityIdentifier("composer.mode.plan")
 
             Button {
                 setSendMode(composerState.isGoalModeSelected ? .standard : .goal)
             } label: {
                 Label(composerState.isGoalModeSelected ? L10n.text("ui.close_target_task") : L10n.text("ui.target_task"), systemImage: composerState.isGoalModeSelected ? "checkmark" : "target")
+            }
+            .accessibilityIdentifier("composer.mode.goal")
+
+            if canCollapsePhoneComposer {
+                Divider()
+                Button(action: collapsePhoneComposer) {
+                    Label(L10n.text("ui.collapse_input_box"), systemImage: "chevron.down")
+                }
             }
         } label: {
             composerToolbarControlLabel(
@@ -1167,7 +1269,19 @@ struct ComposerView: View {
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.session_options"))
+        .accessibilityValue(composerOptionsAccessibilityValue)
         .accessibilityHint(L10n.text("ui.adjust_build_settings_and_sending_mode"))
+        .accessibilityIdentifier("composer.options")
+    }
+
+    var composerOptionsAccessibilityValue: String {
+        if composerState.isPlanModeSelected {
+            return L10n.text("ui.planning_mode")
+        }
+        if composerState.isGoalModeSelected {
+            return L10n.text("ui.target_task")
+        }
+        return L10n.text("ui.normal")
     }
 
     var voiceMicControl: some View {
@@ -1181,6 +1295,7 @@ struct ComposerView: View {
             }
         )
         .layoutPriority(0)
+        .accessibilityIdentifier("composer.voice")
     }
 
     var voiceKeyboardShortcutButton: some View {
@@ -1233,52 +1348,6 @@ struct ComposerView: View {
         .accessibilityHidden(true)
     }
 
-    @ViewBuilder
-    var addContentButton: some View {
-        Button {
-            showsAddContentPanel.toggle()
-        } label: {
-            composerToolbarControlLabel(
-                title: nil,
-                systemImage: "plus",
-                accessibilityLabel: L10n.text("ui.add_content")
-            )
-        }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.add_content"))
-        .help(L10n.text("ui.add_an_image_plugin_skill_or_shortcut_phrase"))
-        .popover(isPresented: $showsAddContentPanel, arrowEdge: .bottom) {
-            AddContentPanel(
-                skillShortcuts: enabledSkillShortcuts,
-                pluginShortcuts: installedPluginShortcuts,
-                capabilityErrorMessage: sessionStore.capabilityErrorMessage,
-                isRefreshingCapabilities: sessionStore.isRefreshingCapabilities,
-                onPickPhotos: {
-                    presentPhotoLibraryPicker()
-                },
-                onSkillShortcut: { skill in
-                    addSkillAttachment(skill)
-                },
-                onPluginShortcut: { plugin in
-                    composerState.insertPluginMention(plugin.presentationName)
-                    clearVoiceTransientStatus()
-                    showsAddContentPanel = false
-                    UISelectionFeedbackGenerator().selectionChanged()
-                },
-                onRefreshCapabilities: {
-                    Task { await sessionStore.refreshCapabilities(forceReload: true) }
-                },
-                onShortcut: { shortcut in
-                    composerState.insertShortcut(shortcut)
-                    clearVoiceTransientStatus()
-                    showsAddContentPanel = false
-                }
-            )
-            .environmentObject(themeStore)
-            .presentationCompactAdaptation(.sheet)
-        }
-    }
-
     var skillPickerButton: some View {
         Button {
             showsSkillPicker.toggle()
@@ -1292,7 +1361,8 @@ struct ComposerView: View {
         }
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.select_skill"))
-            .accessibilityValue(selectedSkillPaths.isEmpty ? L10n.text("ui.not_selected") : L10n.plural("ui.skills_selected_count", count: selectedSkillPaths.count))
+        .accessibilityValue(selectedSkillPaths.isEmpty ? L10n.text("ui.not_selected") : L10n.plural("ui.skills_selected_count", count: selectedSkillPaths.count))
+        .accessibilityIdentifier("composer.skill")
         .help(L10n.text("ui.select_skill_or_type_in_the_input_box"))
         .popover(isPresented: $showsSkillPicker, arrowEdge: .bottom) {
             SkillPickerPanel(
@@ -1308,7 +1378,12 @@ struct ComposerView: View {
                 },
                 onManualAdd: {
                     showsSkillPicker = false
-                    showsManualSkillInputSheet = true
+                    DispatchQueue.main.async {
+                        showsManualSkillInputSheet = true
+                    }
+                },
+                onDone: {
+                    showsSkillPicker = false
                 }
             )
             .environmentObject(themeStore)
@@ -1418,38 +1493,37 @@ struct ComposerView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: isGuidedSelected ? "text.bubble.fill" : "clock")
-                        .font(themeStore.uiFont(size: 15, weight: .bold))
+                        .font(themeStore.uiFont(size: 16, weight: .bold))
                     if !usesCompactComposerMetrics {
                         Text(isGuidedSelected ? L10n.text("ui.guide") : L10n.text("ui.queue"))
                             .font(themeStore.uiFont(.callout, weight: .semibold))
                             .lineLimit(1)
                     }
-                    Image(systemName: "chevron.up")
-                        .font(themeStore.uiFont(size: 10, weight: .bold))
-                        .opacity(0.72)
                 }
                 .foregroundStyle(isGuidedSelected ? tokens.accent : tokens.primaryText)
                 .frame(height: 44)
                 .padding(.horizontal, usesCompactComposerMetrics ? 0 : 11)
                 .frame(minWidth: usesCompactComposerMetrics ? 44 : 76)
-                .background(
-                    isGuidedSelected ? tokens.accent.opacity(0.12) : tokens.surface,
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
+                .background {
+                    RoundedRectangle(cornerRadius: usesCompactComposerMetrics ? 22 : 12, style: .continuous)
+                        .fill(isGuidedSelected ? tokens.accent.opacity(0.12) : Color.clear)
+                        .padding(4)
+                }
                 .modifier(
                     ComposerFlatControlSurface(
                         tokens: tokens,
-                        cornerRadius: 12,
+                        cornerRadius: usesCompactComposerMetrics ? 22 : 12,
                         isEmphasized: isGuidedSelected
                     )
                 )
-                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: usesCompactComposerMetrics ? 22 : 12, style: .continuous))
             }
             .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
             .help(isGuidedSelected ? L10n.text("ui.immediately_change_the_reply_currently_being_generated") : L10n.text("ui.save_it_in_this_device_first_and_automatically"))
             .accessibilityLabel(L10n.text("ui.append_mode_on_the_fly"))
             .accessibilityValue(isGuidedSelected ? L10n.text("ui.lead_current_reply") : L10n.text("ui.queue_for_next_round"))
             .accessibilityHint(L10n.text("ui.tap_to_toggle_queuing_or_directing_current_replies"))
+            .accessibilityIdentifier("composer.followUpDelivery")
         }
     }
 
@@ -1467,6 +1541,7 @@ struct ComposerView: View {
     @ViewBuilder
     var voiceReviewNotice: some View {
         if composerState.voiceDraftNeedsReview {
+            let draftText = composerState.draft.trimmingCharacters(in: .whitespacesAndNewlines)
             HStack(spacing: 7) {
                 Image(systemName: "checkmark.shield")
                 Text(L10n.text("ui.voice_draft_to_be_confirmed"))
@@ -1482,12 +1557,31 @@ struct ComposerView: View {
                     .strokeBorder(themeStore.tokens(for: colorScheme).accent.opacity(0.35))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // 与对话面板保持一致：转写草稿也可长按整条复制，或进入可自由选择的文本表面
+            // 挑选片段复制，而不必手动在输入框里精确拖选。
+            .contextMenu {
+                if !draftText.isEmpty {
+                    Button {
+                        UIPasteboard.general.string = draftText
+                    } label: {
+                        Label(L10n.text("ui.copy"), systemImage: "doc.on.doc")
+                    }
+                    Button {
+                        isSelectingVoiceDraftText = true
+                    } label: {
+                        Label(L10n.text("ui.select_text"), systemImage: "text.cursor")
+                    }
+                }
+            }
+            .sheet(isPresented: $isSelectingVoiceDraftText) {
+                MessageTextSelectionSheet(text: draftText)
+                    .environmentObject(themeStore)
+            }
         }
     }
 
     var runSettingsMenu: some View {
         Menu {
-            serviceTierOptionsMenu
             outputOptionsMenu
             if developerModeEnabled {
                 Divider()
@@ -1511,14 +1605,20 @@ struct ComposerView: View {
 
     @ViewBuilder
     var modelPickerControl: some View {
+        modelPickerControl(showsTitle: true)
+    }
+
+    @ViewBuilder
+    func modelPickerControl(showsTitle: Bool) -> some View {
         Button {
             showsModelGridPicker.toggle()
         } label: {
             composerToolbarControlLabel(
-                title: modelPickerTriggerTitle,
+                // 320/344pt 设备只隐藏可见标题，完整模型信息仍通过 accessibilityValue 提供。
+                title: showsTitle ? modelPickerTriggerTitle : nil,
                 systemImage: "cpu",
                 trailingSystemImage: isFastModeSelected ? "bolt.fill" : nil,
-                titleMaxWidth: 150,
+                titleMaxWidth: usesCompactComposerMetrics ? 82 : 150,
                 accessibilityLabel: L10n.text("ui.switch_model_and_inference_strength")
             )
             .contentTransition(.opacity)
@@ -1526,7 +1626,8 @@ struct ComposerView: View {
         .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .accessibilityLabel(L10n.text("ui.switch_model_and_inference_strength"))
         .accessibilityValue(modelShortcutAccessibilityValue(for: modelPickerTriggerTitle))
-        .accessibilityHint(L10n.text("ui.double_click_to_select_you_can_also_drag"))
+        .accessibilityHint(L10n.text("ui.select_the_model_to_use_in_the_next"))
+        .accessibilityIdentifier("composer.model")
         .popover(isPresented: $showsModelGridPicker, arrowEdge: .bottom) {
             ModelReasoningGridPicker(
                 options: modelOptionsForMenu,
@@ -1535,23 +1636,29 @@ struct ComposerView: View {
                 selectedModelID: composerState.turnOptions.model,
                 isRefreshing: sessionStore.isRefreshingAppServerModels,
                 isFastMode: isFastModeSelected,
-                onSelect: { option, effort in
-                    selectGridModel(option, effort: effort)
+                onSelectModel: { option, effort in
+                    selectModel(option, effort: effort)
+                },
+                onSelectDefaultModel: { option, effort in
+                    selectDefaultModel(option, effort: effort)
                 },
                 onFastModeChange: { isEnabled in
                     composerState.updateTurnOptions {
-                        $0.serviceTier = isEnabled ? "priority" : nil
+                        $0.serviceTier = ModelReasoningGridCatalog.serviceTierForFastMode(isEnabled)
                     }
-                },
-                onSelectModelOnly: { option in
-                    selectModelOnly(option)
                 },
                 onRefresh: {
                     Task { await sessionStore.refreshAppServerModelOptions(force: true) }
                 }
             )
             .environmentObject(themeStore)
-            .presentationCompactAdaptation(.sheet)
+            .presentationCompactAdaptation(horizontal: .sheet, vertical: .sheet)
+            // Picker 自身按实际模型行数提供 184/236/288pt 的标准内容高度；
+            // iOS 26 的 fitted presentation 直接贴合该高度，Claude 不会再继承
+            // Codex 三行 + 快速按钮的固定空白。
+            .presentationSizing(.fitted)
+            .presentationDragIndicator(.visible)
+            .presentationBackground(themeStore.tokens(for: colorScheme).surface)
         }
     }
 
@@ -1582,22 +1689,15 @@ struct ComposerView: View {
         let selectedOption = effectiveModelID.flatMap { modelID in
             modelOptionsForMenu.first { $0.model.caseInsensitiveCompare(modelID) == .orderedSame }
         }
-        let option = layout.row(matching: effectiveModelID)
-            ?? layout.rows.first(where: \.isDefault)
-            ?? layout.rows.first
-        let effortOption = selectedOption ?? option
-        let effort = composerState.turnOptions.reasoningEffort.flatMap { selected in
-            guard layout.efforts.contains(selected),
-                  effortOption.map({ ModelReasoningGridCatalog.supports(selected, option: $0) }) ?? true
-            else {
-                return nil
-            }
-            return selected
-        } ?? effortOption.flatMap { option in
-            option.defaultReasoningEffort
-                .flatMap(CodexAppServerReasoningEffort.init(rawValue:))
-                .flatMap { layout.efforts.contains($0) ? $0 : nil }
-        } ?? layout.efforts.first ?? .medium
+        let option = selectedOption
+            ?? layout.model(matching: effectiveModelID)
+            ?? layout.models.first(where: \.isDefault)
+            ?? layout.models.first
+        let effort = ModelReasoningGridCatalog.normalizedVisibleEffort(
+            option: option,
+            current: composerState.turnOptions.reasoningEffort,
+            layout: layout
+        )
         return ModelReasoningGridSelection(
             modelID: option?.model ?? "gpt-5.6-sol",
             effort: effort
@@ -1606,9 +1706,12 @@ struct ComposerView: View {
 
     var modelPickerTriggerTitle: String {
         guard let selectedModel = effectiveModelID,
+              let selectedEffort = developerModeEnabled
+                  ? composerState.turnOptions.reasoningEffort
+                  : selectedModelGridSelection.effort,
               let title = ModelReasoningGridCatalog.triggerTitle(
                   for: selectedModel,
-                  effort: selectedModelGridSelection.effort,
+                  effort: selectedEffort,
                   layout: modelReasoningGridLayout
               )
         else {
@@ -1617,114 +1720,34 @@ struct ComposerView: View {
         return title
     }
 
-    var showsStandaloneReasoningEffortControl: Bool {
-        !modelReasoningGridLayout.contains(modelID: effectiveModelID)
-    }
-
-    func selectGridModel(_ option: CodexAppServerModelOption, effort: CodexAppServerReasoningEffort) {
+    func selectModel(
+        _ option: CodexAppServerModelOption,
+        effort: CodexAppServerReasoningEffort?
+    ) {
         composerState.updateTurnOptions { options in
-            options.runtimeProvider = option.runtimeProvider
-            options.model = option.model
-            options.modelProvider = option.provider
-            options.reasoningEffort = effort
-            if normalizedRuntimeProvider(option.runtimeProvider) == "claude" {
-                options.serviceTier = nil
-            }
-        }
-    }
-
-    func selectModelOnly(_ option: CodexAppServerModelOption?) {
-        let layout = modelReasoningGridLayout
-        composerState.updateTurnOptions { options in
-            options.runtimeProvider = option?.runtimeProvider ?? payloadRuntimeProviderForSelectedSessionLock()
-            options.model = option?.model
-            options.modelProvider = option?.provider
-            options.reasoningEffort = ModelReasoningGridCatalog.reasoningEffortForModelSelection(
+            ModelReasoningGridCatalog.applySelection(
                 option: option,
-                current: options.reasoningEffort,
-                layout: layout
-            )
-            if normalizedRuntimeProvider(options.runtimeProvider) == "claude" {
-                options.serviceTier = nil
-            }
-        }
-    }
-
-    var reasoningEffortMenu: some View {
-        Menu {
-            reasoningEffortOptions
-        } label: {
-            composerToolbarControlLabel(
-                title: L10n.format("ui.reasoning_value", reasoningEffortTitle),
-                systemImage: "brain.head.profile",
-                accessibilityLabel: L10n.text("ui.reasoning_strength")
+                effort: effort,
+                preservesServerDefault: false,
+                fallbackRuntimeProvider: payloadRuntimeProviderForSelectedSessionLock(),
+                to: &options
             )
         }
-        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
-        .accessibilityLabel(L10n.text("ui.reasoning_strength"))
-        .accessibilityValue(reasoningEffortTitle)
-        .accessibilityHint(L10n.text("ui.choose_the_depth_of_thinking_for_the_next"))
-        .help(L10n.format("ui.inference_strength_value", reasoningEffortTitle))
     }
 
-    @ViewBuilder
-    var reasoningEffortOptions: some View {
-        Button {
-            composerState.updateTurnOptions { $0.reasoningEffort = nil }
-        } label: {
-            Label(L10n.text("ui.default_option"), systemImage: composerState.turnOptions.reasoningEffort == nil ? "checkmark" : "brain.head.profile")
-        }
-        ForEach(standaloneReasoningEfforts) { effort in
-            Button {
-                composerState.updateTurnOptions { $0.reasoningEffort = effort }
-            } label: {
-                Label(
-                    reasoningEffortTitle(for: effort),
-                    systemImage: composerState.turnOptions.reasoningEffort == effort ? "checkmark" : "brain.head.profile"
-                )
-            }
-        }
-    }
-
-    var standaloneReasoningEfforts: [CodexAppServerReasoningEffort] {
-        let layout = modelReasoningGridLayout
-        let option = effectiveModelID.flatMap { modelID in
-            modelOptionsForMenu.first {
-                $0.model.caseInsensitiveCompare(modelID) == .orderedSame
-            } ?? layout.row(matching: modelID)
-        }
-        return ModelReasoningGridCatalog.supportedEfforts(for: option, layout: layout)
-    }
-
-    var reasoningEffortTitle: String {
-        composerState.turnOptions.reasoningEffort.map { reasoningEffortTitle(for: $0) } ?? L10n.text("ui.default_option")
-    }
-
-    func reasoningEffortTitle(for effort: CodexAppServerReasoningEffort) -> String {
-        switch effort {
-        case .none:
-            return L10n.text("ui.close")
-        case .minimal:
-            return L10n.text("ui.lowest")
-        case .low:
-            return L10n.text("ui.low")
-        case .medium:
-            return L10n.text("ui.in")
-        case .high:
-            return L10n.text("ui.high")
-        case .xhigh:
-            return L10n.text("ui.extremely_high")
-        }
-    }
-
-    var serviceTierOptionsMenu: some View {
-        Menu {
-            Button(L10n.text("ui.default_option")) { composerState.updateTurnOptions { $0.serviceTier = nil } }
-            Button("auto") { composerState.updateTurnOptions { $0.serviceTier = "auto" } }
-            Button("priority") { composerState.updateTurnOptions { $0.serviceTier = "priority" } }
-            Button("flex") { composerState.updateTurnOptions { $0.serviceTier = "flex" } }
-        } label: {
-            Label(composerState.turnOptions.serviceTier ?? L10n.text("ui.speed_default"), systemImage: "speedometer")
+    func selectDefaultModel(
+        _ option: CodexAppServerModelOption,
+        effort: CodexAppServerReasoningEffort?
+    ) {
+        composerState.updateTurnOptions { options in
+            // Default Model 只借用服务端默认模型的强度菜单，协议层继续提交 model = nil。
+            ModelReasoningGridCatalog.applySelection(
+                option: option,
+                effort: effort,
+                preservesServerDefault: true,
+                fallbackRuntimeProvider: payloadRuntimeProviderForSelectedSessionLock(),
+                to: &options
+            )
         }
     }
 
@@ -1836,24 +1859,6 @@ struct ComposerView: View {
         .transition(.scale(scale: 0.9).combined(with: .opacity))
     }
 
-    var modelOptionsForMenu: [CodexAppServerModelOption] {
-        let source = sessionStore.appServerModelOptions.isEmpty ? CodexAppServerModelOption.builtInFallback : sessionStore.appServerModelOptions
-        let options = source.filter { !$0.hidden }
-        guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
-            return options
-        }
-        let scoped = options.filter { option in
-            normalizedRuntimeProvider(option.runtimeProvider) == runtimeProvider
-        }
-        if scoped.isEmpty, runtimeProvider == "claude" {
-            return CodexAppServerModelOption.builtInClaudeFallback
-        }
-        if scoped.isEmpty, runtimeProvider == "codex" {
-            return CodexAppServerModelOption.builtInFallback
-        }
-        return scoped.isEmpty ? options : scoped
-    }
-
     func applyDefaultPermissionMode() {
         let stored = ComposerPermissionMode.stored(defaultPermissionModeID)
         composerState.applyPermissionMode(safePermissionMode(stored))
@@ -1876,8 +1881,11 @@ struct ComposerView: View {
     }
 
     func safePermissionMode(_ mode: ComposerPermissionMode) -> ComposerPermissionMode {
+        // Claude 不支持“完全访问”，也不持久化自己的默认；当共享默认落在 fullAccess 时，
+        // 降级到“自动批准低风险操作”作为 Claude 的安全默认，而不是每轮都请求审批。
+        // autoApprove 仍是安全档（workspaceWrite + auto_review），绝不映射 bypassPermissions。
         selectedSessionRuntimeProviderForModelMenu == "claude" && mode == .fullAccess
-            ? .requestApproval
+            ? .autoApprove
             : mode
     }
 
@@ -1887,97 +1895,6 @@ struct ComposerView: View {
             return
         }
         composerState.applyPermissionMode(safeMode)
-    }
-
-    var selectedModelSummaryTitle: String {
-        guard let model = composerState.turnOptions.model?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty else {
-            return defaultModelSummaryTitle
-        }
-        if let option = modelOptionsForMenu.first(where: { item in
-            item.model == model &&
-                item.runtimeProvider == composerState.turnOptions.runtimeProvider &&
-                (composerState.turnOptions.modelProvider == nil || item.provider == composerState.turnOptions.modelProvider)
-        }) {
-            return developerModeEnabled ? option.menuTitle : option.title
-        }
-        if developerModeEnabled, let provider = composerState.turnOptions.modelProvider?.trimmingCharacters(in: .whitespacesAndNewlines), !provider.isEmpty {
-            return "\(model) · \(provider)"
-        }
-        return model
-    }
-
-    var defaultModelSummaryTitle: String {
-        guard let option = modelOptionsForMenu.first(where: \.isDefault) ?? modelOptionsForMenu.first else {
-            return L10n.text("ui.default_model")
-        }
-        return developerModeEnabled ? option.menuTitle : option.title
-    }
-
-    var selectedSessionRuntimeProviderForModelMenu: String? {
-        guard let session = sessionStore.selectedSession else {
-            return nil
-        }
-        if session.source == "local", session.runtimeProvider == nil {
-            return nil
-        }
-        return normalizedRuntimeProvider(session.runtimeProvider ?? session.source)
-    }
-
-    func clampModelSelectionToSelectedSessionRuntime() {
-        guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
-            return
-        }
-        let runtimeChanged = normalizedRuntimeProvider(composerState.turnOptions.runtimeProvider) != runtimeProvider
-        let unsupportedEffort = composerState.turnOptions.reasoningEffort.map { effort in
-            !supportsReasoningEffort(effort, modelID: effectiveModelID)
-        } ?? false
-        let unsupportedServiceTier = runtimeProvider == "claude"
-            && composerState.turnOptions.serviceTier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-
-        guard runtimeChanged || unsupportedEffort || unsupportedServiceTier else {
-            return
-        }
-        composerState.updateTurnOptions { options in
-            if runtimeChanged {
-                options.runtimeProvider = payloadRuntimeProviderForSelectedSessionLock()
-                options.model = nil
-                options.modelProvider = nil
-                options.reasoningEffort = nil
-            } else if unsupportedEffort {
-                options.reasoningEffort = nil
-            }
-            if runtimeProvider == "claude" {
-                options.serviceTier = nil
-            }
-        }
-    }
-
-    func supportsReasoningEffort(
-        _ effort: CodexAppServerReasoningEffort,
-        modelID: String?
-    ) -> Bool {
-        let layout = modelReasoningGridLayout
-        let option = modelID.flatMap { resolvedModelID in
-            modelOptionsForMenu.first {
-                $0.model.caseInsensitiveCompare(resolvedModelID) == .orderedSame
-            } ?? layout.row(matching: resolvedModelID)
-        }
-        guard let option else {
-            // 未知/自定义模型继续走开发者模式原有能力，不能因本地目录不认识就擅自降级。
-            return true
-        }
-        return ModelReasoningGridCatalog.supports(effort, option: option, layout: layout)
-    }
-
-    func payloadRuntimeProviderForSelectedSessionLock() -> String? {
-        guard let runtimeProvider = selectedSessionRuntimeProviderForModelMenu else {
-            return nil
-        }
-        return runtimeProvider == "codex" ? nil : runtimeProvider
-    }
-
-    func normalizedRuntimeProvider(_ rawValue: String?) -> String {
-        CodexAppServerSessionRuntime.normalizedRuntimeProvider(rawValue)
     }
 
 }

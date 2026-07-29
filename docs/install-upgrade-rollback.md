@@ -6,16 +6,23 @@
 
 ## 方案
 
-- macOS 使用 Homebrew service，首次安装只需 `agentd up`。
+- macOS 普通用户使用已签名并公证的 DMG；Mac App 内嵌 `agentd`，不要求安装 Homebrew。
+- Homebrew 保留给命令行、服务器、自动化和故障恢复场景。
 - Linux 使用发布包中的 user-systemd 模板；当前不伪装成与 Homebrew 同等的一键体验。
 - 配置和两个 Token 都留在系统用户配置目录，升级二进制不会删除它们。
 - 回滚先恢复可用性：优先运行旧 keg 或旧 Release 二进制，再决定是否回滚 Homebrew Formula。
 
 ## 实现
 
-### macOS 首次安装
+### macOS 首次安装（推荐）
 
-前置条件：已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
+前置条件：macOS 26 或更高版本，已安装并登录 Codex CLI，Mac 与移动设备位于同一私有网络。跨网络使用时需要登录同一个 Tailscale 网络；同一局域网内不要求安装 Tailscale。
+
+从 [GitHub Releases](https://github.com/gaixianggeng/codex-ipad-agent/releases/latest) 下载 `Mimi-Remote-Mac.dmg` 和 `Mimi-Remote-Mac.dmg.sha256`，在同一目录执行 `shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256`。校验通过后打开 DMG，将 **Mimi Remote Mac** 拖入“应用程序”，再从菜单栏选择代码目录并完成首次设置。安装包内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`。
+
+检测到旧 `homebrew.mxcl.mimi-remote` 时，不要先手工停服。让 Mac App 执行接管：它会先跑 Doctor，停止 Homebrew service，注册内嵌 LaunchAgent 并等待就绪；失败时尝试恢复旧 Homebrew 服务。迁移保留 Application Support 中的配置、Token 和配对关系。
+
+### macOS 命令行安装（高级）
 
 ```bash
 brew update
@@ -40,7 +47,15 @@ agentd up --no-pair --json
 
 JSON 安全模式只返回 `version`、`service_ok` 和可选的安全 warning，不包含带 Token 的完整 setup `result`。需要配对时由用户在不会进入远程任务日志的本机终端执行 `agentd pair --qr-only`。
 
-### macOS 升级
+### macOS App 升级与回滚
+
+首个 DMG 不带自动更新。升级时下载目标正式版本的 DMG 和 SHA-256 文件，校验后用新 App 覆盖“应用程序”中的现有版本；不要先删除旧 App，也不要删除 `~/Library/Application Support/mimi-remote`。打开新版本后确认 service owner 仍是 `Mimi Remote Mac`，版本、Doctor、Codex 和已启用的 Claude channel 均正常。
+
+需要回滚时安装上一个仍可从正式 Release 获取、经过 Developer ID 签名和 Apple 公证的 DMG。优先只回滚 App 和内嵌二进制；除非确认新版本写入了旧版本无法读取的配置，否则继续复用现有配置。snapshot、ad-hoc 或未公证构建不能作为稳定回滚版本。
+
+移动或删除 App 前，先在菜单栏执行“退出并停止服务”。如果要回到 Homebrew，在设置中执行“停止 App 服务并恢复 Homebrew”，确认旧服务重新就绪后再移除 App，避免系统保留指向不存在 bundle 的 LaunchAgent 注册。
+
+### macOS Homebrew 升级
 
 先做本地备份。备份目录含 Token，不能上传到 Issue、PR 或网盘公开链接。
 
@@ -134,6 +149,10 @@ agentd logs
 
 后台服务由系统服务管理器负责，不额外维护容易失真的 PID 文件：
 
+- Mimi Remote Mac owner：从菜单栏选择“退出并停止服务”。
+- Homebrew owner：执行 `agentd stop`。
+- Linux owner：执行 `"$HOME/.local/bin/agentd" stop`。
+
 ```bash
 agentd stop
 ```
@@ -150,7 +169,7 @@ systemctl --user stop mimi-remote.service
 
 收到停止信号后，`agentd` 会先关闭 HTTP listener，最多等待 5 秒让普通请求完成，再停止会话和托管 Codex app-server；排空超时会强制关闭连接。托管 Codex app-server 意外退出时，`agentd` 会同步关闭 HTTP 并以非零状态退出，Homebrew `keep_alive` 或 systemd `Restart=on-failure` 会接管恢复。这样不会保留“`/healthz` 端口还在，但 Codex upstream 已经死亡”的半健康服务。
 
-### macOS 应急回滚
+### macOS Homebrew 应急回滚
 
 先查看 Homebrew Cellar 是否还保留旧版本：
 
@@ -219,9 +238,9 @@ work_dir="$(mktemp -d)"
 cd "$work_dir"
 
 curl --fail --location --remote-name \
-  "https://github.com/gaixianggeng/mimi-remote/releases/download/${version}/${archive}"
+  "https://github.com/gaixianggeng/codex-ipad-agent/releases/download/${version}/${archive}"
 curl --fail --location --remote-name \
-  "https://github.com/gaixianggeng/mimi-remote/releases/download/${version}/checksums.txt"
+  "https://github.com/gaixianggeng/codex-ipad-agent/releases/download/${version}/checksums.txt"
 
 awk -v archive="$archive" '$2 == archive { print }' checksums.txt | sha256sum -c -
 tar -xzf "$archive"
@@ -297,7 +316,7 @@ rm -rf -- "$HOME/.config/mimi-remote"
 
 ### 维护者发布前本地验收
 
-正式 tag 依赖 GitHub、Homebrew Tap 和 Apple Developer 三组外部资源：主仓库必须是 PUBLIC 的 `gaixianggeng/mimi-remote`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且主仓库 Secret `TAP_DEPLOY_KEY` 对应的公钥必须作为可写 Deploy Key 安装在 Tap。Deploy Key 只授权这一个仓库，避免把维护者账号的广域 PAT 放进公开仓库 Actions。
+正式 tag 依赖 GitHub、Homebrew Tap 和 Apple Developer 三组外部资源：主仓库必须是 PUBLIC 的 `gaixianggeng/codex-ipad-agent`，`gaixianggeng/homebrew-tap` 也必须是 PUBLIC，并且主仓库 Secret `TAP_DEPLOY_KEY` 对应的公钥必须作为可写 Deploy Key 安装在 Tap。Deploy Key 只授权这一个仓库，避免把维护者账号的广域 PAT 放进公开仓库 Actions。
 
 macOS 产物还必须配置以下 GitHub Actions Secrets：
 
@@ -327,7 +346,7 @@ bash ./scripts/restart-agentd-dev-macos.sh --self-test
 bash ./scripts/verify-release.sh
 ```
 
-该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/mimi-remote`，其中 SHA-256 必须与实际归档一致。普通安装用户不需要运行这个脚本。
+该入口固定校验 GoReleaser `v2.15.3` 官方预编译包的 SHA-256，并拒绝当前 Go 版本偏离 `go.mod`。它会验证四个平台二进制的 Go 版本、GOOS/GOARCH、CGO 状态、可执行权限、许可证文件、systemd 模板和 Homebrew service；还会逐一核对 Formula 下载 URL 必须指向 `gaixianggeng/codex-ipad-agent`，其中 SHA-256 必须与实际归档一致。普通安装用户不需要运行这个脚本。
 
 ### GitHub Release 成功、tap 更新失败
 

@@ -43,8 +43,8 @@ struct WorkbenchLayout: Equatable {
 
         if usesCompactMetrics {
             projectColumn = ColumnWidth(min: 220, ideal: 260, max: 300)
-            // 手机导航栏同时有返回、连接状态、日志和设置按钮；标题必须主动让位，避免挤压工具按钮。
-            titleMaxWidth = max(86, min(150, containerWidth - 250))
+            // 手机端维护动作已经收进单一菜单，标题可以获得接近 Claude 的两行阅读宽度。
+            titleMaxWidth = max(160, min(230, containerWidth - 160))
         } else if isTightPadWidth {
             projectColumn = ColumnWidth(min: 240, ideal: 280, max: 320)
             titleMaxWidth = 240
@@ -105,78 +105,31 @@ struct SessionInspectorPresentation: ViewModifier {
     }
 }
 
-struct AgentWorkbenchTitle: View {
-    @EnvironmentObject private var sessionStore: SessionStore
+struct WorkbenchPageHeader: View {
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.colorScheme) private var colorScheme
-    let maxWidth: CGFloat
-    let horizontalOffset: CGFloat
+    let title: String
+    let subtitle: String
+    let tokens: ThemeTokens
 
     var body: some View {
-        let tokens = themeStore.tokens(for: colorScheme)
-
-        Group {
-            if shouldShowTitle {
-                VStack(spacing: 2) {
-                    Text(primaryText)
-                        .font(themeStore.codeFont(.subheadline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                    if let secondaryText {
-                        HStack(spacing: 5) {
-                            if historyProgress != nil {
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .tint(tokens.tertiaryText)
-                                    .frame(width: 10, height: 10)
-                            }
-                            Text(secondaryText)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.76)
-                        }
-                        .font(themeStore.codeFont(.caption2))
-                        .foregroundStyle(tokens.tertiaryText)
-                    }
-                }
-                .accessibilityElement(children: .combine)
-            } else {
-                Color.clear
-                    .frame(width: 1, height: 1)
-                    .accessibilityHidden(true)
-            }
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(themeStore.uiFont(.title2, weight: .semibold))
+                .foregroundStyle(tokens.primaryText)
+            Text(subtitle)
+                .font(themeStore.uiFont(.callout))
+                .foregroundStyle(tokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: maxWidth)
-        .offset(x: horizontalOffset)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    private var historyProgress: HistoryLoadProgress? {
-        sessionStore.historyLoadProgress(sessionID: sessionStore.selectedSessionID)
-    }
-
-    private var shouldShowTitle: Bool {
-        historyProgress != nil ||
-            sessionStore.selectedSession != nil ||
-            sessionStore.selectedProject != nil
-    }
-
-    private var primaryText: String {
-        if let session = sessionStore.selectedSession {
-            return session.project.isEmpty ? L10n.text("ui.workspace") : session.project
-        }
-        return sessionStore.selectedProject?.name ?? L10n.text("ui.session")
-    }
-
-    private var secondaryText: String? {
-        if let historyProgress {
-            // 历史请求没有真实网络进度，标题区只保留轻量状态，避免 32% 这类假进度占据主内容。
-            return L10n.format("ui.currently_value", historyProgress.title)
-        }
-        if let session = sessionStore.selectedSession {
-            return session.title.isEmpty ? session.dir : session.title
-        }
-        return sessionStore.selectedProject?.path
-    }
+enum WorkbenchPageLayout {
+    static let maxContentWidth: CGFloat = 820
+    static let regularPadding: CGFloat = 24
+    static let compactPadding: CGFloat = 20
+    static let compactBottomPadding: CGFloat = 132
 }
 
 struct StatusPill: View {
@@ -225,5 +178,154 @@ struct StatusPill: View {
         case .neutral:
             return tokens.secondaryText
         }
+    }
+}
+
+/// 设置页和工作台侧栏共用的额度窗口模型。集中选择规则后，两个入口不会因为
+/// 服务端 primary / secondary 槽位变化而展示不同的三个圆环。
+struct CombinedUsageItem: Identifiable {
+    let runtimeProvider: String
+    let providerName: String
+    let window: CodexUsageWindowDisplay
+    let tint: Color
+
+    var id: String {
+        "\(runtimeProvider):\(window.id)"
+    }
+
+    static func make(
+        codexDisplay: CodexUsageWindowsDisplay,
+        claudeDisplay: CodexUsageWindowsDisplay,
+        includesClaude: Bool,
+        codexTint: Color = .pink,
+        claudeLongTint: Color = .cyan,
+        claudeShortTint: Color
+    ) -> [CombinedUsageItem] {
+        var items: [CombinedUsageItem] = []
+
+        if let codexWindow = preferredLongWindow(in: codexDisplay) {
+            items.append(
+                CombinedUsageItem(
+                    runtimeProvider: "codex",
+                    providerName: providerName(for: codexDisplay, fallback: "Codex"),
+                    window: codexWindow,
+                    tint: codexTint
+                )
+            )
+        }
+
+        if includesClaude, let claudeLongWindow = preferredLongWindow(in: claudeDisplay) {
+            items.append(
+                CombinedUsageItem(
+                    runtimeProvider: "claude",
+                    providerName: providerName(for: claudeDisplay, fallback: "Claude"),
+                    window: claudeLongWindow,
+                    tint: claudeLongTint
+                )
+            )
+
+            if let claudeShortWindow = preferredShortWindow(
+                in: claudeDisplay,
+                excluding: claudeLongWindow
+            ) {
+                items.append(
+                    CombinedUsageItem(
+                        runtimeProvider: "claude",
+                        providerName: providerName(for: claudeDisplay, fallback: "Claude"),
+                        window: claudeShortWindow,
+                        tint: claudeShortTint
+                    )
+                )
+            }
+        }
+
+        return Array(items.prefix(3))
+    }
+
+    private static func preferredLongWindow(
+        in display: CodexUsageWindowsDisplay
+    ) -> CodexUsageWindowDisplay? {
+        let dayScaleWindows = display.windows.filter(\.isDayScaleWindow)
+        return dayScaleWindows.max(by: durationAscending)
+            ?? display.windows.max(by: durationAscending)
+    }
+
+    private static func preferredShortWindow(
+        in display: CodexUsageWindowsDisplay,
+        excluding longWindow: CodexUsageWindowDisplay
+    ) -> CodexUsageWindowDisplay? {
+        display.windows
+            .filter { $0.id != longWindow.id }
+            .min(by: durationAscending)
+    }
+
+    private static func durationAscending(
+        _ lhs: CodexUsageWindowDisplay,
+        _ rhs: CodexUsageWindowDisplay
+    ) -> Bool {
+        (lhs.durationMinutes ?? -1) < (rhs.durationMinutes ?? -1)
+    }
+
+    /// 已知产品名统一品牌大小写；协议原值仍保留在 runtimeProvider 中。
+    private static func providerName(
+        for display: CodexUsageWindowsDisplay,
+        fallback: String
+    ) -> String {
+        switch display.displayName.lowercased() {
+        case "codex":
+            return "Codex"
+        case "claude":
+            return "Claude"
+        default:
+            return display.displayName.isEmpty ? fallback : display.displayName
+        }
+    }
+}
+
+/// 同一套三环图形通过尺寸参数同时服务设置卡片和侧栏紧凑入口。
+struct CombinedUsageRingsGraphic: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let items: [CombinedUsageItem]
+    let expectedRingCount: Int
+    let diameter: CGFloat
+    let lineWidth: CGFloat
+    var ringSpacing: CGFloat = 8
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let ringCount = min(max(expectedRingCount, items.count), 3)
+        let ringStep = (lineWidth + ringSpacing) * 2
+
+        ZStack {
+            ForEach(0..<ringCount, id: \.self) { index in
+                let ringDiameter = diameter - CGFloat(index) * ringStep
+
+                ZStack {
+                    Circle()
+                        .stroke(tokens.tertiaryText.opacity(0.18), lineWidth: lineWidth)
+
+                    if index < items.count,
+                       let progress = items[index].window.remainingProgress {
+                        Circle()
+                            .trim(from: 0, to: progress)
+                            .stroke(
+                                items[index].tint,
+                                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                            )
+                            .rotationEffect(.degrees(-90))
+                            .animation(
+                                reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1),
+                                value: progress
+                            )
+                    }
+                }
+                .frame(width: ringDiameter, height: ringDiameter)
+            }
+        }
+        .frame(width: diameter, height: diameter)
+        .accessibilityHidden(true)
     }
 }

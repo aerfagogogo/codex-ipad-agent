@@ -1,6 +1,6 @@
 ---
 name: install-mimi-remote
-description: 安装、配置、配对、升级、诊断、回滚或卸载 Mimi Remote，包括在 macOS 或 Linux 上部署 agentd、通过 Tailscale 建立私网连接、从源码构建 iPhone/iPad App，以及按需启用 Claude Code 实验通道。用户提出“安装 Mimi Remote”“在 iPad/iPhone 上使用 Codex”“部署或修复 agentd”“升级、回滚、卸载 Mimi Remote”“构建 MimiRemote iOS App”或处理相关连接故障时使用。
+description: 安装、配置、配对、迁移、升级、诊断、回滚或卸载 Mimi Remote；在 macOS 上安装和维护 Mimi Remote Mac 菜单栏 App / DMG，或通过 Homebrew、Linux user-systemd 部署 agentd；从源码构建 iPhone/iPad App；配置 Codex 主通道和可选 Claude Code 实验 Runtime。用户提出“安装 Mimi Remote”“安装或修复 Mac 菜单栏 App”“在 iPad/iPhone 上使用 Codex 或 Claude Code”“部署、迁移或修复 agentd”“升级、回滚、卸载 Mimi Remote”“构建 MimiRemote iOS App”或处理配对、私网连接、Runtime 故障时使用。
 ---
 
 # 安装与维护 Mimi Remote
@@ -9,50 +9,53 @@ description: 安装、配置、配对、升级、诊断、回滚或卸载 Mimi R
 
 把 Mimi Remote 安装成一个可验证、可恢复、权限最小化的本地闭环：
 
-1. 在用户自己的 Mac 或 Linux 开发机上运行 `agentd`。
-2. 通过 Tailscale 私网连接 iPhone 或 iPad，不部署公网中继。
-3. 在需要时从源码构建并安装原生 iOS/iPadOS App。
-4. 保留用户现有配置、Token、Codex 凭证和项目改动。
+1. 在普通 macOS 用户场景中优先使用已签名、公证且内嵌 `agentd` 的 Mimi Remote Mac 菜单栏 App。
+2. 通过 Tailscale 或同一局域网连接 iPhone / iPad，不部署公网中继。
+3. 保持 Codex 为默认稳定 Runtime，仅在用户明确要求时启用 Claude Code 实验通道。
+4. 保留现有配置、Token、Runtime 凭证、配对关系和源码改动。
 
-Mimi Remote 是第三方开源客户端，不是 OpenAI、Anthropic 或 Tailscale 的官方产品。Codex、项目代码和完整会话继续留在用户自己的设备上。
+Mimi Remote 是第三方开源客户端，不是 OpenAI、Anthropic 或 Tailscale 的官方产品。项目代码、Codex / Claude 凭证和完整会话继续留在用户自己的设备上。
 
 ## 执行原则
 
-- 先执行只读检查，再执行安装或修改；复用已有安装，不重复初始化。
-- 优先安装正式 Release。不要把开发分支、未固定 commit 或 `devel` 二进制当作稳定版本安装。
-- 本 Skill 发布包只包含操作指引，不包含应用源码或二进制。需要源码时从 `https://github.com/gaixianggeng/codex-ipad-agent.git` 获取，需要后端 Release 时从 `https://github.com/gaixianggeng/mimi-remote/releases` 获取。
-- 只有同时存在 `ios/MimiRemote/project.yml` 且 Git remote 指向上述源码仓库时，才把现有目录视为完整源码仓库；不要假设本文件所在目录或调用时的当前目录就是仓库根目录。
-- 不要覆盖有未提交改动的源码目录。需要独立安装副本时，克隆到用户确认的目录。
-- 不要使用 `agentd setup --force`，除非用户明确要求轮换凭据并接受现有配对失效。
-- 不要输出、转述、上传或写入任务总结中的长期 Token、Authorization header、connect link、Tailscale IP、二维码内容或私有项目路径。
-- 不要把 `agentd` 暴露到公网，不要自动配置端口转发、反向代理或公网 Tunnel。
-- 不要通过关闭审批、设置 `danger-full-access` 或启用 `CLAUDE_BRIDGE_BYPASS_PERMISSIONS` 解决文件权限问题。
-- 不要运行 `tccutil reset`。macOS 文件权限需要用户在系统设置中确认。
-- Linux 安装和服务操作使用普通登录用户。不要使用 `sudo` 运行安装脚本。
-- 只有用户明确要求 Claude Code 时才安装 bridge；Codex 是默认稳定主通道。
-- 涉及升级、回滚或卸载时，先阅读 [安装、升级与回滚](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/install-upgrade-rollback.md)。
-- 涉及 iOS 构建、签名或真机部署时，先阅读 [iOS 开发说明](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/ios/MimiRemote/README.md)。
+- 先执行只读检查，再安装或修改；复用已有安装，不重复初始化。
+- 优先使用正式 Release，不把开发分支、未固定 commit、snapshot 或 `devel` 二进制当作稳定版本。
+- macOS 普通用户默认安装 `Mimi-Remote-Mac.dmg`；Homebrew 只用于命令行、服务器、自动化、旧安装维护或故障恢复。
+- 不假设本 Skill 所在目录或调用时的当前目录就是源码仓库。源码和正式产物统一从 `https://github.com/gaixianggeng/codex-ipad-agent` 获取。
+- 不覆盖有未提交改动的源码目录，不在现有脏工作树中切换 tag 或执行清理。
+- 不使用 `agentd setup --force`，除非用户明确要求轮换凭据并接受现有配对失效。
+- 不输出、转述、上传或写入任务总结中的长期 Token、Authorization header、连接链接、二维码内容、完整 Endpoint、Tailscale IP 或私有项目路径。
+- 不把 `agentd` 暴露到公网，不自动配置端口转发、反向代理或公网 Tunnel。
+- 不通过关闭审批、设置 `danger-full-access`、启用 `CLAUDE_BRIDGE_BYPASS_PERMISSIONS` 或自动重试写操作来解决 Runtime 问题。
+- 不运行 `tccutil reset`。macOS 文件权限、登录项审批和签名信任必须由用户在系统界面确认。
+- Linux 安装和服务操作使用普通登录用户，不使用 `sudo` 运行安装脚本。
+- 只有用户明确要求 Claude Code 时才启用该 Runtime；Claude 失败不能破坏 Codex 主通道或轮换现有 Token。
+- 升级、回滚或卸载前阅读 [安装、升级与回滚](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/install-upgrade-rollback.md)。
+- Claude 相关操作前阅读 [Claude bridge 架构](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/claude-bridge-architecture.md)。
+- iOS 构建、签名或真机部署前阅读 [iOS 开发说明](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/ios/MimiRemote/README.md)。
 
-## 确定安装范围
+## 确定操作范围
 
-先根据主机和用户目标选择最小闭环：
+选择能完成用户目标的最小路径：
 
-- macOS 完整安装：安装 `agentd`，准备 iOS 工程，完成真机签名后配对。这是默认用户路径。
-- macOS 后端安装：只安装 `agentd`，适合 App 已经装好或只修复 Mac 服务。
-- Linux 后端安装：只安装 `agentd`；iOS App 仍需要在一台 Mac 上构建。
-- 源码开发：只在用户明确要开发或修改项目时使用源码构建，不替代稳定安装。
-- 维护操作：已有安装时按升级、诊断、回滚或卸载流程处理，不重新生成 Token。
+- **macOS App 安装**：下载 DMG，在菜单栏 App 内完成设置、配对、诊断和服务管理。这是默认路径。
+- **Homebrew 后端**：只维护命令行 `agentd`，用于服务器、自动化、旧安装或恢复。
+- **Linux 后端**：安装 Release 归档中的 `agentd` 和 user-systemd service。
+- **iOS 源码构建**：仅在用户需要安装当前未公开上架的 iPhone/iPad App 或开发客户端时执行。
+- **Runtime 维护**：检查 Codex，或显式启用、升级、诊断 Claude Code。
+- **维护操作**：对现有安装执行迁移、升级、回滚或卸载，不重新生成 Token。
 
-只询问会改变结果的必要信息：
+只询问会改变结果的信息：
 
-1. 要授权给 Mimi Remote 的最小项目根目录。
-2. 是否同时构建 iPhone/iPad App。
-3. 是否有可用的 Apple Development Team 和已信任的真机。
-4. 用户要求固定版本时使用哪个 tag；未指定时选择当前最新正式 Release，并在修改前告知版本。
+1. 要授权的最小项目扫描根目录。
+2. 目标是 Mac App、CLI/Linux 后端、iOS 构建还是 Runtime 配置。
+3. 是否明确需要 Claude Code；未说明时只配置 Codex。
+4. 是否存在需要由 Mac App 接管的 Homebrew 服务。
+5. 用户要求固定版本时使用哪个 tag；未指定时选择最新正式 Release，并在修改前告知版本。
 
 ## 执行预检
 
-先执行以下不修改系统的检查：
+先执行不修改系统的检查：
 
 ```bash
 uname -s
@@ -64,37 +67,62 @@ codex --version
 codex app-server --help
 ```
 
-确认 Codex CLI 已登录。不要读取、复制或展示 Codex 凭证。若 Codex CLI 缺失，使用 OpenAI 当前官方安装说明完成安装和登录，不要凭记忆拼接过时命令。
+确认 Codex CLI 已安装并登录。不要读取、复制或展示 Codex 凭证。若缺失，使用 OpenAI 当前官方安装说明，不凭记忆拼接安装命令。
 
-确认开发机和移动设备属于同一个 Tailscale 网络。`tailscale` CLI 不在 `PATH` 时，不要直接判定 Tailscale 未安装；允许用户通过 Tailscale App 确认在线状态。发现未安装或未登录时，先完成官方客户端安装和交互式登录。
+确认 Mac 与移动设备位于同一私有网络。跨网络优先使用同一 Tailnet；同一局域网可以不安装 Tailscale。`tailscale` CLI 不在 `PATH` 时，允许用户通过 Tailscale App 确认状态。
 
-在 macOS 上继续检查：
+macOS App 路径只要求 macOS 26 或更高版本和 Codex CLI；不要求 Homebrew、Go、Rust、Xcode 或 XcodeGen。仅在源码构建时检查相应工具链。
 
-```bash
-command -v brew
-xcodebuild -version
-xcode-select -p
-xcrun --sdk iphoneos --show-sdk-version
-command -v xcodegen
-```
-
-只有构建 iOS App 时才要求 Xcode 26 或更高版本、iOS 26 SDK 和 XcodeGen。缺少 Homebrew、Xcode 或 Apple 登录时，让用户通过官方安装界面完成必要步骤；不要绕过系统许可或签名。
-
-在 Linux 上继续检查：
+用户明确要求 Claude Code 时再检查：
 
 ```bash
-command -v curl
-command -v tar
-command -v sha256sum
-command -v systemctl
-systemctl --user show-environment
+command -v claude
+claude --version
 ```
 
-要求 Linux 使用 systemd user service，架构为 `amd64` 或 `arm64`，且当前用户不是 root。若用户需要退出 SSH 后继续运行服务，把 user lingering 作为可选管理员操作单独说明，不要默认执行 `sudo loginctl enable-linger`。
+让用户在 Mac 本机确认 Claude Code 已登录。不要读取、复制或展示 Claude 凭证文件、Keychain 内容或 OAuth Token。
 
-## 安装 macOS 后端
+## 安装 Mimi Remote Mac
 
-确认 Homebrew 和 Codex CLI 可用后，安装正式版本：
+使用 `gaixianggeng/codex-ipad-agent` 的最新正式 Release；用户指定版本时固定到对应 tag。下载：
+
+```text
+Mimi-Remote-Mac.dmg
+Mimi-Remote-Mac.dmg.sha256
+```
+
+在同一目录严格校验：
+
+```bash
+shasum -a 256 -c Mimi-Remote-Mac.dmg.sha256
+```
+
+校验失败时停止，不打开 DMG。让用户完成必须的人机操作：
+
+1. 打开 DMG，把 **Mimi Remote Mac** 拖到“应用程序”。
+2. 首次打开 App，在菜单栏进入设置。
+3. 选择最小代码扫描根目录并启动服务。
+4. macOS 显示登录项或文件访问审批时，在系统设置中确认；不要绕过。
+
+App 内已包含 `agentd` 和兼容的 `alleycat-claude-bridge`，普通安装不需要 Homebrew 或单独 `cargo install`。
+
+若检测到 `homebrew.mxcl.mimi-remote`：
+
+1. 保持旧服务运行，不要先手工停止。
+2. 在 Mac App 中执行接管，让 App 先跑 Doctor、停止 Homebrew service、注册内嵌 LaunchAgent 并等待就绪。
+3. 接管失败时确认 App 已尝试恢复 Homebrew；不要让两个服务同时抢占端口。
+4. 迁移成功后保留原配置、Token 和配对关系。
+
+macOS App 安装成功必须满足：
+
+- 菜单栏显示服务就绪且 owner 为 `Mimi Remote Mac`。
+- App 中的版本、Endpoint 和 Doctor 状态可读取。
+- 登录启动状态符合用户选择。
+- 配对页能生成短期二维码。
+
+## 安装 Homebrew 后端
+
+仅在用户选择 CLI、服务器、自动化、旧安装维护或恢复时使用：
 
 ```bash
 brew update
@@ -102,60 +130,42 @@ brew install gaixianggeng/tap/mimi-remote
 agentd version
 ```
 
-若 Formula 已安装：
-
-- 普通安装或修复任务不要无条件升级。
-- 用户明确要求升级时，先备份配置，再执行 `brew upgrade mimi-remote`。
-- 检测到服务已经就绪时，跳过首次初始化。
-
-首次初始化通过 Agent 或自动化执行时必须启用安全模式。把授权范围替换为用户确认的最小目录：
+普通修复不要无条件升级。首次初始化通过 Agent 或自动化执行时必须隐藏配对信息，并使用用户确认的最小目录：
 
 ```bash
 agentd up --no-pair \
   --scan-root "/absolute/path/to/projects" \
   --browse-root "/absolute/path/to/projects"
-```
-
-`--no-pair` 保留完整的初始化、启动和就绪检查，但不输出二维码、Endpoint 或长期访问码。需要结构化结果时使用 `agentd up --no-pair --json`；安全 JSON 只包含版本、`service_ok` 和可选 warning，不包含完整 setup `result`。不要通过 Agent 工具执行不带 `--no-pair` 的首次启动。
-
-初始化完成后执行去敏验收。通过会保留输出的 Agent 工具执行时，只保留非敏感状态字段：
-
-```bash
 agentd status --json | grep -E '"(process_ok|service_ok|doctor_ok)"'
 agentd doctor
 ```
 
-只在 `status --json` 中的 `service_ok` 为 `true` 时判定后端安装成功。`process_ok=true` 只表示 HTTP 进程存活，不代表 Codex app-server 已经可用。
+只以 `service_ok=true` 作为成功条件。`process_ok=true` 只表示 HTTP 进程存活。
 
-若需要自动化重启，使用：
+从当前 `agentd` 托管的远程任务重启时使用：
 
 ```bash
 agentd restart --no-pair
-agentd status --json | grep -E '"(process_ok|service_ok|doctor_ok)"'
 ```
 
-不要从 `agentd` 托管的远程任务中执行 `brew services restart mimi-remote`；使用 `agentd restart --no-pair`，让 launchd 原子重启服务。
+不要执行 `brew services restart mimi-remote`，避免旧服务退出后无法完成启动步骤。
 
 ## 安装 Linux 后端
 
-使用后端发布仓库 `gaixianggeng/mimi-remote` 的正式 Release，不要直接从源码仓库的工作区安装 `devel` 二进制。
-
-用户指定版本时使用该 tag。用户要求最新版时，先查询当前 latest Release，展示将安装的 tag，并确认它不是 prerelease。根据架构选择归档：
+使用 `gaixianggeng/codex-ipad-agent` 的正式 Release，不从开发工作树安装 `devel` 二进制。根据架构选择归档：
 
 ```text
 mimi-remote_VERSION_linux_amd64.tar.gz
 mimi-remote_VERSION_linux_arm64.tar.gz
 ```
 
-在新建的临时目录中下载目标归档和同一 Release 的 `checksums.txt`，严格校验 SHA-256 后再解压。使用 [安装、升级与回滚](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/install-upgrade-rollback.md) 中的完整下载命令，不要跳过校验。
-
-在解压后的 Release 根目录执行：
+下载目标归档和同一 Release 的 `checksums.txt`，严格校验 SHA-256 后解压。在 Release 根目录执行：
 
 ```bash
 bash ./scripts/install-linux.sh install
 ```
 
-脚本会原子安装以下内容并保留已有配置和 Token：
+安装器会原子维护：
 
 ```text
 ~/.local/bin/agentd
@@ -164,38 +174,22 @@ bash ./scripts/install-linux.sh install
 ~/.config/mimi-remote/
 ```
 
-不要设置非默认 `AGENTD_CONFIG`，也不要在 `XDG_CONFIG_HOME` 指向其他目录时继续使用固定模板。安装器不会修改 shell rc；当前 shell 找不到命令时使用绝对路径：
+不设置非默认 `AGENTD_CONFIG`，不在自定义 `XDG_CONFIG_HOME` 下套用固定模板。使用绝对路径验收：
 
 ```bash
 "$HOME/.local/bin/agentd" status --json | grep -E '"(process_ok|service_ok|doctor_ok)"'
 "$HOME/.local/bin/agentd" doctor
 ```
 
-同样只以 `service_ok=true` 作为安装成功条件。安装失败时保留安装器输出的去敏诊断；脚本会尝试恢复安装前的二进制、unit 和服务状态。
+## 构建 iOS/iPadOS App
 
-## 构建并安装 iOS/iPadOS App
-
-仅在 macOS、Xcode 26 或更高版本、iOS 26 SDK 和 XcodeGen 可用时继续。当前没有公开 App Store 版本，必须从完整源码仓库构建。
-
-先检查当前目录是否为完整且干净的源码仓库。若只有本 Skill、仓库来源不符或缺少 iOS 工程：
-
-1. 从 `https://github.com/gaixianggeng/codex-ipad-agent.git` 克隆到用户确认的目录。
-2. 优先检出与后端版本匹配的正式 tag。
-3. 没有可用 tag 时，说明只能基于默认分支构建，并在用户接受后继续。
-4. 不要在有未提交改动的现有工作树中切换 tag 或执行清理。
-
-安装 XcodeGen 并生成工程：
+仅在 macOS、Xcode 26 或更高版本、iOS 26 SDK 和 XcodeGen 可用时继续。确认当前目录是完整且干净的源码仓库；否则克隆到用户确认的新目录，并优先检出与后端匹配的正式 tag。
 
 ```bash
-brew install xcodegen
 xcodegen generate \
   --spec ios/MimiRemote/project.yml \
   --project ios/MimiRemote
-```
 
-先执行不需要签名的编译验收：
-
-```bash
 xcodebuild \
   -project ios/MimiRemote/MimiRemote.xcodeproj \
   -scheme MimiRemote \
@@ -203,143 +197,53 @@ xcodebuild \
   -sdk iphoneos \
   CODE_SIGNING_ALLOWED=NO \
   build-for-testing
-```
 
-编译通过后打开工程：
-
-```bash
 open ios/MimiRemote/MimiRemote.xcodeproj
 ```
 
-让用户在 Xcode 中完成必须的人机交互：
+让用户在 Xcode 中选择自己的 Development Team、已信任真机和 `MimiRemote` scheme。不要替用户选择未知 Team，不导出或上传签名证书，不关闭代码签名。
 
-1. 选择 `MimiRemote` scheme。
-2. 选择自己的 Development Team。
-3. 连接、解锁并信任目标 iPhone 或 iPad。
-4. 选择真机并运行。
+## 完成配对与验收
 
-不要替用户选择未知 Team，不要导出或上传签名证书，不要关闭代码签名。默认复用现有模拟器；不要为安装任务持续创建新模拟器。产品验收优先使用真机。
-
-## 完成配对
-
-先确认后端 `service_ok=true`，再配对移动端。需要刷新二维码时，让用户在开发机的本机 Terminal 执行：
+Mac App 安装从菜单栏选择“配对设备…”。CLI/Linux 安装让用户在不会进入 Agent 日志的本机 Terminal 执行：
 
 ```bash
 agentd pair --qr-only
 ```
 
-Linux 使用：
+Linux 使用 `"$HOME/.local/bin/agentd" pair --qr-only`。
 
-```bash
-"$HOME/.local/bin/agentd" pair --qr-only
-```
+短期 Pair 链接是单次兑换票据，不直接包含长期 Token。失败、过期或已使用时重新生成；扫码不可用时才使用高级手动连接，不让用户把 Token 粘贴到模型对话中。
 
-让用户在 Mimi Remote 首次启动页扫描二维码。短期 Pair 链接是单次兑换票据，不直接包含长期 Token；失败、过期或已使用时重新生成。扫码不可用时才使用 App 的高级手动连接，并且不要让用户把 Token 粘贴到模型对话中。
+至少验证：
 
-配对成功后至少验证：
-
-1. App 能显示当前 Mac 和 `agentd` 版本。
+1. iOS App 能显示当前 Mac 和 `agentd` 版本。
 2. App 能加载已授权项目列表。
-3. App 能打开一个已有 Codex 会话或创建一个最小测试会话。
-4. Tailscale 断开时不可访问，恢复后能够重新连接。
+3. App 能打开已有 Codex 会话或创建最小测试会话。
+4. 用户启用 Claude 时，Runtime 选择器能显示 Claude，并能创建最小只读测试会话。
+5. 断网后不重复提交写操作；恢复连接后会话能通过事件 replay 或权威历史恢复。
 
-完成前三项后，才把“完整安装与配对”标记为成功。
+前三项完成后才判定基础安装成功；Claude 验收失败不能推翻已通过的 Codex 主通道。
 
-## 诊断失败
+## 配置 Codex 与 Claude Runtime
 
-按以下顺序收集最小诊断，不要一开始就重装：
+Codex 是默认 Runtime。不要写死模型版本；未显式选择模型时交给本机 Codex rollout。保持现有 Codex 登录态、app-server Token 和审批策略。
 
-```bash
-agentd status --json | grep -E '"(process_ok|service_ok|doctor_ok)"'
-agentd doctor
-agentd logs -n 200
-codex --version
-codex app-server --help
-```
+Claude Code 默认关闭并属于实验通道。它使用一个由 `agentd` 监督的 resident bridge；每个 Claude thread 对应一个 headless 进程。移动端断线不会自动重试 `turn/start`，重连使用 sequence replay 或 `thread/read`，避免重复写文件或执行命令。
 
-Linux 使用 `~/.local/bin/agentd` 的绝对路径。必要时再执行底层检查：
+启用 Claude 前确认用户接受以下边界：
 
-```bash
-# macOS
-brew services list
+- 当前不支持 `goal`、`archive` 和 `fork`。
+- 不提供 APNs 后台 push 或跨设备云同步。
+- bridge、Mac 或 Claude Code 重启后的极短未落盘窗口仍可能无法恢复。
+- 保持 `CLAUDE_BRIDGE_BYPASS_PERMISSIONS=false`，Claude 只声明 `read-only` 和 `workspace-write`。
 
-# Linux
-systemctl --user status mimi-remote.service
-journalctl --user -u mimi-remote.service -n 200 --no-pager
-```
+按安装形态处理 bridge：
 
-先对输出去敏，再引用到对话或 Issue。重点区分：
+- **Mimi Remote Mac**：使用 App 内置 bridge，不执行 `cargo install`，不写入其他机器的绝对路径。只修改 `claude.enabled` 等必要字段，保留或清空 `bridge_bin` 以使用随包 sibling；不要打印完整配置文件。
+- **Homebrew / Linux**：安装 `alleycat-claude-bridge >= 0.2.1`，把实际绝对路径写入 `claude.bridge_bin`。
 
-- `process_ok=false`：服务未运行、端口不可达或服务管理器失败。
-- `process_ok=true` 且 `service_ok=false`：配置、鉴权、版本或真实 Codex app-server 握手失败。
-- `file-access-preflight` warning：服务可能已经可连接，但部分 macOS 目录权限尚未确认。
-- 移动端无法连接而本机就绪：检查两台设备的 Tailscale 登录、Endpoint 和 App 内凭据，不要开放公网端口绕过问题。
-
-只在 Doctor 明确给出安全可修复项时执行：
-
-```bash
-agentd doctor --fix
-agentd restart --no-pair
-agentd status --json | grep -E '"(process_ok|service_ok|doctor_ok)"'
-```
-
-## 升级与回滚
-
-升级前保存用户配置和 Token，但不要把备份上传到云盘、Issue、PR 或任务附件。
-
-macOS 升级：
-
-1. 按 [安装、升级与回滚](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/install-upgrade-rollback.md) 创建权限为用户私有的配置备份。
-2. 执行 `brew update` 和 `brew upgrade mimi-remote`。
-3. 执行 `agentd restart --no-pair`。
-4. 验证 `agentd status --json` 中 `service_ok=true`。
-5. 失败时优先恢复旧 keg，除非确认新版破坏了配置，否则不要回滚配置文件。
-
-Linux 升级：
-
-1. 下载并校验目标正式 Release。
-2. 在新 Release 解压目录执行 `bash ./scripts/install-linux.sh upgrade`。
-3. 让安装器完成健康检查和失败自动恢复。
-4. 需要主动回滚时执行：
-
-```bash
-bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback
-"$HOME/.local/bin/agentd" status --json | grep -E '"(process_ok|service_ok|doctor_ok)"'
-```
-
-iOS 升级只在干净源码副本中检出目标 tag，重新生成 Xcode 工程并构建。不要覆盖用户的开发改动。
-
-## 卸载
-
-默认卸载程序但保留配置和 Token，以便重新安装后继续配对。永久删除凭据是独立的破坏性操作，只有用户明确确认“接受现有配对永久失效”后才能执行。
-
-macOS：
-
-```bash
-agentd stop
-brew uninstall mimi-remote
-```
-
-Linux：
-
-```bash
-bash "$HOME/.local/share/mimi-remote/install-linux.sh" uninstall
-```
-
-不要自动删除以下目录：
-
-```text
-~/Library/Application Support/mimi-remote
-~/.config/mimi-remote
-```
-
-iOS App 的卸载、App 数据删除和源码目录删除分别处理；不要因为卸载后端就删除 Xcode 工程、源码仓库或移动端 Keychain 数据。
-
-## 可选启用 Claude Code
-
-仅在用户明确要求后阅读 [Claude bridge 架构](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/claude-bridge-architecture.md)，确认用户理解该通道仍是实验功能。要求 Rust/Cargo、Claude Code headless 环境和 `alleycat-claude-bridge >= 0.2.1`。
-
-从完整源码仓库安装 bridge：
+CLI 外置 bridge 安装命令：
 
 ```bash
 cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
@@ -347,35 +251,113 @@ cargo install --git https://github.com/gaixianggeng/codex-ipad-agent.git \
 command -v alleycat-claude-bridge
 ```
 
-把实际绝对路径写入配置的 `claude.bridge_bin`，设置 `claude.enabled=true`，保留 `CLAUDE_BRIDGE_BYPASS_PERMISSIONS=false`，然后执行：
+配置文件含长期 Token。修改前创建权限为用户私有的本地备份，使用 JSON 解析器原子修改，只更新 `claude` 字段，保持文件权限为 `0600`；不要用 `cat`、日志或聊天展示完整内容。Mac App 当前没有 Runtime 开关时，让用户确认后再执行这一步。
+
+修改后从当前 service owner 的入口重启：
+
+- Mac App owner：从菜单栏选择“重新启动服务”。
+- Homebrew owner：执行 `agentd restart --no-pair`。
+- Linux owner：使用 user-systemd 安装器或 `systemctl --user restart mimi-remote.service`。
+
+然后执行 Doctor，并在移动端确认 Claude channel、bridge 版本和模型列表可用。不要因为 Claude bridge 失败而修改 Codex 配置或轮换 Token。
+
+## 诊断失败
+
+先从当前 service owner 收集最小、去敏的诊断，不要一开始就重装：
+
+- Mac App：查看菜单栏状态、Dashboard、Doctor 和 App 管理的日志。
+- Homebrew：
 
 ```bash
-agentd restart --no-pair
-agentd doctor
 agentd status --json | grep -E '"(process_ok|service_ok|doctor_ok)"'
+agentd doctor
+agentd logs -n 200
+brew services list
 ```
 
-不要因为 Claude bridge 失败而改变 Codex 主通道或轮换现有 Token。
+- Linux：
+
+```bash
+"$HOME/.local/bin/agentd" status --json | grep -E '"(process_ok|service_ok|doctor_ok)"'
+"$HOME/.local/bin/agentd" doctor
+journalctl --user -u mimi-remote.service -n 200 --no-pager
+```
+
+重点区分：
+
+- `process_ok=false`：服务未运行、端口不可达或 service manager 失败。
+- `process_ok=true` 且 `service_ok=false`：配置、鉴权、版本或真实 Codex app-server 握手失败。
+- `file-access-preflight` warning：服务可能已连接，但部分 macOS 目录权限尚未确认。
+- Claude channel 不可用：单独检查 `claude.enabled`、Claude CLI 登录和 bridge probe，不破坏 Codex。
+- 移动端无法连接而本机就绪：检查私网、Endpoint 和 App 内凭据，不开放公网端口。
+
+只在 Doctor 明确给出安全可修复项时运行 `doctor --fix`。先对日志去敏，再引用到聊天或 Issue。
+
+## 升级与回滚
+
+升级前备份配置和 Token，备份目录保持用户私有，不上传到云盘、Issue、PR 或任务附件。
+
+### Mimi Remote Mac
+
+1. 下载目标正式 DMG 和 SHA-256 文件并校验。
+2. 不先删除旧 App；用新 App 覆盖“应用程序”中的现有版本。
+3. 打开新版本，让它复用 Application Support 中的配置和配对数据。
+4. 验证 service owner、版本、Doctor、Codex 和已启用的 Claude channel。
+5. 失败时安装上一个已签名、公证的 DMG，优先恢复旧二进制；除非确认配置 schema 不兼容，否则不回滚配置。
+
+首个 DMG 没有自动更新。不要把 snapshot 或未公证构建作为稳定回滚版本。
+
+### Homebrew
+
+执行 `brew upgrade mimi-remote` 后使用 `agentd restart --no-pair`，验证 `service_ok=true`。失败时优先恢复旧 keg，不默认回滚配置。
+
+### Linux
+
+在校验后的新 Release 根目录执行 `bash ./scripts/install-linux.sh upgrade`。需要主动回滚时执行：
+
+```bash
+bash "$HOME/.local/share/mimi-remote/install-linux.sh" rollback
+"$HOME/.local/bin/agentd" status --json | grep -E '"(process_ok|service_ok|doctor_ok)"'
+```
+
+## 卸载
+
+默认只卸载程序并保留配置和 Token。永久删除凭据是独立破坏性操作，只有用户明确确认“接受现有配对永久失效”后才能执行。
+
+- **Mimi Remote Mac**：先在菜单栏选择“退出并停止服务”。如果要回到 Homebrew，先在设置中执行“恢复 Homebrew”。确认服务停止或迁移完成后，再把 App 移到废纸篓。
+- **Homebrew**：执行 `agentd stop` 和 `brew uninstall mimi-remote`。
+- **Linux**：执行 `bash "$HOME/.local/share/mimi-remote/install-linux.sh" uninstall`。
+
+不要自动删除：
+
+```text
+~/Library/Application Support/mimi-remote
+~/.config/mimi-remote
+```
+
+不要因为卸载后端而删除 iOS Keychain 数据、Xcode 工程、源码仓库或用户项目。
 
 ## 报告结果
 
-最终只报告以下信息：
+最终只报告：
 
-- 主机平台、架构和安装版本。
-- 后端是新装、复用、升级、修复还是回滚。
-- `service_ok` 是否为 `true`，Doctor 是否仍有需要用户处理的 warning。
-- iOS 工程是否生成、无签名构建是否通过、真机安装是否完成。
-- 配对与项目加载是否完成。
-- 仍需用户执行的人机步骤，例如登录、系统权限、Xcode Team 或扫码。
+- 主机平台、架构、安装版本和 service owner。
+- 执行的是新装、复用、迁移、升级、修复还是回滚。
+- `service_ok`、Doctor 和仍需用户处理的 warning。
+- Codex 是否可用；Claude 是否启用、bridge 是否健康及其剩余实验边界。
+- iOS 工程、无签名构建、真机安装、配对和项目加载状态。
+- 仍需用户完成的登录、系统权限、Xcode Team、App 拖放或扫码步骤。
 
-不要在最终报告中包含 Token、二维码内容、完整 Endpoint、Tailscale IP、私有项目绝对路径或未去敏日志。
+不要报告 Token、二维码内容、完整 Endpoint、Tailscale IP、私有项目路径或未去敏日志。
 
 ## 按需读取的参考资料
 
 - 产品概览和快速开始：[README.zh-CN.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/README.zh-CN.md)
-- 安装、升级、停止、回滚和 Linux 细节：[install-upgrade-rollback.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/install-upgrade-rollback.md)
-- iOS 构建、真机部署和验收：[iOS 开发说明](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/ios/MimiRemote/README.md)
-- Codex app-server 协议边界：[codex-protocol-support.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/codex-protocol-support.md)
+- Mac 菜单栏 App：[Mimi Remote Mac](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/macos/MimiRemoteMac/README.md)
+- 安装、升级、停止和回滚：[install-upgrade-rollback.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/install-upgrade-rollback.md)
+- Claude Runtime 生命周期和权限：[claude-bridge-architecture.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/claude-bridge-architecture.md)
+- iOS 构建和验收：[iOS 开发说明](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/ios/MimiRemote/README.md)
+- Codex 协议边界：[codex-protocol-support.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/codex-protocol-support.md)
 - Tailscale 运维：[tailscale-peer-relay-ops.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/tailscale-peer-relay-ops.md)
-- 支持与去敏要求：[support.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/support.md)
+- 支持和去敏：[support.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/support.md)
 - 安全问题报告：[SECURITY.md](https://github.com/gaixianggeng/codex-ipad-agent/blob/main/SECURITY.md)

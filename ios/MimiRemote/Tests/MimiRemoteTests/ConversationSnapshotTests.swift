@@ -5,7 +5,36 @@ import SnapshotTesting
 @testable import MimiRemote
 
 @MainActor
-final class ConversationSnapshotTests: XCTestCase {
+class SimplifiedChineseSnapshotTestCase: XCTestCase {
+    private var hadStoredAppLanguage = false
+    private var previousAppLanguageRawValue: String?
+    private var didOverrideAppLanguage = false
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        let defaults = UserDefaults.standard
+        hadStoredAppLanguage = defaults.object(forKey: AppLanguage.preferenceKey) != nil
+        previousAppLanguageRawValue = defaults.string(forKey: AppLanguage.preferenceKey)
+        defaults.set(AppLanguage.simplifiedChinese.rawValue, forKey: AppLanguage.preferenceKey)
+        didOverrideAppLanguage = true
+    }
+
+    override func tearDownWithError() throws {
+        if didOverrideAppLanguage {
+            let defaults = UserDefaults.standard
+            if hadStoredAppLanguage {
+                defaults.set(previousAppLanguageRawValue, forKey: AppLanguage.preferenceKey)
+            } else {
+                defaults.removeObject(forKey: AppLanguage.preferenceKey)
+            }
+            didOverrideAppLanguage = false
+        }
+        try super.tearDownWithError()
+    }
+}
+
+@MainActor
+final class ConversationSnapshotTests: SimplifiedChineseSnapshotTestCase {
     // 快照只验证布局和样式，消息时间固定，避免每次运行因当前分钟变化产生视觉误报。
     private let snapshotMessageDate = Date(timeIntervalSince1970: 1_782_879_660)
 
@@ -43,7 +72,8 @@ final class ConversationSnapshotTests: XCTestCase {
     // 首次运行会自动录制参考图到 __Snapshots__/，之后逐像素对比。
     private func makeSeededConversation(colorScheme: ColorScheme = .light) -> some View {
         let sessionID = "snapshot_session"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
 
         conversationStore.appendSystem("Codex 交互式会话已启动。", sessionID: sessionID, createdAt: snapshotMessageDate)
@@ -63,7 +93,7 @@ final class ConversationSnapshotTests: XCTestCase {
             fallbackSessionID: sessionID
         )
         conversationStore.appendUser(
-            "这是一条比较长的用户消息，用来验证多行情况下紫色气泡依然贴右对齐，而不是漂到屏幕中间。",
+            "这是一条比较长的用户消息，用来验证多行情况下中性气泡依然贴右对齐，而不是漂到屏幕中间。",
             sessionID: sessionID,
             createdAt: snapshotMessageDate
         )
@@ -77,7 +107,7 @@ final class ConversationSnapshotTests: XCTestCase {
         )
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -93,7 +123,8 @@ final class ConversationSnapshotTests: XCTestCase {
 
     private func makeRichMarkdownConversation() -> some View {
         let sessionID = "snapshot_markdown_session"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let markdown = """
         # Markdown 验收
@@ -133,7 +164,7 @@ final class ConversationSnapshotTests: XCTestCase {
         )
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -150,7 +181,8 @@ final class ConversationSnapshotTests: XCTestCase {
     private func makeMixedActivityConversation() async -> some View {
         let sessionID = "snapshot_mixed_activity"
         let turnID = "turn_mixed_activity"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let landscapeImage = snapshotImageDataURL(size: CGSize(width: 420, height: 210), accent: .systemPurple)
         let portraitImage = snapshotImageDataURL(size: CGSize(width: 240, height: 360), accent: .systemOrange)
@@ -158,11 +190,13 @@ final class ConversationSnapshotTests: XCTestCase {
         _ = await DataURLImageDecoder.image(
             from: landscapeImage,
             cacheKey: ConversationImageSource.markdown(landscapeImage).id,
+            profileID: appStore.notificationRoutingProfileID,
             maxPixelSize: 1_600
         )
         _ = await DataURLImageDecoder.image(
             from: portraitImage,
             cacheKey: ConversationImageSource.markdown(portraitImage).id,
+            profileID: appStore.notificationRoutingProfileID,
             maxPixelSize: 1_600
         )
         let history = [
@@ -277,7 +311,7 @@ final class ConversationSnapshotTests: XCTestCase {
         conversationStore.setHistory(history, sessionID: sessionID)
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -293,7 +327,8 @@ final class ConversationSnapshotTests: XCTestCase {
 
     private func makeUnavailableUserImageGallery() -> some View {
         let sessionID = "snapshot_unavailable_user_images"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let unavailableImages = [
             "codex-clipboard-9ba62714-bcfb-4693-805b-1be6e284e924.png",
@@ -318,7 +353,7 @@ final class ConversationSnapshotTests: XCTestCase {
         ], sessionID: sessionID)
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -409,10 +444,91 @@ final class ConversationSnapshotTests: XCTestCase {
         .frame(width: 820, height: 260)
     }
 
+    private func makeWorkGroup(isExpanded: Bool) -> some View {
+        let themeStore = makeThemeStore()
+        let turnID = "snapshot-work-group"
+        let commentary = ConversationMessage(
+            stableID: "snapshot-work-commentary",
+            turnID: turnID,
+            role: .assistant,
+            kind: .commentary,
+            content: "我会先检查当前实现，再运行测试确认行为。",
+            createdAt: snapshotMessageDate,
+            sendStatus: .confirmed,
+            turnLifecycle: .completed
+        )
+        let command = ConversationMessage(
+            stableID: "snapshot-work-command",
+            turnID: turnID,
+            role: .system,
+            kind: .commandSummary,
+            content: "命令：xcodebuild test",
+            createdAt: snapshotMessageDate.addingTimeInterval(3),
+            sendStatus: .confirmed,
+            activityPayload: ConversationActivityPayload(
+                category: .runCommand,
+                displayTitle: "运行 iOS 单元测试",
+                status: "completed",
+                command: "xcodebuild test",
+                exitCode: 0
+            ),
+            turnLifecycle: .completed
+        )
+        let batch = ConversationActivityBatch(
+            id: "snapshot-work-batch",
+            messages: [command],
+            kind: .execution,
+            status: .completed
+        )
+        let group = ConversationWorkGroup(
+            id: "snapshot-work-group",
+            turnID: turnID,
+            entries: [
+                .commentary(commentary),
+                .activityBatch(batch)
+            ],
+            status: .completed,
+            startedAt: snapshotMessageDate,
+            endedAt: snapshotMessageDate.addingTimeInterval(74)
+        )
+        let layout = ConversationLayout(containerWidth: 820, horizontalSizeClass: .regular)
+
+        return VStack {
+            ConversationWorkGroupRow(
+                group: group,
+                layout: layout,
+                isExpanded: isExpanded,
+                toggleGroup: {}
+            ) {
+                Text(commentary.content)
+                    .font(themeStore.uiFont(size: 14))
+                    .foregroundStyle(themeStore.tokens(for: .light).primaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                ConversationActivityBatchRow(
+                    group: batch,
+                    layout: layout,
+                    isExpanded: false,
+                    expandedActivityIDs: [],
+                    toggleGroup: {},
+                    toggleActivity: { _ in }
+                )
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 24)
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .background(themeStore.tokens(for: .light).background)
+        .frame(width: 820, height: isExpanded ? 260 : 110)
+    }
+
     private func makeCommentaryAndTrailingProcessConversation() -> some View {
         let sessionID = "snapshot-commentary"
         let turnID = "turn-commentary"
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         conversationStore.setHistory([
             CodexHistoryMessage(
@@ -435,7 +551,8 @@ final class ConversationSnapshotTests: XCTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(1),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-old-command",
@@ -449,7 +566,8 @@ final class ConversationSnapshotTests: XCTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(2),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-visible",
@@ -465,7 +583,8 @@ final class ConversationSnapshotTests: XCTestCase {
                 """,
                 createdAt: snapshotMessageDate.addingTimeInterval(3),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-trailing-reasoning-old",
@@ -480,7 +599,8 @@ final class ConversationSnapshotTests: XCTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(4),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-trailing-command",
@@ -494,7 +614,8 @@ final class ConversationSnapshotTests: XCTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(5),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             ),
             CodexHistoryMessage(
                 id: "commentary-trailing-reasoning-latest",
@@ -509,12 +630,13 @@ final class ConversationSnapshotTests: XCTestCase {
                 ),
                 createdAt: snapshotMessageDate.addingTimeInterval(6),
                 turnID: turnID,
-                sendStatus: .confirmed
+                sendStatus: .confirmed,
+                isTimestampFallback: true
             )
         ], sessionID: sessionID)
 
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -554,7 +676,13 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 900))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 900)
+                )
+            )
         )
     }
 
@@ -572,6 +700,20 @@ final class ConversationSnapshotTests: XCTestCase {
         )
     }
 
+    func testCollapsedWorkGroupRendering() {
+        assertSnapshot(
+            of: makeWorkGroup(isExpanded: false),
+            as: .image(precision: 0.98, layout: .fixed(width: 820, height: 110))
+        )
+    }
+
+    func testExpandedWorkGroupRendering() {
+        assertSnapshot(
+            of: makeWorkGroup(isExpanded: true),
+            as: .image(precision: 0.98, layout: .fixed(width: 820, height: 260))
+        )
+    }
+
     func testCommentaryAndTrailingProcessRendering() {
         assertSnapshot(
             of: makeCommentaryAndTrailingProcessConversation(),
@@ -580,10 +722,11 @@ final class ConversationSnapshotTests: XCTestCase {
     }
 
     func testEmptyConversationState() {
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         let themeStore = makeThemeStore()
         let sessionStore = SessionStore(
-            appStore: makeSnapshotAppStore(),
+            appStore: appStore,
             conversationStore: conversationStore,
             logStore: LogStore()
         )
@@ -597,7 +740,13 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
@@ -703,7 +852,13 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
@@ -712,7 +867,13 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 744, height: 1133))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 744, height: 1133)
+                )
+            )
         )
     }
 
@@ -726,7 +887,13 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 832, height: 744))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 832, height: 744)
+                )
+            )
         )
     }
 
@@ -735,7 +902,28 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 420, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 420, height: 768)
+                )
+            )
+        )
+    }
+
+    func testComposerStatusTrayExtremelyNarrowCompactWidth() async {
+        let view = await makeComposerStatusTrayCrowdedView(width: 320, height: 700)
+
+        assertSnapshot(
+            of: view,
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 320, height: 700)
+                )
+            )
         )
     }
 
@@ -744,7 +932,13 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 420, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 420, height: 768)
+                )
+            )
         )
     }
 
@@ -754,18 +948,155 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 1024, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 1024, height: 768)
+                )
+            )
         )
     }
 
-    private func makeComposerStatusTrayCrowdedView(width: CGFloat, height: CGFloat, goalExpanded: Bool = false) async -> some View {
+    func testCompletedGoalStatusTrayRemainsVisibleAfterTurnFinishes() async {
+        let view = await makeComposerStatusTrayCrowdedView(
+            width: 744,
+            height: 768,
+            goalStatus: .complete,
+            sessionStatus: SessionStatus.completed.rawValue
+        )
+
+        assertSnapshot(
+            of: view,
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 744, height: 768)
+                )
+            )
+        )
+    }
+
+    func testComposerSendModeLabelsUseConsistentModeSuffix() {
+        XCTAssertEqual(L10n.text("ui.planning_mode"), "计划模式")
+        XCTAssertEqual(L10n.text("ui.target_task"), "目标模式")
+        XCTAssertEqual(L10n.text("ui.turn_off_planning_mode"), "关闭计划模式")
+        XCTAssertEqual(L10n.text("ui.close_target_task"), "关闭目标模式")
+    }
+
+    func testGoalTraySurfaceStyleMatchesFlatComposerHierarchy() {
+        let collapsed = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: false,
+            scheme: .dark,
+            reduceTransparency: false
+        )
+        let expanded = ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: true,
+            scheme: .dark,
+            reduceTransparency: false
+        )
+
+        XCTAssertEqual(collapsed.materialStrength, .thin)
+        XCTAssertEqual(expanded.materialStrength, .regular)
+        XCTAssertEqual(collapsed.surfaceTintOpacity, 0.46)
+        XCTAssertEqual(expanded.surfaceTintOpacity, collapsed.surfaceTintOpacity)
+        XCTAssertEqual(collapsed.borderOpacity, 0.58)
+        XCTAssertEqual(expanded.borderOpacity, collapsed.borderOpacity)
+    }
+
+    func testGoalTraySurfaceStyleBecomesOpaqueWhenReduceTransparencyIsEnabled() {
+        for isExpanded in [false, true] {
+            let style = ComposerStatusTraySurfaceStyle.resolve(
+                isExpanded: isExpanded,
+                scheme: .dark,
+                reduceTransparency: true
+            )
+
+            XCTAssertEqual(style.materialStrength, .opaque)
+            XCTAssertEqual(style.surfaceTintOpacity, 1)
+            XCTAssertEqual(style.borderOpacity, 0.58)
+        }
+    }
+
+    func testExpandedGoalTrayDarkMaterialSeparatesBackdropContent() {
+        let themeStore = makeThemeStore()
+        let goal = ThreadGoal(
+            threadID: "thread-dark-material",
+            objective: "更新 Apple Design skill，并验证目标浮层不会和后方卡片内容发生视觉冲突。",
+            status: .active,
+            tokenBudget: 2_000_000,
+            tokensUsed: 820_000,
+            timeUsedSeconds: 1_420,
+            createdAt: snapshotMessageDate,
+            updatedAt: snapshotMessageDate
+        )
+        let tray = ComposerStatusTray(
+            sessionControlNotice: nil,
+            quotaNotice: nil,
+            usage: nil,
+            goal: goal,
+            isGoalExpanded: true,
+            isGoalUpdating: false,
+            goalErrorMessage: nil,
+            isRefreshDisabled: false,
+            allowsTakeOver: true,
+            onTakeOver: {},
+            onRefreshUsage: {},
+            onEditGoal: {},
+            onTogglePauseGoal: {},
+            onCompleteGoal: {},
+            onClearGoal: {},
+            onToggleGoalExpanded: {}
+        )
+
+        let view = ZStack(alignment: .bottom) {
+            Color(red: 0.063, green: 0.067, blue: 0.078)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("$apple-design")
+                    .font(.title2.bold())
+                Text("Use this skill to review typography, spacing, interaction states, and platform conventions.")
+                    .font(.body)
+                Text("⌘  Update skill")
+                    .font(.callout.monospaced())
+            }
+            .foregroundStyle(.white)
+            .padding(22)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                Color(red: 0.141, green: 0.153, blue: 0.180),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+            .padding(28)
+
+            tray
+                .padding(20)
+        }
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .dark)
+        .environment(\.locale, Locale(identifier: "zh-Hans"))
+        .frame(width: 760, height: 360)
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 760, height: 360))
+        )
+    }
+
+    private func makeComposerStatusTrayCrowdedView(
+        width: CGFloat,
+        height: CGFloat,
+        goalExpanded: Bool = false,
+        goalStatus: ThreadGoalStatus = .active,
+        sessionStatus: String = "running"
+    ) async -> some View {
         let project = AgentProject(id: "tray-project", name: "tray-project", path: "/Users/me/code/tray-project")
         let sessionID = "crowded"
         let threadID = "thread-\(sessionID)"
         let goal = ThreadGoal(
             threadID: threadID,
             objective: "你是 Mimi Remote 的多 Agent 产品研发团队主控，需要把目标、接管和额度状态压缩到输入框上方。",
-            status: .active,
+            status: goalStatus,
             tokenBudget: 12_000_000,
             tokensUsed: 10_200_000,
             timeUsedSeconds: 25_740,
@@ -776,13 +1107,14 @@ final class ConversationSnapshotTests: XCTestCase {
             id: sessionID,
             project: project,
             title: "Composer 状态托盘",
-            status: "running",
+            status: sessionStatus,
             preview: "验证接管、额度和目标同时出现时的底部 composer 布局。",
-            activeTurnID: "turn-crowded",
+            activeTurnID: SessionStore.isRunningStatus(sessionStatus) ? "turn-crowded" : nil,
             rateLimit: RateLimitSummary(limitName: "Codex", primaryUsedPercent: 85, primaryResetsAt: 1_782_883_260),
             goal: goal
         )
-        let conversationStore = ConversationStore()
+        let appStore = makeSnapshotAppStore()
+        let conversationStore = makeSnapshotConversationStore(appStore: appStore)
         conversationStore.applyAssistantDelta(
             AgentDelta(
                 text: "这条消息用于把 composer 推到真实会话底部；状态托盘应该保持紧凑，不要把输入框挤出首屏。",
@@ -802,7 +1134,6 @@ final class ConversationSnapshotTests: XCTestCase {
             fallbackSessionID: sessionID
         )
         let themeStore = makeThemeStore()
-        let appStore = makeSnapshotAppStore()
         let sessionStore = SessionStore(
             appStore: appStore,
             conversationStore: conversationStore,
@@ -815,6 +1146,17 @@ final class ConversationSnapshotTests: XCTestCase {
                 SnapshotSessionAPIClient(projects: [project], sessions: [session])
             }
         )
+        // 固定一个明确支持 xhigh 的默认模型，避免异步 model/list 刷新后把推理强度
+        // 归一化掉，导致快照取决于首帧与 `.task` 谁先完成。
+        sessionStore.appServerModelOptions = [
+            CodexAppServerModelOption(
+                id: "gpt-5.5",
+                title: "GPT-5.5",
+                isDefault: true,
+                supportedReasoningEfforts: ["xhigh"],
+                defaultReasoningEffort: "xhigh"
+            )
+        ]
         await sessionStore.refreshAll(autoAttach: false)
         await sessionStore.toggleProjectExpansion(project)
         sessionStore.selectedSessionID = sessionID
@@ -830,6 +1172,8 @@ final class ConversationSnapshotTests: XCTestCase {
             .environmentObject(themeStore)
             // 快照固定为浅色，避免运行测试前手动切过模拟器外观就整组误报。
             .environment(\.colorScheme, .light)
+            // 同时固定语言，避免开发机或 Simulator 语言变化把纯视觉回归误录成文案变更。
+            .environment(\.locale, Locale(identifier: "zh-Hans"))
             .defaultAppStorage(composerDefaults)
             .frame(width: width, height: height)
     }
@@ -895,6 +1239,9 @@ final class ConversationSnapshotTests: XCTestCase {
         .environmentObject(sessionStore)
         .environmentObject(themeStore)
         .environment(\.colorScheme, .light)
+        // 固定尺寸在不同 iOS Runtime 下可能推导出不同 size class；
+        // 这里明确验证 iPad regular 侧栏，避免系统推导差异改变头部结构。
+        .environment(\.horizontalSizeClass, .regular)
         .frame(width: 420, height: 768)
 
         assertSnapshot(
@@ -909,9 +1256,12 @@ final class ConversationSnapshotTests: XCTestCase {
         let codex = makeSnapshotSession(
             id: "runtime-codex",
             project: project,
-            title: "优化会话列表",
+            title: "从当前 main 分支创建新的 worktree 并优化会话列表中的分支信息展示",
             status: "completed",
-            preview: "Codex 会话"
+            preview: "Codex 会话",
+            context: SessionContextSnapshot(
+                git: SessionContextGitInfo(branch: "feature/session-git-branch-indicator")
+            )
         )
         let claude = makeSnapshotSession(
             id: "runtime-claude",
@@ -931,6 +1281,7 @@ final class ConversationSnapshotTests: XCTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
+                isExternalReadOnly: false,
                 style: .library
             )
             SessionIndexRow(
@@ -941,6 +1292,7 @@ final class ConversationSnapshotTests: XCTestCase {
                 isArchived: false,
                 reminder: nil,
                 isObserving: false,
+                isExternalReadOnly: false,
                 style: .library
             )
         }
@@ -1000,7 +1352,13 @@ final class ConversationSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 340, height: 768))
+            as: .wait(
+                for: 0.8,
+                on: .image(
+                    precision: 0.98,
+                    layout: .fixed(width: 340, height: 768)
+                )
+            )
         )
     }
 
@@ -1056,6 +1414,14 @@ final class ConversationSnapshotTests: XCTestCase {
         return AppStore(defaults: defaults, tokenStore: TokenStore(keychain: TestKeychainOperations()))
     }
 
+    private func makeSnapshotConversationStore(appStore: AppStore) -> ConversationStore {
+        let store = ConversationStore()
+        // 快照在 SessionStore 初始化前预置数据，必须明确写入同一个 HostScope；
+        // 否则 Profile 隔离会正确地隐藏空命名空间中的旧测试数据。
+        store.activate(profileID: appStore.activeHostScope.profileID)
+        return store
+    }
+
     private func makeRecentWorkspaceStore(workspaces: [AgentWorkspace], endpoint: String) -> RecentWorkspaceStore {
         let suiteName = "ConversationSnapshotTests.RecentWorkspaces.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -1076,7 +1442,8 @@ final class ConversationSnapshotTests: XCTestCase {
         rateLimit: RateLimitSummary? = nil,
         pendingApproval: ApprovalSummary? = nil,
         goal: ThreadGoal? = nil,
-        runtimeProvider: String? = nil
+        runtimeProvider: String? = nil,
+        context: SessionContextSnapshot? = nil
     ) -> AgentSession {
         AgentSession(
             id: id,
@@ -1097,13 +1464,124 @@ final class ConversationSnapshotTests: XCTestCase {
             usage: usage,
             rateLimit: rateLimit,
             pendingApproval: pendingApproval,
-            goal: goal
+            goal: goal,
+            context: context
         )
     }
 }
 
 @MainActor
-final class PendingUserInputSheetSnapshotTests: XCTestCase {
+final class PendingApprovalCardSnapshotTests: SimplifiedChineseSnapshotTestCase {
+    private let longCommand = """
+    echo "=== find agentd logs ==="; ls -lat /private/tmp/*agentd* /private/tmp/mimi* /tmp/*agentd* 2>/dev/null | head
+    echo "=== app LaunchAgent log config ==="; plutil -p "/Applications/Mimi Remote Mac.app/Contents/Library/LaunchAgents/com.gaixianggeng.mimi.mac.agentd.plist"
+    echo "=== user logs ==="; ls -lat "$HOME/Library/Logs/" 2>/dev/null | grep -i mimi | head
+    """
+
+    func testPendingApprovalCardFitsIPhoneTouchLayout() {
+        let view = makeCard(horizontalSizeClass: .compact)
+            .padding(16)
+            .frame(width: 390, height: 500, alignment: .top)
+            .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 500))
+        )
+    }
+
+    func testPendingApprovalCardUsesWiderIPadPreview() {
+        let view = makeCard(horizontalSizeClass: .regular)
+            .padding(20)
+            .frame(width: 760, height: 500, alignment: .top)
+            .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 760, height: 500))
+        )
+    }
+
+    private func makeCard(horizontalSizeClass: UserInterfaceSizeClass) -> some View {
+        let suiteName = "PendingApprovalCardSnapshotTests.Theme.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let themeStore = ThemeStore(defaults: defaults)
+        let approval = ApprovalSummary(
+            id: "approval-touch-layout",
+            title: L10n.format("ui.agent_requests_execution_command_value", longCommand),
+            body: longCommand,
+            kind: "command",
+            risk: "high",
+            count: nil
+        )
+
+        return PendingApprovalActionCard(
+            approval: approval,
+            runtimePresentation: SessionRuntimePresentation(
+                runtimeProvider: horizontalSizeClass == .compact ? "codex" : "claude",
+                source: "codex"
+            ),
+            isSendingDecision: false,
+            onDecision: { _ in }
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .environment(\.horizontalSizeClass, horizontalSizeClass)
+    }
+}
+
+@MainActor
+final class PendingUserInputSheetSnapshotTests: SimplifiedChineseSnapshotTestCase {
+    func testInlineUserInputCardMatchesApprovalChromeOnIPad() {
+        let request = AgentUserInputRequest(
+            id: "inline-style-request",
+            threadID: "inline-style-thread",
+            turnID: "inline-style-turn",
+            itemID: "inline-style-item",
+            questions: [
+                AgentUserInputQuestion(
+                    id: "implementation",
+                    header: "实现方式",
+                    question: "你希望接下来按哪一种方式继续？",
+                    isOther: false,
+                    isSecret: false,
+                    options: [
+                        AgentUserInputOption(label: "直接实现", description: "按当前方案完成修改"),
+                        AgentUserInputOption(label: "先看预览", description: "确认界面后再继续")
+                    ]
+                )
+            ]
+        )
+        let suiteName = "PendingUserInputInlineSnapshotTests.Theme.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        let themeStore = ThemeStore(defaults: defaults)
+        let view = PendingUserInputActionCard(
+            request: request,
+            runtimePresentation: SessionRuntimePresentation(runtimeProvider: "codex", source: "codex"),
+            isSubmitting: false,
+            draft: .constant(PendingUserInputDraft()),
+            onSubmit: { _ in true }
+        )
+        .environmentObject(themeStore)
+        .environment(\.colorScheme, .light)
+        .padding(20)
+        .frame(width: 760, height: 360, alignment: .top)
+        .background(Color(uiColor: .systemGroupedBackground))
+
+        assertSnapshot(
+            of: view,
+            as: .image(precision: 0.98, layout: .fixed(width: 760, height: 360))
+        )
+    }
+
     func testLongMultiSelectFormKeepsBottomActionsVisibleOnIPhone() {
         let options = (1...6).map { index in
             AgentUserInputOption(
@@ -1134,7 +1612,10 @@ final class PendingUserInputSheetSnapshotTests: XCTestCase {
         defaults.removePersistentDomain(forName: suiteName)
         let themeStore = ThemeStore(defaults: defaults)
         let view = PendingUserInputSheet(
-            presentation: PendingUserInputPresentation(request: request),
+            presentation: PendingUserInputPresentation(
+                request: request,
+                runtimePresentation: SessionRuntimePresentation(runtimeProvider: "claude", source: "codex")
+            ),
             isSubmitting: false,
             draft: .constant(PendingUserInputDraft()),
             onSubmit: { _ in true }
@@ -1145,7 +1626,10 @@ final class PendingUserInputSheetSnapshotTests: XCTestCase {
 
         assertSnapshot(
             of: view,
-            as: .image(precision: 0.98, layout: .fixed(width: 390, height: 844))
+            as: .wait(
+                for: 0.8,
+                on: .image(precision: 0.98, layout: .fixed(width: 390, height: 844))
+            )
         )
     }
 }

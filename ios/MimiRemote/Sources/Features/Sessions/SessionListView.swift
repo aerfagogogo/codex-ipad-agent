@@ -143,6 +143,7 @@ struct SessionListView: View {
 
     var onNewSession: (() -> Void)?
     var onSelectSession: ((AgentSession) -> Void)?
+    var manageConnections: (() -> Void)?
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
@@ -236,6 +237,16 @@ struct SessionListView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $sessionStore.sessionSearchQuery, placement: .navigationBarDrawer(displayMode: .automatic), prompt: L10n.text("ui.search_session"))
         .toolbar {
+            if let manageConnections {
+                ToolbarItem(placement: .topBarLeading) {
+                    HostSwitcherMenu(
+                        presentation: .toolbar,
+                        manageConnections: manageConnections
+                    )
+                }
+                // 全局 Mac 入口与列表筛选是不同作用域，固定间隔让系统分别生成圆形材质。
+                ToolbarSpacer(.fixed, placement: .topBarLeading)
+            }
             ToolbarItem(placement: .topBarLeading) {
                 filterMenu(tokens: tokens)
             }
@@ -302,11 +313,13 @@ struct SessionListView: View {
                 isArchived: sessionStore.isSessionArchived(session.id),
                 reminder: sessionStore.sessionReminder(for: session.id),
                 isObserving: sessionStore.isSessionObserving(session),
+                isExternalReadOnly: sessionStore.isExternalReadOnlySession(session),
                 style: .library,
                 searchSnippet: sessionStore.sessionSearchSnippet(for: session.id)
             )
             .contentShape(Rectangle())
             .onTapGesture { select(session) }
+            .accessibilityIdentifier("sessions.row.\(session.id)")
             .sessionRowActions(session)
             .listRowInsets(.init(top: 4, leading: 20, bottom: 4, trailing: 20))
             .listRowSeparator(.hidden)
@@ -401,6 +414,7 @@ struct SessionIndexRow: View {
     let isArchived: Bool
     let reminder: SessionReminder?
     let isObserving: Bool
+    let isExternalReadOnly: Bool
     let style: SessionIndexRowStyle
     var searchSnippet: String? = nil
 
@@ -418,7 +432,8 @@ struct SessionIndexRow: View {
                 Text(session.title)
                     .font(themeStore.uiFont(size: style == .sidebar ? 14 : 16, weight: isSelected ? .semibold : .medium))
                     .foregroundStyle(tokens.primaryText)
-                    .lineLimit(style == .sidebar ? 1 : 2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
                     .layoutPriority(1)
 
                 Spacer(minLength: 8)
@@ -437,6 +452,31 @@ struct SessionIndexRow: View {
                 if reminder != nil { Image(systemName: "bell.fill").foregroundStyle(tokens.warning) }
 
                 SessionRuntimeBadge(session: session, compact: style == .sidebar)
+
+                if isExternalReadOnly {
+                    Text(L10n.text("ui.mac_observe_only"))
+                        .font(themeStore.uiFont(size: style == .sidebar ? 9 : 11, weight: .semibold))
+                        .foregroundStyle(tokens.secondaryText)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+
+                if let branch = session.gitBranchName {
+                    HStack(spacing: 3) {
+                        // 紫色只用于节点图标，既保留 Git 识别度，也不抢标题和运行状态的层级。
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                            .font(themeStore.uiFont(size: style == .sidebar ? 8 : 10, weight: .semibold))
+                            .foregroundStyle(tokens.primaryAction)
+                            .accessibilityHidden(true)
+
+                        Text(branch)
+                            .foregroundStyle(tokens.tertiaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .frame(maxWidth: style == .sidebar ? 100 : 150, alignment: .leading)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(L10n.text("ui.branch")) \(branch)")
+                }
 
                 Text(session.project.isEmpty ? session.dir : session.project)
                     .lineLimit(1)
@@ -528,10 +568,9 @@ struct SessionIndexRow: View {
         guard style == .library else {
             return .clear
         }
-        if session.isRunning {
-            return statusColor(tokens: tokens).opacity(0.06)
-        }
-        return tokens.surface.opacity(0.58)
+        // 会话库行与输入面板使用同一层暖石墨填充；运行状态交给图标和标签表达，
+        // 不再用大面积紫色/状态色染底。
+        return tokens.contentPanelBackground
     }
 
     private func rowBorder(tokens: ThemeTokens) -> Color {
@@ -588,7 +627,8 @@ private struct SessionRowActions: ViewModifier {
         let reminder = sessionStore.sessionReminder(for: session.id)
 
         content.contextMenu {
-            if sessionStore.isSessionObserving(session) {
+            if sessionStore.isSessionObserving(session),
+               !sessionStore.isExternalReadOnlySession(session) {
                 Button {
                     sessionStore.takeOverSession(session)
                 } label: {
@@ -649,6 +689,7 @@ private struct SessionRowActions: ViewModifier {
             } label: {
                 Label(isArchived ? L10n.text("ui.unarchive") : L10n.text("ui.archive"), systemImage: isArchived ? "archivebox.fill" : "archivebox")
             }
+            .disabled(sessionStore.isExternalReadOnlySession(session))
         }
         .sheet(item: $renameTarget) { target in
             SessionRenameSheet(session: target.session)

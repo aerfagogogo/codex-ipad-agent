@@ -1,5 +1,65 @@
 import SwiftUI
 
+/// MeeGo / Harmattan 图标底板不是规则圆角矩形，也不是完全对称的超椭圆。
+/// 归一化 Bézier 控制点让上下边略平、左右边轻微收腰，并保留四角细微不同的饱满度。
+private struct WorkspaceIconMeeGoShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        guard rect.width > 0, rect.height > 0 else { return Path() }
+
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(
+                x: rect.minX + rect.width * x,
+                y: rect.minY + rect.height * y
+            )
+        }
+
+        var path = Path()
+        path.move(to: point(0.27, 0.045))
+        path.addCurve(
+            to: point(0.75, 0.035),
+            control1: point(0.41, 0.018),
+            control2: point(0.61, 0.015)
+        )
+        path.addCurve(
+            to: point(0.955, 0.26),
+            control1: point(0.88, 0.045),
+            control2: point(0.945, 0.14)
+        )
+        path.addCurve(
+            to: point(0.95, 0.72),
+            control1: point(0.985, 0.40),
+            control2: point(0.98, 0.59)
+        )
+        path.addCurve(
+            to: point(0.71, 0.955),
+            control1: point(0.93, 0.85),
+            control2: point(0.84, 0.945)
+        )
+        path.addCurve(
+            to: point(0.26, 0.96),
+            control1: point(0.57, 0.985),
+            control2: point(0.40, 0.985)
+        )
+        path.addCurve(
+            to: point(0.045, 0.70),
+            control1: point(0.14, 0.945),
+            control2: point(0.055, 0.84)
+        )
+        path.addCurve(
+            to: point(0.055, 0.25),
+            control1: point(0.018, 0.57),
+            control2: point(0.025, 0.39)
+        )
+        path.addCurve(
+            to: point(0.27, 0.045),
+            control1: point(0.065, 0.13),
+            control2: point(0.15, 0.055)
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
 enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
     case codex
     case claude
@@ -40,7 +100,7 @@ enum WorkspaceSessionRuntimeChoice: String, CaseIterable, Identifiable {
 
 enum WorkspaceStripLayout {
     static let horizontalPadding: CGFloat = 24
-    // 316pt 能给路径、状态和两组统计留下稳定空间，同时在 iPad 上仍能露出相邻卡片，提示可横向滚动。
+    // 316pt 能容纳 Emoji、路径和一行实时状态，同时在 iPad mini 上露出相邻卡片提示横向滚动。
     static let cardWidth: CGFloat = 316
     static let stripHeight: CGFloat = 166
 
@@ -49,15 +109,30 @@ enum WorkspaceStripLayout {
     }
 }
 
+enum WorkspaceSessionAgeBoundary {
+    static let staleInterval: TimeInterval = 12 * 60 * 60
+
+    static func firstStaleIndex(in sessions: [AgentSession], now: Date = Date()) -> Int? {
+        // 工作区会话已经按 SessionIndexStore.orderingDate 倒序排列；
+        // 这里复用同一时间口径，避免列表顺序与 12 小时分组依据不一致。
+        sessions.firstIndex { session in
+            now.timeIntervalSince(SessionIndexStore.orderingDate(for: session)) > staleInterval
+        }
+    }
+}
+
 /// 工作区只维护本地浏览选择。只有用户明确进入会话或新建会话时，才交给 SessionStore 改变活动上下文。
 struct WorkspaceRootView: View {
+    @EnvironmentObject private var appStore: AppStore
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var appearanceStore: WorkspaceAppearanceStore
 
     let onStartSession: (AgentProject, WorkspaceSessionRuntimeChoice) -> Void
     let onOpenSession: (AgentSession) -> Void
     let embedsNavigationStack: Bool
+    private let currentDate: () -> Date
 
     @State private var selectedWorkspaceID: String?
     @State private var catalogState: CatalogState = .idle
@@ -68,11 +143,18 @@ struct WorkspaceRootView: View {
     init(
         onStartSession: @escaping (AgentProject, WorkspaceSessionRuntimeChoice) -> Void,
         onOpenSession: @escaping (AgentSession) -> Void = { _ in },
-        embedsNavigationStack: Bool = true
+        embedsNavigationStack: Bool = true,
+        appearanceStore: WorkspaceAppearanceStore? = nil,
+        initialWorkspaceID: String? = nil,
+        currentDate: @escaping () -> Date = Date.init
     ) {
         self.onStartSession = onStartSession
         self.onOpenSession = onOpenSession
         self.embedsNavigationStack = embedsNavigationStack
+        self.currentDate = currentDate
+        _appearanceStore = StateObject(wrappedValue: appearanceStore ?? WorkspaceAppearanceStore())
+        // 正常入口仍由 synchronizeSelection 恢复选择；显式初值只服务于确定性的预览和视觉快照。
+        _selectedWorkspaceID = State(initialValue: initialWorkspaceID)
     }
 
     static func shouldEmbedNavigationStack(usesCompactNavigation: Bool) -> Bool {
@@ -94,12 +176,18 @@ struct WorkspaceRootView: View {
                 navigationContent(tokens: tokens)
             }
         }
-        .task {
+        .task(id: appStore.activeHostScope) {
+            migrateLegacyWorkspaceAppearance()
             synchronizeSelection()
             // 每次进入工作区都做轻量目录同步，同时执行旧版自动候选数据清理；
             // 该请求不改变当前会话和 WebSocket，上层选择保持稳定。
             await refreshCatalog()
             synchronizeSelection()
+        }
+        .onChange(of: appStore.connectionProfiles) { _, _ in
+            // 这里只重试本地偏好迁移，不重新请求目录。删除或修改重复 endpoint 后，
+            // 当前 Profile 一旦成为唯一匹配，就应立即恢复旧版自定义 emoji。
+            migrateLegacyWorkspaceAppearance()
         }
         .task {
             // 两个新建入口先稳定渲染；Claude 通道能力独立在后台刷新，不能让网络往返
@@ -153,6 +241,14 @@ struct WorkspaceRootView: View {
             Text(L10n.text("ui.removing_a_directory_only_removes_it_from_the_workspace"))
         }
         .background(tokens.background.ignoresSafeArea())
+    }
+
+    private func migrateLegacyWorkspaceAppearance() {
+        appearanceStore.migrateLegacyValueIfNeeded(
+            profileID: appStore.activeHostScope.profileID,
+            endpoint: appStore.endpoint,
+            profiles: appStore.connectionProfiles
+        )
     }
 
     private func navigationContent(tokens: ThemeTokens) -> some View {
@@ -289,10 +385,16 @@ struct WorkspaceRootView: View {
                             ForEach(0..<4, id: \.self) { index in
                                 WorkspaceLibraryCard(
                                     project: AgentProject(id: "loading-\(index)", name: L10n.text("ui.loading_workspace"), path: "/Users/you/code/project"),
-                                    sessionCount: 0,
-                                    worktreeCount: 0,
+                                    profileID: appStore.activeHostScope.profileID,
+                                    appearanceStore: appearanceStore,
+                                    gitSummary: nil,
+                                    isGitSummaryLoading: true,
+                                    hasRunningSession: false,
+                                    lastActivityAt: nil,
+                                    currentDate: currentDate,
                                     isUnavailable: false,
                                     isSelected: false,
+                                    allowsCustomization: false,
                                     tokens: tokens,
                                     action: {},
                                     onRemove: {}
@@ -302,12 +404,19 @@ struct WorkspaceRootView: View {
                             }
                         } else {
                             ForEach(sessionStore.sidebarProjects) { project in
+                                let projectSessions = sessionStore.sessions(forProjectID: project.id)
                                 WorkspaceLibraryCard(
                                     project: project,
-                                    sessionCount: sessionStore.sessions(forProjectID: project.id).count,
-                                    worktreeCount: sessionStore.managedWorktrees(rootProjectID: sessionStore.rootProjectID(forProjectID: project.id)).count,
+                                    profileID: appStore.activeHostScope.profileID,
+                                    appearanceStore: appearanceStore,
+                                    gitSummary: sessionStore.workspaceGitSummaryByPath[project.path],
+                                    isGitSummaryLoading: sessionStore.refreshingWorkspaceGitSummaryPaths.contains(project.path),
+                                    hasRunningSession: projectSessions.contains(where: \.isRunning),
+                                    lastActivityAt: workspaceActivityDate(projectID: project.id, sessions: projectSessions),
+                                    currentDate: currentDate,
                                     isUnavailable: sessionStore.isWorkspaceUnavailable(project.id),
                                     isSelected: selectedWorkspaceID == project.id,
+                                    allowsCustomization: true,
                                     tokens: tokens
                                 ) {
                                     // 工作区页面只更新本地浏览选择，避免切换卡片时意外改变当前会话上下文。
@@ -358,6 +467,7 @@ struct WorkspaceRootView: View {
             sessionLoadState: loadState,
             canLoadMoreSessions: sessionStore.canLoadMoreSessions(projectID: project.id),
             claudeChannelAvailable: sessionStore.hasClaudeRuntimeChannel,
+            currentDate: currentDate,
             onRefreshSessions: {
                 Task {
                     await refreshWorkspaceSessions(projectID: project.id)
@@ -380,6 +490,15 @@ struct WorkspaceRootView: View {
             return nil
         }
         return sessionStore.sidebarProjects.first { $0.id == selectedWorkspaceID }
+    }
+
+    private func workspaceActivityDate(projectID: String, sessions: [AgentSession]) -> Date? {
+        let sessionDate = sessions
+            .map { SessionIndexStore.orderingDate(for: $0) }
+            .filter { $0 != .distantPast }
+            .max()
+        return sessionDate
+            ?? sessionStore.recentWorkspaces.first(where: { $0.id == projectID })?.lastOpenedAt
     }
 
     private var emptyWorkspaceTitle: String {
@@ -419,7 +538,7 @@ struct WorkspaceRootView: View {
         sessionStore.forgetWorkspace(project)
     }
 
-    private func refreshCatalog() async {
+    private func refreshCatalog(forceGitSummary: Bool = false) async {
         catalogState = .loading
         do {
             try await sessionStore.refreshWorkspaceCatalog()
@@ -427,6 +546,10 @@ struct WorkspaceRootView: View {
                 return
             }
             catalogState = .loaded
+            await sessionStore.refreshWorkspaceGitSummaries(
+                for: sessionStore.sidebarProjects,
+                force: forceGitSummary
+            )
         } catch is CancellationError {
             return
         } catch {
@@ -435,7 +558,7 @@ struct WorkspaceRootView: View {
     }
 
     private func refreshWorkspaceContent(projectID: String) async {
-        await refreshCatalog()
+        await refreshCatalog(forceGitSummary: true)
         guard !Task.isCancelled,
               selectedWorkspaceID == projectID,
               sessionStore.sidebarProjects.contains(where: { $0.id == projectID })
@@ -508,34 +631,47 @@ private struct WorkspaceActionPressButtonStyle: ButtonStyle {
 
 private struct WorkspaceLibraryCard: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
     let project: AgentProject
-    let sessionCount: Int
-    let worktreeCount: Int
+    let profileID: String
+    @ObservedObject var appearanceStore: WorkspaceAppearanceStore
+    let gitSummary: GitStatusResponse?
+    let isGitSummaryLoading: Bool
+    let hasRunningSession: Bool
+    let lastActivityAt: Date?
+    let currentDate: () -> Date
     let isUnavailable: Bool
     let isSelected: Bool
+    let allowsCustomization: Bool
     let tokens: ThemeTokens
     let action: () -> Void
     let onRemove: () -> Void
+    @State private var isPresentingEmojiPicker = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Button(action: action) {
                 cardContent
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(
-                L10n.format(
-                    "ui.workspace_summary",
-                    project.name,
-                    L10n.plural("ui.sessions_count", count: sessionCount),
-                    L10n.plural("ui.worktrees_count", count: worktreeCount),
-                    isUnavailable ? L10n.text("ui.need_to_retry") : L10n.text("ui.accessible"),
-                    isSelected ? L10n.text("ui.selected_b4f8bea5") : ""
-                )
-            )
+            .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+            .accessibilityLabel(accessibilitySummary)
 
-            if !isSelected {
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
+                    .frame(width: 32, height: 32)
+                    .padding(.top, 10)
+                    .padding(.trailing, 8)
+                    .accessibilityHidden(true)
+            } else {
                 Menu {
+                    Button {
+                        isPresentingEmojiPicker = true
+                    } label: {
+                        Label(L10n.text("ui.workspace_icon"), systemImage: "face.smiling")
+                    }
                     Button(role: .destructive, action: onRemove) {
                         Label(L10n.text("ui.remove_directory"), systemImage: "xmark.circle")
                     }
@@ -551,18 +687,47 @@ private struct WorkspaceLibraryCard: View {
                 .padding(.top, 10)
                 .padding(.trailing, 8)
             }
+
+            if allowsCustomization {
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        Button {
+                            isPresentingEmojiPicker = true
+                        } label: {
+                            Color.clear
+                                .frame(width: 52, height: 52)
+                                .contentShape(WorkspaceIconMeeGoShape())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            L10n.format(
+                                "ui.change_workspace_icon_value",
+                                project.name,
+                                displayedEmoji
+                            )
+                        )
+                        .popover(isPresented: $isPresentingEmojiPicker, arrowEdge: .top) {
+                            WorkspaceEmojiPicker(
+                                project: project,
+                                profileID: profileID,
+                                appearanceStore: appearanceStore,
+                                tokens: tokens
+                            )
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 14)
+                .padding(.leading, 14)
+            }
         }
     }
 
     private var cardContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
-                Image(systemName: isUnavailable ? "folder.badge.questionmark" : "folder.fill")
-                    .font(themeStore.uiFont(size: 22, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(isUnavailable ? tokens.warning : tokens.primaryAction)
-                    .frame(width: 44, height: 44)
-                    .background((isUnavailable ? tokens.warning : tokens.primaryAction).opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                emojiTile
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text(project.name)
@@ -577,70 +742,345 @@ private struct WorkspaceLibraryCard: View {
                 }
 
                 Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 8) {
-                    Group {
-                        if isSelected {
-                            Image(systemName: "checkmark.circle.fill")
-                        } else {
-                            // 右上角的菜单覆盖在同一位置；这里保留布局空间，避免状态文案左右跳动。
-                            Color.clear
-                        }
-                    }
-                    .frame(width: 32, height: 20)
-                    .font(themeStore.uiFont(.caption, weight: .semibold))
-                    .foregroundStyle(tokens.primaryAction)
-
-                    Label(
-                        isUnavailable ? L10n.text("ui.need_to_retry_915015f1") : L10n.text("ui.accessible"),
-                        systemImage: isUnavailable ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
-                    )
-                    .font(themeStore.uiFont(.caption2, weight: .semibold))
-                    .foregroundStyle(isUnavailable ? tokens.warning : tokens.success)
-                    .fixedSize()
-                }
+                Color.clear.frame(width: 28, height: 1)
             }
 
-            HStack(spacing: 8) {
-                metric("\(sessionCount)", title: L10n.text("ui.session"), systemImage: "bubble.left.and.bubble.right")
-                metric("\(worktreeCount)", title: "Worktree", systemImage: "arrow.triangle.branch")
+            Divider()
+                .overlay(
+                    isSelected
+                        ? tokens.primaryText.opacity(0.14)
+                        : tokens.border.opacity(0.56)
+                )
+
+            TimelineView(.periodic(from: .now, by: 60)) { _ in
+                // TimelineView 只负责按分钟触发刷新；时间来源可在视觉测试中固定，
+                // 生产环境默认仍由 Date.init 返回当前时刻。
+                metadataRow(now: currentDate())
             }
         }
         .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
-        .background(isSelected ? tokens.selectionFill : tokens.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: 138, alignment: .topLeading)
+        .background(
+            isSelected ? tokens.workspaceCardSelectionFill : tokens.contentPanelBackground,
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(
-                    isSelected ? tokens.primaryAction : tokens.border.opacity(0.72),
-                    lineWidth: isSelected ? 2 : 1
-                )
+            if !isSelected {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(tokens.border.opacity(0.72), lineWidth: 1)
+            }
         }
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .animation(
+            reduceMotion ? .easeOut(duration: 0.08) : .spring(response: 0.28, dampingFraction: 1),
+            value: isSelected
+        )
     }
 
-    private func metric(_ value: String, title: String, systemImage: String) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 15, weight: .semibold))
-                .foregroundStyle(tokens.primaryAction)
-                .frame(width: 28, height: 28)
-                .background(tokens.primaryAction.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    private var displayedEmoji: String {
+        appearanceStore.emoji(profileID: profileID, projectID: project.id)
+    }
 
-            VStack(alignment: .leading, spacing: 0) {
-                Text(value)
-                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                Text(title)
+    private var emojiTile: some View {
+        let palette: [Color] = [
+            Color(red: 0.91, green: 0.63, blue: 0.48),
+            Color(red: 0.47, green: 0.67, blue: 0.78),
+            Color(red: 0.76, green: 0.64, blue: 0.42),
+            Color(red: 0.88, green: 0.72, blue: 0.34),
+            Color(red: 0.64, green: 0.70, blue: 0.48),
+            Color(red: 0.72, green: 0.53, blue: 0.72)
+        ]
+        let tint = palette[WorkspaceAppearanceStore.tintIndex(for: displayedEmoji, count: palette.count)]
+
+        return Text(displayedEmoji)
+            .font(.system(size: 30))
+            .frame(width: 52, height: 52)
+            .background(
+                tint.opacity(colorScheme == .dark ? 0.30 : 0.18),
+                in: WorkspaceIconMeeGoShape()
+            )
+            .overlay(alignment: .bottomTrailing) {
+                if hasRunningSession {
+                    Circle()
+                        .fill(tokens.primaryAction)
+                        .frame(width: 11, height: 11)
+                        .overlay {
+                            Circle()
+                                .stroke(
+                                    isSelected
+                                        ? tokens.workspaceCardSelectionFill
+                                        : tokens.contentPanelBackground,
+                                    lineWidth: 2
+                                )
+                        }
+                        .offset(x: 1, y: 1)
+                        .accessibilityHidden(true)
+                }
+            }
+            .opacity(isUnavailable ? 0.62 : 1)
+            .accessibilityHidden(true)
+    }
+
+    private func metadataRow(now: Date) -> some View {
+        HStack(spacing: 10) {
+            if let branch = gitBranch {
+                Label(branch, systemImage: "point.3.connected.trianglepath.dotted")
                     .font(themeStore.uiFont(.caption2, weight: .medium))
                     .foregroundStyle(tokens.secondaryText)
                     .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 28)
+                    .background(tokens.elevatedSurface.opacity(0.62), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            } else if isGitSummaryLoading {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(tokens.elevatedSurface.opacity(0.56))
+                    .frame(width: 58, height: 28)
             }
 
-            Spacer(minLength: 0)
+            if let status = cardStatus {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(status.color(tokens: tokens))
+                        .frame(width: 7, height: 7)
+                    Text(status.text)
+                        .lineLimit(1)
+                }
+                .font(themeStore.uiFont(.caption2, weight: .medium))
+                .foregroundStyle(tokens.secondaryText)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+
+            Spacer(minLength: 4)
+
+            if let activity = activityText(now: now) {
+                Text(activity)
+                    .font(themeStore.uiFont(.caption2))
+                    .foregroundStyle(tokens.tertiaryText)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
         }
-        .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .background(tokens.elevatedSurface.opacity(0.56), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+    }
+
+    private var gitBranch: String? {
+        let branch = gitSummary?.branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let branch, !branch.isEmpty {
+            return branch
+        }
+        let head = gitSummary?.head?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let head, !head.isEmpty {
+            return head
+        }
+        return nil
+    }
+
+    private var cardStatus: WorkspaceCardStatus? {
+        if isUnavailable {
+            return WorkspaceCardStatus(text: L10n.text("ui.need_to_retry"), tone: .danger)
+        }
+        guard let gitSummary else {
+            return hasRunningSession
+                ? WorkspaceCardStatus(text: L10n.text("ui.running"), tone: .accent)
+                : nil
+        }
+        guard gitSummary.isRepository else {
+            return WorkspaceCardStatus(text: L10n.text("ui.not_a_git_repository"), tone: .secondary)
+        }
+        if !gitSummary.files.isEmpty {
+            return WorkspaceCardStatus(
+                text: L10n.format("ui.git_changes_count_value", gitSummary.files.count),
+                tone: .warning
+            )
+        }
+
+        let ahead = gitSummary.ahead ?? 0
+        let behind = gitSummary.behind ?? 0
+        if ahead > 0, behind > 0 {
+            return WorkspaceCardStatus(text: L10n.text("ui.git_branch_diverged"), tone: .warning)
+        }
+        if behind > 0 {
+            return WorkspaceCardStatus(text: L10n.format("ui.behind_value", behind), tone: .warning)
+        }
+        if ahead > 0 {
+            return WorkspaceCardStatus(text: L10n.format("ui.leading_value", ahead), tone: .accent)
+        }
+        if gitSummary.upstream?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return WorkspaceCardStatus(text: L10n.text("ui.git_synced"), tone: .success)
+        }
+        return WorkspaceCardStatus(text: L10n.text("ui.clean_work_area"), tone: .success)
+    }
+
+    private func activityText(now: Date) -> String? {
+        guard let lastActivityAt else { return nil }
+        let interval = max(0, now.timeIntervalSince(lastActivityAt))
+        if interval < 5 * 60 {
+            return L10n.text("ui.active_just_now")
+        }
+        if interval < 60 * 60 {
+            return L10n.format("ui.minutes_ago_value", Int(interval / 60))
+        }
+        if interval < 24 * 60 * 60 {
+            return L10n.format("ui.hours_ago_value", Int(interval / 3600))
+        }
+        return L10n.format("ui.days_ago_value", Int(interval / (24 * 3600)))
+    }
+
+    private var accessibilitySummary: String {
+        let statusParts = [
+            hasRunningSession ? L10n.text("ui.running") : nil,
+            cardStatus?.text
+        ].compactMap { $0 }
+        let status = statusParts.isEmpty
+            ? L10n.text("ui.git_status_unknown")
+            : statusParts.joined(separator: ", ")
+        let selected = isSelected ? L10n.text("ui.selected_b4f8bea5") : ""
+        return L10n.format(
+            "ui.workspace_card_summary",
+            project.name,
+            project.path,
+            status,
+            selected
+        )
+    }
+}
+
+private struct WorkspaceCardStatus {
+    enum Tone {
+        case accent
+        case success
+        case warning
+        case danger
+        case secondary
+    }
+
+    let text: String
+    let tone: Tone
+
+    func color(tokens: ThemeTokens) -> Color {
+        switch tone {
+        case .accent:
+            return tokens.accent
+        case .success:
+            return tokens.success
+        case .warning:
+            return tokens.warning
+        case .danger:
+            return tokens.warning
+        case .secondary:
+            return tokens.tertiaryText
+        }
+    }
+}
+
+private struct WorkspaceEmojiPicker: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let project: AgentProject
+    let profileID: String
+    @ObservedObject var appearanceStore: WorkspaceAppearanceStore
+    let tokens: ThemeTokens
+    @State private var customInput = ""
+    @State private var validationMessage: String?
+
+    private let columns = Array(repeating: GridItem(.fixed(44), spacing: 8), count: 6)
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n.text("ui.workspace_icon"))
+                    .font(themeStore.uiFont(.headline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+                Text(project.name)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+            }
+
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                ForEach(WorkspaceAppearanceStore.builtInEmoji, id: \.self) { emoji in
+                    Button {
+                        appearanceStore.setCustomEmoji(emoji, profileID: profileID, projectID: project.id)
+                        dismiss()
+                    } label: {
+                        ZStack(alignment: .topTrailing) {
+                            Text(emoji)
+                                .font(.system(size: 26))
+                                .frame(width: 44, height: 44)
+                                .background(
+                                    tokens.elevatedSurface.opacity(0.68),
+                                    in: WorkspaceIconMeeGoShape()
+                                )
+                            if currentEmoji == emoji {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(themeStore.uiFont(size: 12, weight: .semibold))
+                                    .foregroundStyle(tokens.primaryAction)
+                                    .background(tokens.surface, in: Circle())
+                            }
+                        }
+                    }
+                    .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
+                    .accessibilityLabel(emoji)
+                    .accessibilityAddTraits(currentEmoji == emoji ? .isSelected : [])
+                }
+            }
+
+            Divider()
+                .overlay(tokens.border.opacity(0.6))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.text("ui.custom_emoji"))
+                    .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                    .foregroundStyle(tokens.primaryText)
+
+                HStack(spacing: 8) {
+                    TextField(L10n.text("ui.enter_one_emoji"), text: $customInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 24))
+                        .submitLabel(.done)
+                        .onSubmit(applyCustomEmoji)
+
+                    Button(L10n.text("ui.apply"), action: applyCustomEmoji)
+                        .buttonStyle(.borderedProminent)
+                        .tint(tokens.primaryAction)
+                        .disabled(customInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                if let validationMessage {
+                    Text(validationMessage)
+                        .font(themeStore.uiFont(.caption))
+                        .foregroundStyle(tokens.warning)
+                }
+            }
+
+            Button {
+                appearanceStore.setCustomEmoji(nil, profileID: profileID, projectID: project.id)
+                dismiss()
+            } label: {
+                Label(L10n.text("ui.restore_default_appearance"), systemImage: "arrow.counterclockwise")
+            }
+            .font(themeStore.uiFont(.callout, weight: .medium))
+            .disabled(appearanceStore.customEmoji(profileID: profileID, projectID: project.id) == nil)
+        }
+        .padding(18)
+        .frame(width: 336)
+        .background(tokens.surface)
+        .onAppear {
+            customInput = appearanceStore.customEmoji(profileID: profileID, projectID: project.id) ?? ""
+        }
+    }
+
+    private var currentEmoji: String {
+        appearanceStore.emoji(profileID: profileID, projectID: project.id)
+    }
+
+    private func applyCustomEmoji() {
+        guard let emoji = WorkspaceAppearanceStore.normalizedEmoji(customInput) else {
+            validationMessage = L10n.text("ui.enter_one_valid_emoji")
+            return
+        }
+        appearanceStore.setCustomEmoji(emoji, profileID: profileID, projectID: project.id)
+        dismiss()
     }
 }
 
@@ -656,6 +1096,7 @@ private struct WorkspaceDetailView: View {
     let sessionLoadState: WorkspaceSessionLoadState
     let canLoadMoreSessions: Bool
     let claudeChannelAvailable: Bool
+    let currentDate: () -> Date
     let onRefreshSessions: () -> Void
     let onLoadMoreSessions: () async -> Void
     let onStartSession: (WorkspaceSessionRuntimeChoice) -> Void
@@ -735,12 +1176,9 @@ private struct WorkspaceDetailView: View {
             .padding(.horizontal, 14)
             // 所有快捷入口共用同一个随 Dynamic Type 缩放的高度，视觉和触控面积保持一致。
             .frame(maxWidth: .infinity, minHeight: actionButtonHeight, maxHeight: actionButtonHeight, alignment: .leading)
-            // 快捷入口是立即执行的动作，不是持久选择项；默认统一使用中性背景。
-            .background(tokens.surface, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(tokens.primaryAction.opacity(0.24), lineWidth: 1.2)
-            }
+            // 快捷入口是立即执行的动作；使用与输入面板同层的暖石墨填充，
+            // 在暖黑页面上形成明确但克制的内容层级。
+            .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
         .buttonStyle(WorkspaceActionPressButtonStyle(reduceMotion: reduceMotion))
@@ -803,26 +1241,33 @@ private struct WorkspaceDetailView: View {
                     Button(L10n.text("ui.reload"), action: onRefreshSessions)
                 }
                 .frame(maxWidth: .infinity, minHeight: 150)
-                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else if recentSessions.isEmpty {
                 ContentUnavailableView(L10n.text("ui.no_sessions_yet"), systemImage: "bubble.left.and.bubble.right", description: Text(L10n.text("ui.after_a_new_session_is_created_in_this")))
                     .frame(maxWidth: .infinity, minHeight: 150)
-                    .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             } else {
                 VStack(spacing: 0) {
+                    let firstStaleIndex = WorkspaceSessionAgeBoundary.firstStaleIndex(
+                        in: recentSessions,
+                        now: currentDate()
+                    )
+
                     ForEach(Array(recentSessions.enumerated()), id: \.element.id) { index, session in
+                        if index == firstStaleIndex {
+                            twelveHourBoundary(tokens: tokens)
+                        } else if index > 0 {
+                            Divider()
+                                .overlay(tokens.border.opacity(0.62))
+                                .padding(.leading, 48)
+                        }
+
                         Button {
                             onOpenSession(session)
                         } label: {
                             recentSessionRow(session, tokens: tokens)
                         }
                         .buttonStyle(.plain)
-
-                        if index < recentSessions.count - 1 {
-                            Divider()
-                                .overlay(tokens.border.opacity(0.62))
-                                .padding(.leading, 48)
-                        }
                     }
 
                     if canLoadMoreSessions || isLoadingMoreSessions {
@@ -856,13 +1301,35 @@ private struct WorkspaceDetailView: View {
                         .disabled(isLoadingMoreSessions)
                     }
                 }
-                .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(tokens.border.opacity(0.72), lineWidth: 1)
                 }
             }
         }
+    }
+
+    private func twelveHourBoundary(tokens: ThemeTokens) -> some View {
+        ZStack {
+            // 直接复用普通列表分隔线的位置，只在中间留出文案缺口，
+            // 避免“默认分隔线 + 分组分隔线”叠成两道横线。
+            Rectangle()
+                .fill(tokens.border.opacity(0.62))
+                .frame(height: 0.5)
+
+            Text(L10n.text("ui.twelve_hours_ago"))
+                .font(themeStore.uiFont(.caption2, weight: .medium))
+                .foregroundStyle(tokens.tertiaryText)
+                .padding(.horizontal, 8)
+                .background(tokens.contentPanelBackground)
+                .fixedSize()
+        }
+        .padding(.leading, 48)
+        .padding(.trailing, 14)
+        .padding(.vertical, 7)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(L10n.text("ui.twelve_hours_ago"))
     }
 
     private func recentSessionPlaceholders(tokens: ThemeTokens) -> some View {
@@ -893,7 +1360,7 @@ private struct WorkspaceDetailView: View {
                 }
             }
         }
-        .background(tokens.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(tokens.contentPanelBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(tokens.border.opacity(0.72), lineWidth: 1)
@@ -947,7 +1414,7 @@ private struct WorkspaceDetailView: View {
 
     private func sessionTimeText(for session: AgentSession) -> String {
         guard let date = session.recencyAt ?? session.updatedAt ?? session.createdAt else { return "" }
-        if Calendar.current.isDateInToday(date) {
+        if Calendar.current.isDate(date, inSameDayAs: currentDate()) {
             return Self.sessionTimeFormatter.string(from: date)
         }
         return Self.sessionDateFormatter.string(from: date)

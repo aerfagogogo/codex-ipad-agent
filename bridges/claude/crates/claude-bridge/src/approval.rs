@@ -426,6 +426,7 @@ struct ServerRequestResult {
 struct PendingRequestGuard {
     state: Arc<ConnectionState>,
     request_id: RequestId,
+    thread_id: Option<String>,
     armed: bool,
 }
 
@@ -436,10 +437,18 @@ impl Drop for PendingRequestGuard {
         }
         let state = Arc::clone(&self.state);
         let request_id = self.request_id.clone();
+        let thread_id = self.thread_id.clone();
         tokio::spawn(async move {
-            let _ = state
+            let resolved = state
                 .resolve_pending_request(&request_id, Err(ServerRequestError::ConnectionClosed))
                 .await;
+            // Claude 取消权限请求时，对应 future 会直接被 abort。除了清理
+            // session pending 槽位，还必须通知 App 关闭已经显示的审批卡片。
+            if resolved {
+                if let Some(thread_id) = thread_id {
+                    emit_resolved(&state, &thread_id, request_id);
+                }
+            }
         });
     }
 }
@@ -457,24 +466,29 @@ async fn send_server_request(
     // set deterministically across iroh disconnects.
     let req_id_str = state.session().next_request_id();
     let req_id = RequestId::String(req_id_str);
-    let rx = state
-        .register_pending_request(req_id.clone(), method.to_string(), params.clone())
-        .await;
-    let mut guard = PendingRequestGuard {
-        state: Arc::clone(state),
-        request_id: req_id.clone(),
-        armed: true,
-    };
-
+    let thread_id = params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let frame = JsonRpcMessage::Request(JsonRpcRequest {
         jsonrpc: JsonRpcVersion,
         id: req_id.clone(),
         method: method.to_string(),
-        params: Some(params),
+        params: Some(params.clone()),
     });
-    state
-        .send(frame)
+    // Becoming outstanding and reaching the wire must be one step: a reattach
+    // landing between them would show the client both the replay snapshot and
+    // the live request.
+    let rx = state
+        .publish_server_request(req_id.clone(), method.to_string(), params, frame)
+        .await
         .map_err(|_| ApprovalError::ConnectionClosed)?;
+    let mut guard = PendingRequestGuard {
+        state: Arc::clone(state),
+        request_id: req_id.clone(),
+        thread_id,
+        armed: true,
+    };
 
     let result = if let Some(deadline) = timeout {
         match tokio::time::timeout(deadline, rx).await {

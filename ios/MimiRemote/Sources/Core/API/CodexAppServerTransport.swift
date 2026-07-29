@@ -1,10 +1,18 @@
 import Foundation
 
+enum TurnSendOutcome: Equatable {
+    case accepted(turnID: TurnID?)
+    case activeTurnConflict(activeTurnID: TurnID, message: String)
+    case rejected(message: String)
+    case uncertain(message: String)
+}
+
 protocol SessionWebSocketClient: AnyObject {
     var onEvent: (@MainActor (AgentEvent) -> Void)? { get set }
     var onStatus: ((WebSocketStatus) -> Void)? { get set }
     var onSendAccepted: ((ClientMessageID?) -> Void)? { get set }
     var onSendFailure: ((ClientMessageID?, String) -> Void)? { get set }
+    var onTurnSendOutcome: ((ClientMessageID?, TurnSendOutcome) -> Void)? { get set }
     var onApprovalDecisionFailure: ((String, String) -> Void)? { get set }
     var onUserInputResponseFailure: ((String, String) -> Void)? { get set }
     var onControlFailure: ((String) -> Void)? { get set }
@@ -18,12 +26,15 @@ protocol SessionWebSocketClient: AnyObject {
     func sendCtrlC() -> Bool
     func sendApprovalDecision(approvalID: String, decision: String, message: String?) -> Bool
     func sendUserInputResponse(requestID: String, answers: [String: [String]]) -> Bool
+    func acknowledgeAppliedEvent(_ event: AgentEvent)
 }
 
 extension SessionWebSocketClient {
     func connect(sessionID: SessionID, replayBufferedEvents: Bool) {
         connect(sessionID: sessionID)
     }
+
+    func acknowledgeAppliedEvent(_ event: AgentEvent) {}
 }
 
 enum WebSocketMessageLimits {
@@ -218,7 +229,15 @@ actor CodexAppServerConnection {
         isConnected = false
         isInitialized = false
         failAllPending(with: CodexAppServerConnectionError.disconnected)
-        try await transport.connect(url: url, token: token)
+        do {
+            try await transport.connect(url: url, token: token)
+            // connect() 是 actor 的可重入点：候选切换可能在这里先执行 disconnect()。
+            // 必须在恢复后检查原任务取消态，避免已关闭的 candidate 又继续 initialize。
+            try Task.checkCancellation()
+        } catch {
+            await transport.close()
+            throw error
+        }
         isConnected = true
         isInitialized = false
         receiveTask = Task { [weak self] in

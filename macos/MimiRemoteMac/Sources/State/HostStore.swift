@@ -14,6 +14,8 @@ final class HostStore {
     private(set) var recentLogs: [String] = []
     private(set) var appliedFixes: [String] = []
     private(set) var isBusy = false
+    private(set) var isStoppingForQuit = false
+    private(set) var isRefreshingStatus = false
     private(set) var homebrewLoaded = false
     private(set) var launchesAtLogin = false
     var lastError: String?
@@ -27,21 +29,29 @@ final class HostStore {
     private let homebrew: HomebrewServiceClient
     private let health: HealthClient
     private let logs: AgentLogClient
+    private let terminateApplication: @MainActor () -> Void
     private var didBootstrap = false
     private var monitorTask: Task<Void, Never>?
+    private var runtimeStatusFollowUpTask: Task<Void, Never>?
+    private var stopServiceAndQuitTask: Task<Void, Never>?
+    private var lastStatusRefreshAt: Date?
 
     init(
         agent: AgentCommandClient,
         services: ServiceManagementClient,
         homebrew: HomebrewServiceClient,
         health: HealthClient,
-        logs: AgentLogClient
+        logs: AgentLogClient,
+        terminateApplication: @escaping @MainActor () -> Void = {
+            NSApplication.shared.terminate(nil)
+        }
     ) {
         self.agent = agent
         self.services = services
         self.homebrew = homebrew
         self.health = health
         self.logs = logs
+        self.terminateApplication = terminateApplication
     }
 
     static func live() -> HostStore {
@@ -75,6 +85,11 @@ final class HostStore {
         } else {
             await startMacAgentIfNeeded()
         }
+        if owner == .macApp, runtimeStatusNeedsFollowUp {
+            // App 启动时就把服务端占位快照追到可展示结果，用户第一次展开
+            // 菜单时通常直接命中 Store，而不是从那一刻才开始 Provider 探测。
+            scheduleRuntimeStatusFollowUp()
+        }
         startMonitoring()
     }
 
@@ -96,9 +111,8 @@ final class HostStore {
             pairing = nextPairing
             pairingNetwork = nextPairing.network
             await enableLoginLaunchBestEffort()
-            try services.registerAgent()
             owner = .macApp
-            try await waitForMacAgentReady()
+            try await registerMacAgentAndWaitForReady()
         } catch {
             fail(error)
         }
@@ -127,9 +141,8 @@ final class HostStore {
             try await prepareAutomaticNetworkBeforeServiceStart()
             try await homebrew.stop()
             homebrewLoaded = false
-            try services.registerAgent()
             owner = .macApp
-            try await waitForMacAgentReady()
+            try await registerMacAgentAndWaitForReady()
         } catch {
             let takeoverError = error
             await rollbackAfterFailedTakeover(oldAgent: oldAgent, cause: takeoverError)
@@ -157,7 +170,7 @@ final class HostStore {
         lastError = nil
         defer { isBusy = false }
         do {
-            try await services.unregisterAgent()
+            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
             try await homebrew.start()
             try await waitForHomebrewReady(binary: oldAgent)
             homebrewLoaded = true
@@ -169,7 +182,9 @@ final class HostStore {
     }
 
     func refresh() async {
-        guard !isBusy else { return }
+        guard !isBusy, !isRefreshingStatus else { return }
+        isRefreshingStatus = true
+        defer { isRefreshingStatus = false }
         switch owner {
         case .homebrew:
             await refreshHomebrewStatus()
@@ -187,6 +202,25 @@ final class HostStore {
                 await startMacAgentIfNeeded()
             }
         }
+        if owner == .macApp, runtimeStatusNeedsFollowUp {
+            scheduleRuntimeStatusFollowUp()
+        }
+    }
+
+    /// MenuBarExtra 每次展开都会重建内容视图。短时间重复打开直接复用 Store
+    /// 中的状态，避免为同一份服务状态反复启动 agentd 子进程。
+    func refreshIfNeeded() async {
+        guard lifecycle != .loading, lifecycle != .starting else { return }
+        if let lastStatusRefreshAt,
+           Date().timeIntervalSince(lastStatusRefreshAt) < 30,
+           owner != .macApp || status?.runtimeStatus != nil
+        {
+            if owner == .macApp, runtimeStatusNeedsFollowUp {
+                scheduleRuntimeStatusFollowUp()
+            }
+            return
+        }
+        await refresh()
     }
 
     func refreshPairing(network: PairingNetwork? = nil) async {
@@ -320,26 +354,33 @@ final class HostStore {
         lastError = nil
         defer { isBusy = false }
         do {
-            try await services.unregisterAgent()
-            // SMAppService.unregister() 返回时，launchd 的注册状态仍可能短暂保持 enabled。
-            // 必须等状态真正落到未注册后再注册，否则第一次重启可能只完成停止。
-            try await waitForMacAgentUnregistered()
-            try services.registerAgent()
-            try await waitForMacAgentReady()
+            try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+            try await registerMacAgentAndWaitForReady()
         } catch {
             fail(error)
         }
     }
 
-    /// 用户明确选择退出时才停止服务；停止失败则保留 App，避免制造错误的“已经断开”认知。
-    func stopServiceAndQuit() async {
-        guard !isBusy else { return }
+    /// 菜单栏弹窗关闭后对应 View 可能立即销毁，因此停止任务必须由长生命周期的 Store 持有。
+    /// 这个同步入口还会立即更新 UI，让用户明确知道点击已经生效。
+    func requestStopServiceAndQuit() {
+        guard !isBusy, stopServiceAndQuitTask == nil else { return }
         isBusy = true
+        isStoppingForQuit = true
         lastError = nil
+        stopServiceAndQuitTask = Task { [weak self] in
+            await self?.performStopServiceAndQuit()
+        }
+    }
+
+    /// 用户明确选择退出时才停止服务；停止失败则保留 App，避免制造错误的“已经断开”认知。
+    private func performStopServiceAndQuit() async {
         do {
             switch owner {
             case .macApp:
-                try await services.unregisterAgent()
+                // App 退出前确认 LaunchAgent 已注销且 HTTP listener 已关闭；
+                // agentd 的 shutdown 会在这段时间同步回收 resident Claude bridge。
+                try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
             case .homebrew:
                 try await homebrew.stop()
             case .none:
@@ -347,9 +388,11 @@ final class HostStore {
             }
             owner = .none
             lifecycle = .stopped
-            NSApplication.shared.terminate(nil)
+            terminateApplication()
         } catch {
             isBusy = false
+            isStoppingForQuit = false
+            stopServiceAndQuitTask = nil
             fail(error)
         }
     }
@@ -358,14 +401,36 @@ final class HostStore {
         switch services.agentStatus() {
         case .enabled:
             owner = .macApp
-            await refreshMacAgentStatus()
+            do {
+                if !services.isAgentRegistrationCurrent() {
+                    // Apple 要求 LaunchAgent 的 plist 或可执行文件更新后重新注册。
+                    // 先于状态命令处理，才能修复旧签名约束在进程启动前直接 SIGKILL 的升级。
+                    lifecycle = .starting
+                    try await unregisterMacAgentAndWait(endpoint: status?.endpoint)
+                    try await registerMacAgentAndWaitForReady()
+                    return
+                }
+                let current = try await agent.status()
+                status = current
+                doctor = current.doctor
+                if current.hasAgentVersionMismatch {
+                    // 覆盖安装不会自动替换 launchd 已映射的旧二进制。只在 App
+                    // 启动阶段发现明确版本漂移时做一次受控换代，避免长期半更新。
+                    lifecycle = .starting
+                    try await unregisterMacAgentAndWait(endpoint: current.endpoint)
+                    try await registerMacAgentAndWaitForReady()
+                } else {
+                    apply(current)
+                }
+            } catch {
+                fail(error)
+            }
         case .notRegistered:
             lifecycle = .starting
             do {
                 try await prepareAutomaticNetworkBeforeServiceStart()
-                try services.registerAgent()
                 owner = .macApp
-                try await waitForMacAgentReady()
+                try await registerMacAgentAndWaitForReady()
             } catch {
                 fail(error)
             }
@@ -393,6 +458,13 @@ final class HostStore {
         throw AgentClientError.commandFailed(detail)
     }
 
+    private func registerMacAgentAndWaitForReady() async throws {
+        try services.registerAgent()
+        try await waitForMacAgentReady()
+        // 只有新登记的进程真正通过就绪检查后才记账；失败时下次启动仍会重试迁移。
+        services.markAgentRegistrationCurrent()
+    }
+
     private func waitForMacAgentUnregistered() async throws {
         for attempt in 0..<40 {
             try Task.checkCancellation()
@@ -412,6 +484,29 @@ final class HostStore {
             }
         }
         throw ServiceLifecycleError.unregisterTimedOut
+    }
+
+    private func unregisterMacAgentAndWait(endpoint: String?) async throws {
+        try await services.unregisterAgent()
+        // SMAppService.unregister() 返回时，launchd 的注册状态仍可能短暂保持 enabled。
+        // 先等状态落到未注册，再确认旧 listener 消失，防止新注册误连到旧进程。
+        try await waitForMacAgentUnregistered()
+        if let endpoint {
+            try await waitForMacAgentStopped(endpoint: endpoint)
+        }
+    }
+
+    private func waitForMacAgentStopped(endpoint: String) async throws {
+        for attempt in 0..<30 {
+            try Task.checkCancellation()
+            if !(await health.check(endpoint)) {
+                return
+            }
+            if attempt < 29 {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        throw ServiceLifecycleError.stopTimedOut
     }
 
     private func waitForHomebrewReady(binary: URL) async throws {
@@ -438,6 +533,8 @@ final class HostStore {
         case .enabled:
             do {
                 apply(try await agent.status())
+            } catch is CancellationError {
+                return
             } catch {
                 fail(error)
             }
@@ -459,11 +556,14 @@ final class HostStore {
             let current = try await agent.statusAt(binary)
             status = current
             doctor = current.doctor
+            lastStatusRefreshAt = Date()
             if !current.serviceOK {
                 lifecycle = .degraded(current.serviceError ?? "Homebrew 服务尚未就绪。")
             } else {
                 lifecycle = .migrationRequired
             }
+        } catch is CancellationError {
+            return
         } catch {
             fail(error)
         }
@@ -491,9 +591,8 @@ final class HostStore {
             try? await homebrew.stop()
         }
         do {
-            try services.registerAgent()
             owner = .macApp
-            try await waitForMacAgentReady()
+            try await registerMacAgentAndWaitForReady()
             homebrewLoaded = false
             lastError = "恢复 Homebrew 失败，已继续使用 App 服务：\(cause.localizedDescription)"
         } catch {
@@ -504,15 +603,54 @@ final class HostStore {
     }
 
     private func apply(_ current: AgentStatus) {
-        status = current
-        doctor = current.doctor
-        if current.serviceOK {
+        let resolved = preservingRuntimeSnapshotIfNeeded(in: current)
+        status = resolved
+        doctor = resolved.doctor
+        lastStatusRefreshAt = Date()
+        if resolved.serviceOK {
             lifecycle = .ready
-        } else if current.processOK {
-            lifecycle = .degraded(current.serviceError ?? firstBlockingIssue(in: current.doctor))
+        } else if resolved.processOK {
+            lifecycle = .degraded(
+                resolved.serviceError ?? firstBlockingIssue(in: resolved.doctor)
+            )
         } else {
             lifecycle = .stopped
         }
+    }
+
+    private func preservingRuntimeSnapshotIfNeeded(in current: AgentStatus) -> AgentStatus {
+        guard current.runtimeStatus == nil,
+              current.serviceOK,
+              let previousStatus = status,
+              previousStatus.endpoint == current.endpoint,
+              previousStatus.serverVersion == current.serverVersion,
+              let previousSnapshot = previousStatus.runtimeStatus
+        else {
+            return current
+        }
+        // status CLI 会并行读取 readyz 与 runtime endpoint。后者偶发超时时，
+        // 核心服务状态仍然有效；保留并显式标旧上次快照，避免运行时整块闪空。
+        let staleSnapshot = AgentRuntimeStatusSnapshot(
+            checkedAt: previousSnapshot.checkedAt,
+            runtimes: previousSnapshot.runtimes,
+            refreshing: previousSnapshot.refreshing,
+            stale: true
+        )
+        return AgentStatus(
+            processOK: current.processOK,
+            serviceOK: current.serviceOK,
+            processError: current.processError,
+            serviceError: current.serviceError,
+            version: current.version,
+            serverVersion: current.serverVersion,
+            endpoint: current.endpoint,
+            configPath: current.configPath,
+            projects: current.projects,
+            doctorOK: current.doctorOK,
+            doctor: current.doctor,
+            pairExpires: current.pairExpires,
+            runtimeStatus: staleSnapshot
+        )
     }
 
     private func firstBlockingIssue(in results: AgentDoctorResults) -> String {
@@ -555,6 +693,72 @@ final class HostStore {
         }
     }
 
+    private func scheduleRuntimeStatusFollowUp() {
+        guard runtimeStatusFollowUpTask == nil else { return }
+        runtimeStatusFollowUpTask = Task { [weak self] in
+            guard let self else { return }
+            defer { runtimeStatusFollowUpTask = nil }
+            // Provider 冷启动可能涉及 bridge 启动、OAuth 刷新和网络查询。
+            // 菜单先展示缓存/refreshing，再在后台有界轮询，不能重新阻塞 readiness。
+            // 首次 unavailable/额度刷新还会在服务端 15 秒失败 TTL 后重试一次；
+            // 16 轮足够覆盖两次 9 秒 provider 预算，同时避免永久轮询。
+            var didRetryUnavailable = false
+            for _ in 0..<16 {
+                let delay: Duration
+                if isRefreshingStatus {
+                    delay = .seconds(2)
+                } else if let nextDelay = Self.runtimeStatusFollowUpDelay(
+                    snapshot: status?.runtimeStatus,
+                    didRetryUnavailable: didRetryUnavailable
+                ) {
+                    delay = nextDelay
+                } else {
+                    return
+                }
+                do {
+                    try await Task.sleep(for: delay)
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, owner == .macApp, !isBusy else { return }
+                guard !isRefreshingStatus else { continue }
+
+                guard Self.runtimeStatusFollowUpDelay(
+                    snapshot: status?.runtimeStatus,
+                    didRetryUnavailable: didRetryUnavailable
+                ) != nil else {
+                    return
+                }
+                if status?.runtimeStatus?.refreshing != true,
+                   status?.runtimeStatus?.hasRetryableFailure == true
+                {
+                    didRetryUnavailable = true
+                }
+                isRefreshingStatus = true
+                await refreshMacAgentStatus()
+                isRefreshingStatus = false
+            }
+        }
+    }
+
+    private var runtimeStatusNeedsFollowUp: Bool {
+        status?.runtimeStatus?.refreshing == true
+            || status?.runtimeStatus?.hasRetryableFailure == true
+    }
+
+    nonisolated static func runtimeStatusFollowUpDelay(
+        snapshot: AgentRuntimeStatusSnapshot?,
+        didRetryUnavailable: Bool
+    ) -> Duration? {
+        if snapshot?.refreshing == true {
+            return .seconds(2)
+        }
+        if !didRetryUnavailable, snapshot?.hasRetryableFailure == true {
+            return .seconds(15)
+        }
+        return nil
+    }
+
     private func fail(_ error: Error) {
         lastError = error.localizedDescription
         lifecycle = .failed(error.localizedDescription)
@@ -563,19 +767,93 @@ final class HostStore {
 #if DEBUG
     static func preview(_ lifecycle: HostLifecycleState) -> HostStore {
         let check = AgentCheck(name: "codex", ok: true, level: "", message: "Codex CLI 可执行", fix: nil)
-        let doctor = AgentDoctorResults(ok: true, version: "0.1.0", listen: "100.64.0.8:8787", checks: [check])
+        let doctor = AgentDoctorResults(ok: true, version: "0.1.0", listen: "mimi-demo.local:8787", checks: [check])
         let status = AgentStatus(
             processOK: true,
             serviceOK: true,
             processError: nil,
             serviceError: nil,
-            version: "0.1.0",
-            endpoint: "http://100.64.0.8:8787",
+            version: "0.1.0+mac.240",
+            serverVersion: "0.1.0+mac.240",
+            endpoint: "http://mimi-demo.local:8787",
             configPath: "~/Library/Application Support/mimi-remote/config.json",
             projects: 12,
             doctorOK: true,
             doctor: doctor,
-            pairExpires: nil
+            pairExpires: nil,
+            runtimeStatus: AgentRuntimeStatusSnapshot(
+                checkedAt: ISO8601DateFormatter().string(from: Date()),
+                runtimes: [
+                    AgentRuntimeStatus(
+                        id: "codex",
+                        title: "Codex",
+                        enabled: true,
+                        state: .connected,
+                        version: "0.146.0-alpha.3.1",
+                        startedAt: ISO8601DateFormatter().string(
+                            from: Date().addingTimeInterval(-49 * 60 * 60)
+                        ),
+                        authMode: "chatgpt",
+                        planType: "plus",
+                        reason: nil,
+                        rateLimits: AgentRuntimeRateLimits(
+                            limitID: "codex",
+                            limitName: "Codex",
+                            planType: "plus",
+                            reachedType: nil,
+                            availability: "available",
+                            unavailableReason: nil,
+                            primary: AgentRuntimeRateLimitWindow(
+                                usedPercent: 62,
+                                windowDurationMins: 300,
+                                resetsAt: Int64(Date().addingTimeInterval(80 * 60).timeIntervalSince1970)
+                            ),
+                            secondary: AgentRuntimeRateLimitWindow(
+                                usedPercent: 31,
+                                windowDurationMins: 10_080,
+                                resetsAt: Int64(Date().addingTimeInterval(4 * 24 * 60 * 60).timeIntervalSince1970)
+                            ),
+                            hasCredits: true,
+                            creditsUnlimited: false,
+                            creditBalance: "12.34"
+                        )
+                    ),
+                    AgentRuntimeStatus(
+                        id: "claude",
+                        title: "Claude",
+                        enabled: true,
+                        state: .connected,
+                        version: "0.2.6",
+                        startedAt: ISO8601DateFormatter().string(
+                            from: Date().addingTimeInterval(-7.5 * 60 * 60)
+                        ),
+                        authMode: "oauth",
+                        planType: "pro",
+                        reason: nil,
+                        rateLimits: AgentRuntimeRateLimits(
+                            limitID: "claude",
+                            limitName: "Claude",
+                            planType: "pro",
+                            reachedType: nil,
+                            availability: "available",
+                            unavailableReason: nil,
+                            primary: AgentRuntimeRateLimitWindow(
+                                usedPercent: 24,
+                                windowDurationMins: 300,
+                                resetsAt: Int64(Date().addingTimeInterval(3 * 60 * 60).timeIntervalSince1970)
+                            ),
+                            secondary: AgentRuntimeRateLimitWindow(
+                                usedPercent: 48,
+                                windowDurationMins: 10_080,
+                                resetsAt: Int64(Date().addingTimeInterval(5 * 24 * 60 * 60).timeIntervalSince1970)
+                            ),
+                            hasCredits: nil,
+                            creditsUnlimited: nil,
+                            creditBalance: nil
+                        )
+                    ),
+                ]
+            )
         )
         let agent = AgentCommandClient(
             configExists: { lifecycle != .notConfigured },
@@ -602,7 +880,11 @@ final class HostStore {
             version: { status.version }
         )
         let services = ServiceManagementClient(
-            agentStatus: { .enabled }, registerAgent: {}, unregisterAgent: {},
+            agentStatus: { .enabled },
+            isAgentRegistrationCurrent: { true },
+            markAgentRegistrationCurrent: {},
+            registerAgent: {},
+            unregisterAgent: {},
             mainAppStatus: { .enabled }, registerMainApp: {}, unregisterMainApp: {},
             openLoginItemsSettings: {}
         )
@@ -630,6 +912,7 @@ final class HostStore {
 
 private enum ServiceLifecycleError: LocalizedError {
     case unregisterTimedOut
+    case stopTimedOut
     case requiresApproval
     case agentNotFound
 
@@ -637,6 +920,8 @@ private enum ServiceLifecycleError: LocalizedError {
         switch self {
         case .unregisterTimedOut:
             "服务停止超时，未继续启动；请稍后重试。"
+        case .stopTimedOut:
+            "旧服务仍占用当前 Endpoint，未继续启动新版本；请稍后重试。"
         case .requiresApproval:
             "请先在系统设置的登录项中允许 Mimi Remote Mac。"
         case .agentNotFound:

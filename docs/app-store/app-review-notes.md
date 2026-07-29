@@ -4,12 +4,14 @@ Mimi Remote is a native developer-tool client for a computer owned by, or explic
 
 The iOS app does not execute downloaded code, provide arbitrary shell access, provide AI models or subscriptions, operate a VPN, relay traffic, or host project data. Code execution occurs only on the configured host. The developer does not operate a service that receives prompts, source code, credentials, or model-provider traffic.
 
+The GitHub link on the Connection screen points to this project's public Release page and a free, signed and notarized macOS companion app. The iOS app only opens or shares the URL. It does not download, install, or execute the macOS binary on iOS, and no purchase or subscription is offered. App Review can use the manual Endpoint below without installing the macOS companion app.
+
 ## Resolution of the previous China mainland issue
 
 - Public App Store metadata and screenshots contain no ChatGPT or OpenAI names, logos, or claims of affiliation.
 - Runtime choices use their recognizable product icons only to identify the compatible host-side CLI selected by the user. Mimi Remote does not claim affiliation with or endorsement by those providers.
 - The iOS app has no ChatGPT/OpenAI sign-in, API-key field, model subscription, hosted model endpoint, or purchase flow.
-- Voice input uses only on-device transcription. Recordings are not sent to a model-provider transcription endpoint.
+- Voice input defaults to Codex transcription, which sends a recording directly to the user's configured host and uses their own host-side Codex session. Users may instead select live on-device transcription; the Mimi Remote developer never receives recordings in either mode.
 - Compatible command-line developer runtimes are installed, configured, and authenticated by the user on the host computer. Mimi Remote does not provide or resell access to those tools.
 
 ## Review credentials
@@ -44,7 +46,7 @@ Please use manual connection instead of QR pairing because normal QR tickets are
 
 ## Permissions
 
-- Camera: scanning a pairing QR code.
+- Camera: scanning a pairing QR code, or taking a photo the user explicitly chooses to attach to a message. Captured photos are not saved to the photo library.
 - Microphone and speech recognition: optional user-initiated dictation.
 - Local network: connecting to a user-configured host.
 

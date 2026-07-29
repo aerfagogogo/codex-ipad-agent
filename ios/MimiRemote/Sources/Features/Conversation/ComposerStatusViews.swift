@@ -104,6 +104,8 @@ struct QueuedTurnEditorSheet: View {
         switch item {
         case .image, .localImage:
             return "photo"
+        case .uploadedFile:
+            return "doc"
         case .skill:
             return "wand.and.stars"
         case .mention:
@@ -246,9 +248,53 @@ extension QueuedTurnEntry {
     }
 }
 
+enum ComposerStatusTrayMaterialStrength: Equatable {
+    case opaque
+    case thin
+    case regular
+}
+
+struct ComposerStatusTraySurfaceStyle: Equatable {
+    let materialStrength: ComposerStatusTrayMaterialStrength
+    let surfaceTintOpacity: Double
+    let borderOpacity: Double
+
+    static func resolve(
+        isExpanded: Bool,
+        scheme: ThemeResolvedScheme,
+        reduceTransparency: Bool
+    ) -> Self {
+        guard !reduceTransparency else {
+            return Self(
+                materialStrength: .opaque,
+                surfaceTintOpacity: 1,
+                borderOpacity: 0.58
+            )
+        }
+
+        // 状态栏与输入卡使用同一层功能材质；展开时只增加模糊厚度保证长内容可读，
+        // 不再靠阴影、彩色双描边或多层高光制造实体卡片感。
+        let surfaceTintOpacity: Double
+        switch scheme {
+        case .light:
+            surfaceTintOpacity = 0.58
+        case .dark:
+            surfaceTintOpacity = 0.46
+        }
+
+        return Self(
+            materialStrength: isExpanded ? .regular : .thin,
+            surfaceTintOpacity: surfaceTintOpacity,
+            borderOpacity: 0.58
+        )
+    }
+}
+
 struct ComposerStatusTray: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     let sessionControlNotice: String?
     let quotaNotice: CodexQuotaNotice?
@@ -258,6 +304,7 @@ struct ComposerStatusTray: View {
     let isGoalUpdating: Bool
     let goalErrorMessage: String?
     let isRefreshDisabled: Bool
+    let allowsTakeOver: Bool
     let onTakeOver: () -> Void
     let onRefreshUsage: () -> Void
     let onEditGoal: () -> Void
@@ -268,7 +315,8 @@ struct ComposerStatusTray: View {
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let tint = trayTint(tokens: tokens)
+        let surfaceStyle = surfaceStyle(tokens: tokens)
+        let shape = RoundedRectangle(cornerRadius: 20, style: .continuous)
 
         VStack(alignment: .leading, spacing: isGoalExpanded ? 8 : 0) {
             // 展开态把状态内容和收起按钮放到同一行，避免先出现一整行空白按钮区。
@@ -292,10 +340,11 @@ struct ComposerStatusTray: View {
         // 状态栏和输入卡共用同一条 composer 轨道；展开后也不要另设宽度上限，
         // 否则 iPad 宽屏下会出现上窄下宽、左右边界不一致的视觉断层。
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background {
+            traySurface(shape: shape, tokens: tokens, surfaceStyle: surfaceStyle)
+        }
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(tint.opacity(0.28))
+            shape.strokeBorder(tokens.border.opacity(surfaceStyle.borderOpacity), lineWidth: 0.75)
         }
         .accessibilityElement(children: .contain)
     }
@@ -377,20 +426,22 @@ struct ComposerStatusTray: View {
     private func collapsedChip(title: String, systemImage: String, tint: Color, tokens: ThemeTokens) -> some View {
         HStack(spacing: 6) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
+                .font(themeStore.uiFont(size: 16, weight: .semibold))
                 .foregroundStyle(tint)
             Text(title)
                 .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 6)
-        .background(tokens.surface.opacity(0.74), in: Capsule())
-        .overlay {
-            Capsule()
-                .strokeBorder(tint.opacity(0.18))
-        }
+        .frame(height: 44)
+        .padding(.horizontal, 12)
+        .modifier(
+            ComposerFlatControlSurface(
+                tokens: tokens,
+                cornerRadius: 12,
+                isEmphasized: false
+            )
+        )
         .accessibilityElement(children: .combine)
     }
 
@@ -419,20 +470,22 @@ struct ComposerStatusTray: View {
     }
 
     private func observingSegment(_ notice: String, tokens: ThemeTokens) -> some View {
-        traySegment(tokens: tokens, tint: tokens.secondaryText, minWidth: 132) {
+        traySegment(tokens: tokens, minWidth: 132) {
             HStack(spacing: 7) {
                 segmentIcon("eye", tint: tokens.secondaryText)
                 Text(L10n.text("ui.just_observe"))
                     .font(themeStore.uiFont(.caption, weight: .semibold))
                     .foregroundStyle(tokens.primaryText)
                     .lineLimit(1)
-                Button(action: onTakeOver) {
-                    Text(L10n.text("ui.take_over"))
+                if allowsTakeOver {
+                    Button(action: onTakeOver) {
+                        Text(L10n.text("ui.take_over"))
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .font(themeStore.uiFont(.caption, weight: .semibold))
+                    .foregroundStyle(tokens.accent)
                 }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .font(themeStore.uiFont(.caption, weight: .semibold))
-                .foregroundStyle(tokens.accent)
             }
             .accessibilityElement(children: .combine)
             .accessibilityHint(notice)
@@ -440,7 +493,7 @@ struct ComposerStatusTray: View {
     }
 
     private func quotaSegment(_ notice: CodexQuotaNotice, tokens: ThemeTokens) -> some View {
-        traySegment(tokens: tokens, tint: tokens.warning, minWidth: 230, layoutPriority: 1) {
+        traySegment(tokens: tokens, minWidth: 230, layoutPriority: 1) {
             HStack(spacing: 8) {
                 segmentIcon("speedometer", tint: tokens.warning)
                 Text(notice.blocksSending ? L10n.text("ui.quota_has_been_exhausted") : notice.title)
@@ -460,7 +513,7 @@ struct ComposerStatusTray: View {
     }
 
     private func usageSegment(_ usage: CodexUsageDisplaySummary, tokens: ThemeTokens) -> some View {
-        traySegment(tokens: tokens, tint: tokens.warning, minWidth: 250, layoutPriority: 1) {
+        traySegment(tokens: tokens, minWidth: 250, layoutPriority: 1) {
             HStack(spacing: 8) {
                 segmentIcon("speedometer", tint: tokens.warning)
                 Text(L10n.format("ui.quota_value", usage.primaryText))
@@ -486,6 +539,13 @@ struct ComposerStatusTray: View {
                 .font(themeStore.uiFont(.caption, weight: .semibold))
                 .foregroundStyle(tokens.primaryText)
                 .lineLimit(3)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    tokens.background,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
 
             if let progress = goal.budgetProgressFraction {
                 ProgressView(value: progress)
@@ -541,29 +601,25 @@ struct ComposerStatusTray: View {
 
     private func traySegment<Content: View>(
         tokens: ThemeTokens,
-        tint: Color,
         minWidth: CGFloat? = nil,
         layoutPriority: Double = 0,
         @ViewBuilder _ content: () -> Content
     ) -> some View {
         content()
             .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(minWidth: minWidth, minHeight: 38)
-            .background(tokens.surface.opacity(0.74), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(tint.opacity(0.18))
-            }
+            .frame(minWidth: minWidth, minHeight: 44)
+            .background(
+                tokens.background,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
             .layoutPriority(layoutPriority)
     }
 
     private func segmentIcon(_ systemImage: String, tint: Color) -> some View {
         Image(systemName: systemImage)
-            .font(themeStore.uiFont(.caption, weight: .semibold))
+            .font(themeStore.uiFont(size: 16, weight: .semibold))
             .foregroundStyle(tint)
             .frame(width: 24, height: 24)
-            .background(tint.opacity(0.12), in: Circle())
             .accessibilityHidden(true)
     }
 
@@ -571,9 +627,9 @@ struct ComposerStatusTray: View {
         Button(action: onRefreshUsage) {
             Image(systemName: "arrow.clockwise")
                 .font(themeStore.uiFont(size: 13, weight: .semibold))
-                .frame(width: 30, height: 30)
+                .frame(width: 44, height: 44)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .foregroundStyle(isRefreshDisabled ? themeStore.tokens(for: colorScheme).tertiaryText : tint)
         .disabled(isRefreshDisabled)
         .help(L10n.text("ui.refresh_codex_usage"))
@@ -587,18 +643,22 @@ struct ComposerStatusTray: View {
         isDisabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        let tokens = themeStore.tokens(for: colorScheme)
+        return Button(action: action) {
             Image(systemName: systemImage)
-                .font(themeStore.uiFont(size: 13, weight: .semibold))
-                .foregroundStyle(isDisabled ? themeStore.tokens(for: colorScheme).tertiaryText : tint)
-                .frame(width: 30, height: 30)
-                .background(themeStore.tokens(for: colorScheme).elevatedSurface.opacity(0.78), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(themeStore.tokens(for: colorScheme).border.opacity(0.72))
-                }
+                .font(themeStore.uiFont(size: 16, weight: .semibold))
+                .foregroundStyle(isDisabled ? tokens.tertiaryText : tint)
+                .frame(width: 44, height: 44)
+                .modifier(
+                    ComposerFlatControlSurface(
+                        tokens: tokens,
+                        cornerRadius: 12,
+                        isEmphasized: false
+                    )
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ComposerPressButtonStyle(reduceMotion: reduceMotion))
         .disabled(isDisabled)
         .help(title)
         .accessibilityLabel(title)
@@ -619,14 +679,38 @@ struct ComposerStatusTray: View {
         return trimmed
     }
 
-    private func trayTint(tokens: ThemeTokens) -> Color {
-        if quotaNotice != nil || usage != nil {
-            return tokens.warning
+    @ViewBuilder
+    private func traySurface(
+        shape: RoundedRectangle,
+        tokens: ThemeTokens,
+        surfaceStyle: ComposerStatusTraySurfaceStyle
+    ) -> some View {
+        switch surfaceStyle.materialStrength {
+        case .opaque:
+            shape.fill(tokens.elevatedSurface)
+        case .regular:
+            // 展开态内容更多，只增加材质模糊厚度；表面色和输入卡保持一致。
+            shape
+                .fill(.regularMaterial)
+                .overlay {
+                    shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
+                }
+        case .thin:
+            // 收起态和输入卡共用薄材质及同一表面色，不再额外抬高层级。
+            shape
+                .fill(.thinMaterial)
+                .overlay {
+                    shape.fill(tokens.elevatedSurface.opacity(surfaceStyle.surfaceTintOpacity))
+                }
         }
-        if let goal {
-            return goalStatusTint(goal, tokens: tokens)
-        }
-        return tokens.secondaryText
+    }
+
+    private func surfaceStyle(tokens: ThemeTokens) -> ComposerStatusTraySurfaceStyle {
+        ComposerStatusTraySurfaceStyle.resolve(
+            isExpanded: isGoalExpanded,
+            scheme: tokens.resolvedScheme,
+            reduceTransparency: reduceTransparency
+        )
     }
 
     private func goalStatusTint(_ goal: ThreadGoal, tokens: ThemeTokens) -> Color {

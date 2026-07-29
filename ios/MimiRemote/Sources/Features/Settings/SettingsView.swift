@@ -15,7 +15,9 @@ struct SettingsView: View {
 
     @AppStorage("agentd.developerMode") private var developerModeEnabled = false
     @AppStorage(AppLanguage.preferenceKey) private var appLanguageRawValue = AppLanguage.system.rawValue
-    @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
+    @AppStorage(VoiceInputProvider.storageKey) private var voiceInputProviderRawValue = VoiceInputProvider.codex.rawValue
+    @StateObject private var qrScannerPresentation = ConnectionQRCodeScannerPresentation()
+    @State private var connectionSettingsDestination: ConnectionSettingsDestination?
 
     var body: some View {
         let systemColorScheme = themeSystemColorScheme ?? colorScheme
@@ -31,13 +33,29 @@ struct SettingsView: View {
                 settingsContent(tokens: tokens, resolvedColorScheme: resolvedColorScheme)
             }
         }
+        // 扫码 Cover 固定挂在 SettingsView 根层。首次系统相机权限弹窗会触发 Form
+        // 重建，但不会再销毁负责呈现相机的宿主。
+        .fullScreenCover(
+            item: $qrScannerPresentation.intent,
+            onDismiss: qrScannerPresentation.didDismiss
+        ) { intent in
+            QRCodeScannerSheet(
+                onDismiss: qrScannerPresentation.dismiss,
+                onChooseManualConnection: {
+                    qrScannerPresentation.chooseManualConnection(for: intent)
+                },
+                onCode: { rawValue in
+                    await qrScannerPresentation.submit(rawValue, intent: intent)
+                }
+            )
+        }
     }
 
     @ViewBuilder
     private func settingsContent(tokens: ThemeTokens, resolvedColorScheme: ColorScheme) -> some View {
         Group {
             if isInitialSetup {
-                InitialPairingView()
+                InitialPairingView(qrScannerPresentation: qrScannerPresentation)
             } else {
                 settingsForm(tokens: tokens)
                     .frame(maxWidth: 720)
@@ -74,50 +92,76 @@ struct SettingsView: View {
         let claudeUsage = sessionStore.accountClaudeUsageWindowsDisplay
 
         return Form {
-            Section(L10n.text("ui.mac_connection")) {
-                NavigationLink {
-                    ConnectionManagementView()
-                } label: {
-                    LabeledContent(
-                        L10n.text("ui.status"),
-                        value: appStore.connectionTermination?.title
-                            ?? (sessionStore.isNetworkUnavailable ? L10n.text("ui.network_is_unavailable") : appStore.connectionStatus.title)
-                    )
+            Section {
+                CombinedUsageSettingsCard(
+                    codexDisplay: codexUsage,
+                    claudeDisplay: claudeUsage,
+                    includesClaude: sessionStore.hasClaudeRuntimeChannel
+                )
+            } header: {
+                HStack {
+                    Text(L10n.text("ui.token_quota"))
+                    Spacer()
+                    AIUsageRefreshButton(includesClaude: sessionStore.hasClaudeRuntimeChannel)
                 }
-                LabeledContent(L10n.text("ui.connection_address"), value: appStore.endpoint)
-                if appStore.isUsingLocalConnection {
-                    LabeledContent(L10n.text("ui.connection_method"), value: L10n.text("ui.direct_connection_to_this_machine"))
-                }
-                NavigationLink {
-                    ConnectionSpeedTestView()
-                } label: {
-                    HStack(spacing: 12) {
-                        Label(L10n.text("ui.connection_speed_test"), systemImage: "bolt.horizontal.circle")
-                        Spacer(minLength: 12)
-                        Text(connectionSpeedTestSummary)
-                            .font(themeStore.uiFont(.callout))
-                            .monospacedDigit()
-                            .foregroundStyle(connectionSpeedTestTone(tokens: tokens))
-                            .lineLimit(1)
-                    }
-                }
-                .accessibilityIdentifier("settings.connectionSpeedTest")
-                if let termination = appStore.connectionTermination {
-                    Label(termination.message, systemImage: "lock.trianglebadge.exclamationmark")
-                        .font(.footnote)
-                        .foregroundStyle(tokens.warning)
-                } else if sessionStore.isNetworkUnavailable {
-                    Label(L10n.text("ui.the_network_is_unavailable_and_synchronization_has_been"), systemImage: "wifi.slash")
-                        .font(.footnote)
-                        .foregroundStyle(tokens.warning)
-                }
+                .textCase(nil)
             }
 
-            Section(L10n.text("ui.ai_usage")) {
-                RuntimeUsageSettingsCard(runtimeProvider: "codex", display: codexUsage)
-                if sessionStore.hasClaudeRuntimeChannel {
-                    RuntimeUsageSettingsCard(runtimeProvider: "claude", display: claudeUsage)
+            Section(L10n.text("ui.mac_connection")) {
+                VStack(spacing: 8) {
+                    HStack(spacing: 10) {
+                        Button {
+                            connectionSettingsDestination = .management
+                        } label: {
+                            SettingsConnectionSummaryCell(
+                                title: L10n.plural(
+                                    "ui.saved_macs_count",
+                                    count: appStore.connectionProfileSettingsModel.savedCount
+                                ),
+                                value: L10n.format(
+                                    "ui.labeled_value",
+                                    L10n.text("ui.current_mac"),
+                                    compactConnectionStatusText
+                                ),
+                                tint: connectionStatusTone(tokens: tokens),
+                                systemImage: nil
+                            )
+                        }
+                        // Form 会把同一行里的默认 NavigationLink 合并为行级点击；
+                        // 使用独立 Button，并由单一路由状态 push，避免一次点击进入两个页面。
+                        .buttonStyle(.borderless)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("settings.connectionManagement")
+
+                        Divider()
+                            .overlay(tokens.border.opacity(0.7))
+                            .frame(height: 32)
+
+                        Button {
+                            connectionSettingsDestination = .speedTest
+                        } label: {
+                            SettingsConnectionSummaryCell(
+                                title: L10n.text("ui.connection_speed_test"),
+                                value: connectionSpeedTestSummary,
+                                tint: connectionSpeedTestTone(tokens: tokens),
+                                systemImage: "bolt.horizontal.circle"
+                            )
+                        }
+                        .buttonStyle(.borderless)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("settings.connectionSpeedTest")
+                    }
+
+                    if let warningText = connectionWarningText {
+                        Divider()
+                            .overlay(tokens.border.opacity(0.62))
+                        Label(warningText, systemImage: "exclamationmark.triangle")
+                            .font(themeStore.uiFont(.footnote))
+                            .foregroundStyle(tokens.warning)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
+                .frame(minHeight: 32)
             }
 
             Section {
@@ -146,7 +190,7 @@ struct SettingsView: View {
             }
 
             Section {
-                ForEach(VoiceInputProvider.storeAvailableCases) { provider in
+                ForEach(VoiceInputProvider.allCases) { provider in
                     VoiceInputProviderRow(
                         provider: provider,
                         isSelected: voiceInputProviderSelection.wrappedValue == provider,
@@ -160,7 +204,9 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle(L10n.text("ui.developer_mode"), isOn: $developerModeEnabled)
+                Toggle(isOn: $developerModeEnabled) {
+                    Label(L10n.text("ui.developer_mode"), systemImage: "hammer")
+                }
                 NavigationLink {
                     DoctorView(showsHistoryDiagnostics: developerModeEnabled)
                 } label: {
@@ -210,9 +256,15 @@ struct SettingsView: View {
             }
         }
         .themedSettingsForm(tokens: tokens)
+        .navigationDestination(item: $connectionSettingsDestination) { destination in
+            switch destination {
+            case .management:
+                ConnectionManagementView(qrScannerPresentation: qrScannerPresentation)
+            case .speedTest:
+                ConnectionSpeedTestView()
+            }
+        }
         .task {
-            // 升级用户可能仍保留旧的远端转写偏好；进入设置时明确迁移到设备端。
-            voiceInputProviderRawValue = VoiceInputProvider.apple.rawValue
             // 设置页也作为失败后的自然重试入口；成功态会直接复用，不产生重复请求。
             guard !appStore.requiresRePairing else {
                 return
@@ -259,6 +311,45 @@ struct SettingsView: View {
         return AppStore.connectionTestDurationText(milliseconds: milliseconds)
     }
 
+    private var compactConnectionStatusText: String {
+        if let termination = appStore.connectionTermination {
+            return termination.title
+        }
+        if sessionStore.isNetworkUnavailable {
+            return L10n.text("ui.network_is_unavailable")
+        }
+        if case .connected = appStore.connectionStatus {
+            return L10n.text("ui.connected")
+        }
+        return appStore.connectionStatus.title
+    }
+
+    private var connectionWarningText: String? {
+        if let termination = appStore.connectionTermination {
+            return termination.message
+        }
+        if sessionStore.isNetworkUnavailable {
+            return L10n.text("ui.the_network_is_unavailable_and_synchronization_has_been")
+        }
+        return nil
+    }
+
+    private func connectionStatusTone(tokens: ThemeTokens) -> Color {
+        if appStore.connectionTermination != nil || sessionStore.isNetworkUnavailable {
+            return tokens.warning
+        }
+        switch appStore.connectionStatus {
+        case .connected:
+            return tokens.success
+        case .testing:
+            return tokens.accent
+        case .failed:
+            return tokens.warning
+        case .idle:
+            return tokens.secondaryText
+        }
+    }
+
     private func connectionSpeedTestTone(tokens: ThemeTokens) -> Color {
         if case .testing = appStore.connectionStatus {
             return tokens.accent
@@ -278,12 +369,17 @@ struct SettingsView: View {
 
     private var voiceInputProviderSelection: Binding<VoiceInputProvider> {
         Binding(
-            get: { .apple },
+            get: { VoiceInputProvider(rawValue: voiceInputProviderRawValue) ?? .codex },
             set: { provider in
                 voiceInputProviderRawValue = provider.rawValue
             }
         )
     }
+}
+
+private enum ConnectionSettingsDestination: Hashable {
+    case management
+    case speedTest
 }
 
 private struct VoiceInputProviderRow: View {
@@ -301,11 +397,10 @@ private struct VoiceInputProviderRow: View {
                 ZStack {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(isSelected ? tokens.selectionFill : tokens.elevatedSurface)
-                    Image(systemName: provider.systemImage)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(isSelected ? tokens.accent : tokens.secondaryText)
+                    providerIcon
                 }
                 .frame(width: 42, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(provider.title)
@@ -315,6 +410,7 @@ private struct VoiceInputProviderRow: View {
                         .font(themeStore.uiFont(.footnote))
                         .foregroundStyle(tokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("settings.voiceInputProvider.\(provider.rawValue).description")
                 }
 
                 Spacer(minLength: 12)
@@ -336,15 +432,88 @@ private struct VoiceInputProviderRow: View {
         .accessibilityHint(provider.subtitle)
         .accessibilityIdentifier("settings.voiceInputProvider.\(provider.rawValue)")
     }
+
+    @ViewBuilder
+    private var providerIcon: some View {
+        switch provider.icon {
+        case .asset(let name):
+            Image(name)
+                .resizable()
+                .renderingMode(.original)
+                .scaledToFit()
+                // 资源本身带透明安全边距，略微放大后才会真正填满 42pt 图标位。
+                .frame(width: 48, height: 48)
+                .accessibilityHidden(true)
+        case .system(let name):
+            Image(systemName: name)
+                .font(.system(size: 24, weight: .medium))
+                .symbolRenderingMode(.multicolor)
+                .foregroundStyle(tokens.accent)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+private struct SettingsConnectionSummaryCell: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let title: String
+    let value: String
+    let tint: Color
+    let systemImage: String?
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(spacing: 8) {
+            Group {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 18, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                } else {
+                    Circle()
+                        .fill(tint)
+                        .frame(width: 8, height: 8)
+                }
+            }
+            .foregroundStyle(tint)
+            .frame(width: 22, height: 22)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(themeStore.uiFont(.caption))
+                    .foregroundStyle(tokens.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                Text(value)
+                    .font(themeStore.uiFont(.callout, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+
+            Spacer(minLength: 3)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(tokens.tertiaryText)
+        }
+        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+        .contentShape(Rectangle())
+    }
 }
 
 private struct ConnectionManagementView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
 
     var body: some View {
         Form {
-            InitialConnectionSettingsSections()
+            InitialConnectionSettingsSections(qrScannerPresentation: qrScannerPresentation)
         }
         .themedSettingsForm(tokens: themeStore.tokens(for: colorScheme))
         .frame(maxWidth: 720)
@@ -522,8 +691,10 @@ private struct ConnectionSpeedTestView: View {
                     title: L10n.text("ui.tailscale_network_path"),
                     tokens: tokens
                 ) {
-                    Label(networkPath.localizedSummary, systemImage: networkPath.kind.settingsSystemImage)
-                        .foregroundStyle(tailscaleNetworkPathTone(networkPath.kind, tokens: tokens))
+                    connectionSpeedNetworkPathBadge(
+                        networkPath: networkPath,
+                        tokens: tokens
+                    )
                 }
             }
         }
@@ -606,19 +777,62 @@ private struct ConnectionSpeedTestView: View {
         tokens: ThemeTokens,
         @ViewBuilder value: () -> Value
     ) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            Text(title)
-                .font(themeStore.uiFont(.callout))
-                .foregroundStyle(tokens.primaryText)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 12) {
+                Text(title)
+                    .font(themeStore.uiFont(.callout))
+                    .foregroundStyle(tokens.primaryText)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
 
-            Spacer(minLength: 12)
+                Spacer(minLength: 12)
 
-            value()
-                .font(themeStore.uiFont(.callout))
-                .multilineTextAlignment(.trailing)
+                value()
+                    .font(themeStore.uiFont(.callout))
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            // 窄屏或大字号时让右侧状态整体换到下一行，避免状态文字被挤成逐字换行。
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(themeStore.uiFont(.callout))
+                    .foregroundStyle(tokens.primaryText)
+
+                value()
+                    .font(themeStore.uiFont(.callout))
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func connectionSpeedNetworkPathBadge(
+        networkPath: TailscaleNetworkPathResponse,
+        tokens: ThemeTokens
+    ) -> some View {
+        let tone = tailscaleNetworkPathTone(networkPath.kind, tokens: tokens)
+
+        return HStack(spacing: 6) {
+            Image(systemName: networkPath.kind.settingsSystemImage)
+                .font(.system(size: 13, weight: .semibold))
+
+            Text(networkPath.localizedSummary)
+                .font(themeStore.uiFont(.footnote, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .foregroundStyle(tone)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .background(tone.opacity(0.11), in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(tone.opacity(0.18), lineWidth: 0.5)
+        }
         .accessibilityElement(children: .combine)
     }
 
@@ -777,132 +991,26 @@ private struct ConnectionSpeedMetricRow: View {
     }
 }
 
-private struct RuntimeUsageSettingsCard: View {
+/// 刷新入口属于“Token 额度”分区，而不是某一条额度数据；放在标题右侧可避免压缩卡片内容。
+private struct AIUsageRefreshButton: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var sessionStore: SessionStore
     @EnvironmentObject private var themeStore: ThemeStore
 
-    let runtimeProvider: String
-    let display: CodexUsageWindowsDisplay
+    let includesClaude: Bool
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
+        let isRefreshing = sessionStore.isRefreshingUsage(runtimeProvider: "codex")
+            || (includesClaude && sessionStore.isRefreshingUsage(runtimeProvider: "claude"))
 
-        Group {
-            // 常规 iPad 宽度把身份、窗口和操作收进同一基线，消除旧布局第二行产生的大块留白。
-            // 无障碍大字号主动回退到上下结构，避免用缩放字体换取表面的“一行”。
-            if usesRegularUsageLayout {
-                regularUsageRow(tokens: tokens)
-            } else {
-                compactUsageRows(tokens: tokens)
-            }
-        }
-        .padding(.vertical, 6)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var usesRegularUsageLayout: Bool {
-        horizontalSizeClass == .regular && !dynamicTypeSize.isAccessibilitySize
-    }
-
-    private func regularUsageRow(tokens: ThemeTokens) -> some View {
-        HStack(alignment: .center, spacing: 14) {
-            usageRings
-
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(providerDisplayName)
-                    .font(themeStore.uiFont(.headline, weight: .semibold))
-                    .foregroundStyle(tokens.primaryText)
-                Text(display.creditText)
-                    .font(themeStore.uiFont(.footnote))
-                    .foregroundStyle(tokens.secondaryText)
-            }
-            .lineLimit(1)
-            .minimumScaleFactor(0.82)
-            .frame(width: 152, alignment: .leading)
-
-            Divider()
-                .frame(height: 30)
-
-            usageWindows(tokens: tokens)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            refreshButton(tokens: tokens)
-        }
-        .frame(minHeight: 44)
-    }
-
-    private func compactUsageRows(tokens: ThemeTokens) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                usageRings
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(providerDisplayName)
-                        .font(themeStore.uiFont(.headline, weight: .semibold))
-                        .foregroundStyle(tokens.primaryText)
-                    Text(display.creditText)
-                        .font(themeStore.uiFont(.footnote))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                }
-
-                Spacer(minLength: 8)
-                refreshButton(tokens: tokens)
-            }
-
-            usageWindows(tokens: tokens)
-        }
-    }
-
-    private var usageRings: some View {
-        CodexUsageRingsGraphic(
-            display: display,
-            metrics: CodexUsageRingMetrics(isCompact: horizontalSizeClass == .compact)
-        )
-    }
-
-    @ViewBuilder
-    private func usageWindows(tokens: ThemeTokens) -> some View {
-        if display.windows.isEmpty {
-            Text(emptyStateText)
-                .font(themeStore.uiFont(.caption))
-                .foregroundStyle(tokens.secondaryText)
-                .lineLimit(2)
-        } else if usesRegularUsageLayout {
-            HStack(alignment: .center, spacing: 12) {
-                ForEach(Array(display.windows.prefix(2).enumerated()), id: \.element.id) { index, window in
-                    if index > 0 {
-                        Divider()
-                            .frame(height: 28)
-                    }
-                    CodexCompactUsageWindow(window: window)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+        Button {
+            Task {
+                await sessionStore.refreshCodexUsage()
+                if includesClaude {
+                    await sessionStore.refreshClaudeUsage()
                 }
             }
-        } else {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(display.windows.prefix(2).enumerated()), id: \.element.id) { index, window in
-                    if index > 0 {
-                        Divider()
-                    }
-                    CodexCompactUsageWindow(window: window)
-                        .padding(.vertical, 9)
-                }
-            }
-        }
-    }
-
-    private func refreshButton(tokens: ThemeTokens) -> some View {
-        let isRefreshing = sessionStore.isRefreshingUsage(runtimeProvider: runtimeProvider)
-
-        return Button {
-            // 刷新状态由长生命周期 SessionStore 按 provider 隔离；视图消失后
-            // 不再有局部 @State 的迟到回写，Codex 和其他设置操作也不会被连带禁用。
-            Task { await sessionStore.refreshUsage(runtimeProvider: runtimeProvider) }
         } label: {
             Group {
                 if isRefreshing {
@@ -921,139 +1029,224 @@ private struct RuntimeUsageSettingsCard: View {
                 Circle()
                     .stroke(tokens.border.opacity(0.72), lineWidth: 1)
             }
-            // 可见控件保持克制，外层触控区仍遵循 iOS 最低 44pt。
             .frame(width: 44, height: 44)
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(tokens.secondaryText)
         .disabled(isRefreshing)
-        .accessibilityLabel(isRefreshing ? L10n.format("ui.refreshing_value_usage", display.displayName) : L10n.format("ui.refresh_value_usage", display.displayName))
-        .accessibilityIdentifier("settings.\(runtimeProvider)Usage.refresh")
-    }
-
-    /// 服务端名称可能是全小写；已知产品名在界面层统一品牌大小写，不改协议原值。
-    private var providerDisplayName: String {
-        switch runtimeProvider.lowercased() {
-        case "codex":
-            return "Codex"
-        case "claude":
-            return "Claude"
-        default:
-            return display.displayName
-        }
-    }
-
-    private var emptyStateText: String {
-        if runtimeProvider == "claude" {
-            return L10n.text("ui.claude_headless_has_not_yet_returned_to_the")
-        }
-        return L10n.format("ui.after_refreshing_the_account_window_returned_by_value", display.displayName)
+        .accessibilityLabel(
+            isRefreshing
+                ? L10n.format("ui.refreshing_value_usage", "AI")
+                : L10n.format("ui.refresh_value_usage", "AI")
+        )
+        .accessibilityIdentifier("settings.aiUsage.refresh")
     }
 }
 
-private struct CodexCompactUsageWindow: View {
+private struct CombinedUsageSettingsCard: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var themeStore: ThemeStore
 
-    let window: CodexUsageWindowDisplay
+    let codexDisplay: CodexUsageWindowsDisplay
+    let claudeDisplay: CodexUsageWindowsDisplay
+    let includesClaude: Bool
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
-        let tint = usageTint
 
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Circle()
-                            .fill(tint)
-                            .frame(width: 7, height: 7)
-                            .alignmentGuide(.firstTextBaseline) { dimensions in
-                                dimensions[VerticalAlignment.center]
-                            }
-                        Text(window.label)
-                            .font(themeStore.uiFont(.callout, weight: .semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(tokens.primaryText)
-                        Text(window.title)
-                            .font(themeStore.uiFont(.caption))
-                            .foregroundStyle(tokens.secondaryText)
-                            .lineLimit(1)
-                    }
-
-                    Text(window.resetText)
-                        .font(themeStore.uiFont(.caption2))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 12)
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(window.remainingPercentText ?? "—")
-                        .font(themeStore.uiFont(.title3, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
-                        .lineLimit(1)
-                    Text(L10n.text("ui.remaining_quota"))
-                        .font(themeStore.uiFont(.caption2, weight: .medium))
-                        .foregroundStyle(tokens.secondaryText)
-                        .lineLimit(1)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Circle()
-                        .fill(tint)
-                        .frame(width: 7, height: 7)
-                        .alignmentGuide(.firstTextBaseline) { dimensions in
-                            dimensions[VerticalAlignment.center]
-                        }
-                    Text(window.label)
-                        .font(themeStore.uiFont(.callout, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(tokens.primaryText)
-                    Text(window.title)
-                        .font(themeStore.uiFont(.caption))
-                        .foregroundStyle(tokens.secondaryText)
-                }
-
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(window.remainingText)
-                        .font(themeStore.uiFont(.callout, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(window.remainingProgress == nil ? tokens.secondaryText : tint)
-                    Spacer(minLength: 4)
-                    Text(window.resetText)
-                        .font(themeStore.uiFont(.caption2))
-                        .foregroundStyle(tokens.secondaryText)
-                }
+        Group {
+            // 标准字号下无论 iPhone 或 iPad 都保持“左圆环、右额度”；只有无障碍
+            // 超大字号才回退到上下结构，避免 compact size class 错误改变产品布局。
+            if usesHorizontalLayout {
+                horizontalLayout(tokens: tokens)
+            } else {
+                verticalLayout(tokens: tokens)
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(L10n.format("ui.value_remaining_usage", window.accessibilityName))
-        .accessibilityValue(L10n.format("ui.usage_window_accessibility_value", window.remainingText, window.resetText))
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .contain)
     }
 
-    private var usageTint: Color {
-        if window.durationMinutes != nil {
-            return window.isDayScaleWindow ? .pink : .cyan
+    private var usesHorizontalLayout: Bool {
+        !dynamicTypeSize.isAccessibilitySize
+    }
+
+    @ViewBuilder
+    private func horizontalLayout(tokens: ThemeTokens) -> some View {
+        let isCompact = horizontalSizeClass == .compact
+
+        if isCompact {
+            // iPhone 的右栏完整容纳名称、百分比和重置时间；刷新入口位于分区标题，
+            // 圆环栏只承担视觉信息，保持三环在左栏中居中。
+            HStack(alignment: .center, spacing: 8) {
+                usageRings(diameter: 124, lineWidth: 10)
+                    .frame(width: 130)
+
+                Divider()
+                    .overlay(tokens.border.opacity(0.7))
+                    .frame(height: 150)
+
+                usageRows(rowVerticalPadding: 3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 150)
+        } else {
+            HStack(alignment: .center, spacing: 18) {
+                usageRings(diameter: 154, lineWidth: 11)
+                    .frame(width: 300)
+
+                Divider()
+                    .overlay(tokens.border.opacity(0.7))
+                    .frame(height: 142)
+
+                usageRows(rowVerticalPadding: 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(minHeight: 154)
         }
-        return window.kind == .secondary ? .pink : .cyan
+    }
+
+    private func verticalLayout(tokens: ThemeTokens) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            usageRings(diameter: 136, lineWidth: 10)
+                .frame(maxWidth: .infinity)
+
+            Divider()
+                .overlay(tokens.border.opacity(0.7))
+
+            usageRows(rowVerticalPadding: 7)
+        }
+    }
+
+    private func usageRings(diameter: CGFloat, lineWidth: CGFloat) -> some View {
+        CombinedUsageRingsGraphic(
+            items: usageItems,
+            expectedRingCount: 3,
+            diameter: diameter,
+            lineWidth: lineWidth
+        )
+    }
+
+    @ViewBuilder
+    private func usageRows(rowVerticalPadding: CGFloat) -> some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+        let items = usageItems
+
+        if items.isEmpty {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(codexDisplay.creditText)
+                if includesClaude {
+                    Text(claudeDisplay.creditText)
+                }
+            }
+            .font(themeStore.uiFont(.caption))
+            .foregroundStyle(tokens.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(items) { item in
+                    CombinedUsageWindowRow(item: item)
+                        .padding(.vertical, rowVerticalPadding)
+                }
+            }
+        }
+    }
+
+    /// 产品只需要 Codex 的长窗口，以及 Claude 的长、短两个窗口。
+    /// 服务端的 primary/secondary 槽位并不稳定，因此按真实时长选择而不是写死槽位。
+    private var usageItems: [CombinedUsageItem] {
+        CombinedUsageItem.make(
+            codexDisplay: codexDisplay,
+            claudeDisplay: claudeDisplay,
+            includesClaude: includesClaude,
+            claudeShortTint: themeStore.tokens(for: colorScheme).accent
+        )
+    }
+}
+
+private struct CombinedUsageWindowRow: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    let item: CombinedUsageItem
+
+    var body: some View {
+        let tokens = themeStore.tokens(for: colorScheme)
+
+        HStack(alignment: .center, spacing: 8) {
+            // 左列统一从服务名称起始位置对齐，右列百分比固定贴右；
+            // HStack 的 center 对齐让百分比位于两行文字的垂直中心。
+            HStack(alignment: .center, spacing: 6) {
+                Circle()
+                    .fill(item.tint)
+                    .frame(width: 8, height: 8)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(item.providerName) · \(item.window.label)")
+                        .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                        .foregroundStyle(tokens.primaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+
+                    Text(resetText)
+                        .font(themeStore.uiFont(.caption2))
+                        .foregroundStyle(tokens.secondaryText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.76)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(item.window.remainingPercentText ?? "—")
+                .font(themeStore.uiFont(.subheadline, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(
+                    item.window.remainingProgress == nil ? tokens.secondaryText : item.tint
+                )
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            L10n.format("ui.value_remaining_usage", item.window.accessibilityName)
+        )
+        .accessibilityValue(
+            L10n.format(
+                "ui.usage_window_accessibility_value",
+                item.window.remainingText,
+                resetText
+            )
+        )
+    }
+
+    private var resetText: String {
+        guard let resetDate = item.window.resetDate else {
+            return item.window.resetText
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = AppLanguage.stored().locale
+        formatter.setLocalizedDateFormatFromTemplate(
+            Calendar.current.isDate(resetDate, inSameDayAs: Date()) ? "Hm" : "MdHm"
+        )
+        return L10n.format("ui.value_reset_english", formatter.string(from: resetDate))
     }
 }
 
 private struct InitialPairingView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @ObservedObject var qrScannerPresentation: ConnectionQRCodeScannerPresentation
 
     var body: some View {
         let tokens = themeStore.tokens(for: colorScheme)
 
         Form {
-            InitialConnectionSettingsSections()
+            InitialConnectionSettingsSections(qrScannerPresentation: qrScannerPresentation)
         }
         .themedSettingsForm(tokens: tokens)
         // 连接是短表单而不是数据表；宽窗口里限制行长，按钮和输入框不会被拉成整屏。

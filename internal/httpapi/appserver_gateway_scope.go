@@ -268,7 +268,9 @@ func validateGatewayCollaborationMode(value any) error {
 			return fmt.Errorf("collaborationMode.settings.reasoning_effort 必须是字符串或 null")
 		}
 		switch text {
-		case "none", "minimal", "low", "medium", "high", "xhigh":
+		// 网关只校验 app-server 已知枚举；具体模型和账号是否支持 Max/Ultra，
+		// 继续交给 runtime 的 model/list 能力与上游校验决定。
+		case "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra":
 		default:
 			return fmt.Errorf("collaborationMode.settings.reasoning_effort 不支持：%s", text)
 		}

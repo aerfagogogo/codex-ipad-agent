@@ -7,7 +7,7 @@ Features:
 - Review structured responses, reasoning, code blocks, images, and diffs
 - Confirm restricted development actions before they run
 - Inspect Git status and manage branches and worktrees
-- Use text, images, and on-device voice input
+- Use text, images, and optional voice input
 - Keep separate connection profiles for different computers
 - Connect over a local network, private network, or HTTPS
 

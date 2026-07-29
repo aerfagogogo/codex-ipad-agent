@@ -12,14 +12,14 @@
 - 下一个发布构建下限：`100055`；正式归档仍由发布脚本查询 App Store Connect 后选择唯一构建号。
 - 隐私标签：开发者不收集数据；提交前必须按实际新增能力重新核对。
 - 价格：免费；当前不包含订阅、AI 额度或其他数字商品内购。
-- 中国大陆：本版本按“用户自托管开发工作台”提交，不在公开元数据、截图或 App 品牌素材中使用 ChatGPT/OpenAI 名称与图标；语音输入只开放设备端转写。
+- 中国大陆：本版本按“用户自托管开发工作台”准备，不在公开元数据、截图或 App 品牌素材中使用 ChatGPT/OpenAI 名称与图标；当前开发版本默认使用 Codex 转写，同时允许用户选择设备端转写，正式提交前必须结合最新审核反馈重新确认该能力。
 
 公开 URL：
 
 - Marketing URL：首个中国大陆版本留空，避免把 README 中的开发者兼容性说明误当作商店宣传元数据。
-- Privacy Policy URL：<https://github.com/gaixianggeng/mimi-remote/blob/main/docs/privacy-policy.md>
-- Support URL：<https://github.com/gaixianggeng/mimi-remote/blob/main/docs/support.md>
-- Terms URL：<https://github.com/gaixianggeng/mimi-remote/blob/main/docs/terms-of-use.md>
+- Privacy Policy URL：<https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/privacy-policy.md>
+- Support URL：<https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/support.md>
+- Terms URL：<https://github.com/gaixianggeng/codex-ipad-agent/blob/main/docs/terms-of-use.md>
 
 ## 实现
 

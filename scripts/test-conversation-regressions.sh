@@ -37,8 +37,10 @@ fi
 echo "==> iOS conversation regressions"
 # 这些测试组覆盖 Mimi Remote 对话请求链路和发布安全边界：
 # - AgentAPIClientRequestTests：全部 REST 调用的路径、方法、鉴权、JSON 字段和超时契约。
+# - CameraAttachmentTests：相机可用性、权限恢复和现有图片压缩上限。
 # - CodexAppServerProtocolTests：JSON-RPC payload、collaborationMode、目标/steer 协议。
 # - ConversationDataFlowTests：Composer、SessionStore、direct app-server、断线/重试/滚动状态。
+# - FileAttachmentModelsTests：文件上传、内部上下文编解码和旧服务端能力兼容。
 # - ConversationProcessGrouperTests：过程组边界、commentary 前后保留和 source order。
 # - ConversationSnapshotTests：用户气泡/助手文档流、复杂 Markdown、图片和过程组的关键视觉回归。
 # - MarkdownRenderingTests：proposed_plan 流式和完整渲染。
@@ -51,9 +53,11 @@ xcodebuild test -quiet \
   -testLanguage zh-Hans \
   -testRegion CN \
   -only-testing:MimiRemoteTests/AgentAPIClientRequestTests \
+  -only-testing:MimiRemoteTests/CameraAttachmentTests \
   -only-testing:MimiRemoteTests/CodexAppServerProtocolTests \
   -only-testing:MimiRemoteTests/ConversationDataFlowTests \
   -only-testing:MimiRemoteTests/ConversationProcessGrouperTests \
+  -only-testing:MimiRemoteTests/FileAttachmentModelsTests \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testConversationBubbleAlignment \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testDefaultDarkConversationPalette \
   -only-testing:MimiRemoteTests/ConversationSnapshotTests/testRichMarkdownConversationRendering \
