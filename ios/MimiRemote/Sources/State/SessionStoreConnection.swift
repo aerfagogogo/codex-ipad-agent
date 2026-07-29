@@ -38,6 +38,10 @@ extension SessionStore {
             setStatusMessage(L10n.text("ui.the_network_is_unavailable_and_will_automatically_reconnect_682354fa"))
             return
         }
+        guard let credentialFingerprint = appStore.authenticatedCredentialFingerprint else {
+            setWebSocketStatus(.disconnected)
+            return
+        }
         // allowNonRunning：非运行会话的订阅同样有价值——thread/resume 会带回权威状态
         // 纠正被误降级的会话，后续 turn 事件也能实时推进来。
         guard session.isRunning || allowNonRunning else {
@@ -194,12 +198,16 @@ extension SessionStore {
                 ) == true else {
                     return
                 }
+                if self?.statusMessage == L10n.text("ui.stopping_current_reply") {
+                    self?.setStatusMessage(nil)
+                }
                 self?.setErrorMessage(L10n.format("ui.failed_to_send_control_command_value", message))
             }
         }
         webSocket = socket
         connectedSessionID = session.id
         connectedHostScope = hostScope
+        connectedCredentialFingerprint = credentialFingerprint
         conversationStore.resetLiveTranscript(sessionID: session.id)
         syncRuntimeActivity(with: session)
         runtimeEventFlushTasks[eventLease]?.cancel()
@@ -290,6 +298,7 @@ extension SessionStore {
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
                 connectedHostScope = nil
+                connectedCredentialFingerprint = nil
                 webSocket = nil
             }
             markDispatchingQueuedTurnsNeedsConfirmation(
@@ -307,6 +316,22 @@ extension SessionStore {
                 setErrorMessage(policyRejected ? L10n.format("ui.the_connection_was_rejected_by_server_policy_and", message) : message)
             }
         case .terminated(let reason):
+            if reason == .credentialsInvalid,
+               !appStore.isCurrentCredentialFingerprint(connectedCredentialFingerprint) {
+                // 旧 Runtime/空 Token 的迟到拒绝不是当前凭据结论；按普通断线交给现有恢复链路。
+                if connectedSessionID == sessionID {
+                    connectedSessionID = nil
+                    connectedHostScope = nil
+                    connectedCredentialFingerprint = nil
+                    webSocket = nil
+                }
+                setWebSocketStatus(.disconnected)
+                scheduleWebSocketReconnect(
+                    sessionID: sessionID,
+                    reason: L10n.text("ui.the_connection_has_been_lost")
+                )
+                return
+            }
             terminateConnection(reason)
         case .disconnected:
             if isNetworkUnavailable {
@@ -318,6 +343,7 @@ extension SessionStore {
             if connectedSessionID == sessionID {
                 connectedSessionID = nil
                 connectedHostScope = nil
+                connectedCredentialFingerprint = nil
                 webSocket = nil
             }
             markDispatchingQueuedTurnsNeedsConfirmation(
@@ -339,7 +365,7 @@ extension SessionStore {
 
     @discardableResult
     func terminateConnectionIfCredentialsInvalid(_ error: Error) -> Bool {
-        guard isCredentialInvalidatingError(error) else {
+        guard appStore.acceptsCredentialInvalidation(error) else {
             return false
         }
         terminateConnection(.credentialsInvalid)
@@ -369,6 +395,7 @@ extension SessionStore {
         webSocket = nil
         connectedSessionID = nil
         connectedHostScope = nil
+        connectedCredentialFingerprint = nil
         runtimeEventFlushTasks.values.forEach { $0.cancel() }
         runtimeEventFlushTasks.removeAll(keepingCapacity: false)
         terminalStreamStore.removeAll(profileID: appStore.activeHostScope.profileID)
@@ -407,6 +434,7 @@ extension SessionStore {
         webSocket = nil
         connectedSessionID = nil
         connectedHostScope = nil
+        connectedCredentialFingerprint = nil
         socket?.disconnect()
         if let previousSessionID {
             markDispatchingQueuedTurnsNeedsConfirmation(
@@ -637,6 +665,10 @@ extension SessionStore {
         }
         if case .turnCompleted(let metadata) = event {
             let id = metadata.sessionID ?? sessionID
+            if id == selectedSessionID,
+               statusMessage == L10n.text("ui.stopping_current_reply") {
+                setStatusMessage(nil)
+            }
             if let projectID = sessionsByID[id]?.projectID {
                 scheduleSessionListReconciliation(
                     projectID: projectID,
