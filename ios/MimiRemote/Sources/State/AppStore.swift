@@ -714,14 +714,7 @@ final class AppStore: ObservableObject {
     }
 
     func preparePairingURL(_ url: URL) async throws -> PreparedConnectionSettings {
-        if let ticket = try Self.pairingTicket(from: url) {
-            let credentials = try await claimPairing(ticket)
-            return try await prepareConnectionSettings(
-                endpoint: credentials.endpoint,
-                token: credentials.token
-            )
-        }
-        let credentials = try Self.pairingCredentials(from: url)
+        let credentials = try await resolvedPairingCredentials(from: url)
         return try await prepareConnectionSettings(
             endpoint: credentials.endpoint,
             token: credentials.token
@@ -729,18 +722,22 @@ final class AppStore: ObservableObject {
     }
 
     func prepareNewPairingURL(_ url: URL, displayName: String) async throws -> PreparedConnectionSettings {
-        let prepared = try await preparePairingURL(url)
-        return PreparedConnectionSettings(
-            endpoint: prepared.endpoint,
-            token: prepared.token,
+        let credentials = try await resolvedPairingCredentials(from: url)
+        return try await prepareConnectionSettings(
+            endpoint: credentials.endpoint,
+            token: credentials.token,
             profileTarget: .newProfile(
                 id: UUID().uuidString,
-                displayName: Self.normalizedProfileDisplayName(displayName, endpoint: prepared.endpoint)
-            ),
-            validatedAt: prepared.validatedAt,
-            installationID: prepared.installationID,
-            hostContext: prepared.hostContext
+                displayName: Self.normalizedProfileDisplayName(displayName, endpoint: credentials.endpoint)
+            )
         )
+    }
+
+    private func resolvedPairingCredentials(from url: URL) async throws -> PairingCredentials {
+        if let ticket = try Self.pairingTicket(from: url) {
+            return try await claimPairing(ticket)
+        }
+        return try Self.pairingCredentials(from: url)
     }
 
     @discardableResult

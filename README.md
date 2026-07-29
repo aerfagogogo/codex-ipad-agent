@@ -245,6 +245,8 @@ open ios/MimiRemote/MimiRemote.xcodeproj
 
 In Xcode, select the `MimiRemote` scheme, your development team, and an iPhone or iPad target, then Run. On first launch, scan the QR code printed by `agentd up` or `agentd pair`. The QR code is a short-lived, single-use pairing ticket, not a long-lived token. Manual connection is available as a fallback.
 
+When adding a second Mac, the pairing candidate must be validated as a new profile from the start. A previous implementation first validated the QR code against the currently active Mac and only changed it to a new profile afterward, which incorrectly reported an installation-identity mismatch whenever the two Macs had different identities. The add-Mac flow now carries the new-profile target through credential claiming and connection validation, while the identity check remains enforced when repairing an existing Mac.
+
 Command-line build verification:
 
 ```bash

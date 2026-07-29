@@ -261,6 +261,8 @@ open ios/MimiRemote/MimiRemote.xcodeproj
 
 Mac App 用户从菜单栏选择“配对设备…”，CLI 用户扫描 `agentd up` 或 `agentd pair` 显示的二维码。二维码使用短期、单次兑换票据，不直接包含长期 Token；扫码不可用时可以展开高级手动连接。
 
+添加第二台 Mac 时，候选连接必须从一开始就按“新 Mac 档案”验证。旧实现会先拿二维码与当前 Mac 做安装身份比较，通过后才改成新档案，因此两台 Mac 的安装身份不同时会误报身份不匹配。现在新增 Mac 的目标会贯穿凭据领取和连接验证；只有修复已有 Mac 时才继续要求安装身份一致。
+
 ## Claude Code 实验通道
 
 Claude Runtime 默认关闭，当前要求 `alleycat-claude-bridge >= 0.2.1`。正式 Mac DMG 已经内置经过签名的兼容 bridge，不要为该安装方式重复执行 `cargo install`。
