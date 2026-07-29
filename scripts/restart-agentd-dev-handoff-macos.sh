@@ -18,6 +18,12 @@ readonly BACKUP="$7"
 readonly LATEST_STATUS="$8"
 readonly BREW_BINARY="$9"
 readonly RUN_STATUS="$RUN_DIR/status"
+readonly BREW_BIN_DIR="${BREW_BINARY%/*}"
+readonly BREW_PREFIX="${BREW_BIN_DIR%/bin}"
+
+# launchd 的一次性 job 不继承交互式 shell PATH。status 需要找到 Homebrew
+# 安装的 tailscale/codex 才能还原真实 Endpoint 并完成 readyz 版本校验。
+export PATH="${BREW_PREFIX}/bin:${BREW_PREFIX}/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 write_status() {
   local value="$1"
