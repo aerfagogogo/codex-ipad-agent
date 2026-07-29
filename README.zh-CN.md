@@ -286,13 +286,16 @@ command -v alleycat-claude-bridge
     "args": [],
     "max_concurrent_bridges": 3,
     "env": {
-      "TERM": "xterm-256color"
+      "TERM": "xterm-256color",
+      "CLAUDE_BRIDGE_CLAUDE_BIN": "/Claude/CLI/的绝对路径"
     }
   }
 }
 ```
 
 空 `bridge_bin` 表示使用 Mimi Remote Mac 随包 bridge；Homebrew 和 Linux 必须改成 `command -v alleycat-claude-bridge` 返回的绝对路径。配置文件含长期 Token，修改前必须创建用户私有备份，只用 JSON 解析器修改 `claude` 字段，保持 `0600`，不要把完整文件打印到日志或聊天中。
+
+源码安装 bridge 时，还应把 `CLAUDE_BRIDGE_CLAUDE_BIN` 设为 `command -v claude` 返回的绝对路径。launchd 等后台服务不一定继承交互式终端的 `PATH`；如果省略这一项，Doctor 可能能找到 bridge，但 bridge 无法启动 Claude Code，移动端就会表现为点击“新建 Claude 会话”没有反应。
 
 然后验证：
 

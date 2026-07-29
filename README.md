@@ -307,12 +307,17 @@ Enable it explicitly in the user configuration:
     "bridge_bin": "",
     "args": [],
     "max_concurrent_bridges": 3,
-    "env": { "TERM": "xterm-256color" }
+    "env": {
+      "TERM": "xterm-256color",
+      "CLAUDE_BRIDGE_CLAUDE_BIN": "/absolute/path/to/claude"
+    }
   }
 }
 ```
 
 An empty `bridge_bin` selects the bridge bundled with Mimi Remote Mac. Homebrew and Linux installations must instead set the absolute path returned by `command -v alleycat-claude-bridge`. The configuration file contains long-lived credentials: back it up privately, update only the `claude` fields with a JSON-aware tool, preserve mode `0600`, and never print the complete file into logs or chats.
+
+For a source-installed bridge, also set `CLAUDE_BRIDGE_CLAUDE_BIN` to the absolute path returned by `command -v claude`. Background services such as launchd may not inherit the interactive shell's `PATH`; without the explicit path, Doctor can find the bridge while starting a new Claude session appears to do nothing because the bridge cannot launch Claude Code.
 
 After changing the configuration, restart from the current service owner: use **Restart Service** in the Mimi Remote Mac menu, `agentd restart --no-pair` for Homebrew, or the user-systemd service on Linux. Run Doctor and confirm that the mobile runtime picker exposes Claude without disrupting Codex.
 
