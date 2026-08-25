@@ -111,9 +111,49 @@ def ipa_metadata(ipa)
   end
 end
 
+def tester_name_parts(email)
+  words = email.split("@", 2).first.to_s.split(/[^A-Za-z0-9]+/).reject(&:empty?).map(&:capitalize)
+  first_name = words.shift || "Beta"
+  last_name = words.empty? ? "Tester" : words.join(" ")
+  [first_name, last_name]
+end
+
+def ensure_external_tester(client, app_id, group_id, email)
+  tester = client.get("/v1/betaTesters", {
+    "filter[email]" => email,
+    "filter[apps]" => app_id,
+    "limit" => "20"
+  }).fetch("data").first
+
+  unless tester
+    first_name, last_name = tester_name_parts(email)
+    tester = client.post("/v1/betaTesters", {
+      data: {
+        type: "betaTesters",
+        attributes: { firstName: first_name, lastName: last_name, email: email },
+        relationships: {
+          betaGroups: { data: [{ type: "betaGroups", id: group_id }] }
+        }
+      }
+    }).fetch("data")
+    return tester
+  end
+
+  groups = client.get("/v1/betaTesters/#{tester.fetch('id')}/betaGroups", { "limit" => "200" }).fetch("data")
+  unless groups.any? { |group| group.fetch("id") == group_id }
+    client.post("/v1/betaTesters/#{tester.fetch('id')}/relationships/betaGroups", {
+      data: [{ type: "betaGroups", id: group_id }]
+    })
+  end
+  tester
+end
+
 expected_bundle_id = required_env("IOS_BUNDLE_ID")
 group_id = required_env("TESTFLIGHT_BETA_GROUP_ID")
 whats_new = required_env("TESTFLIGHT_WHATS_NEW")
+external_group_id = ENV.fetch("TESTFLIGHT_EXTERNAL_BETA_GROUP_ID", "").strip
+primary_tester_emails = ENV.fetch("TESTFLIGHT_PRIMARY_TESTER_EMAILS", "")
+                           .split(/[\s,;]+/).map(&:strip).reject(&:empty?).uniq
 ipa = ARGV.fetch(0) { abort_release("用法：distribute_internal_build.rb APP.ipa|--resume") }
 metadata = if ipa == "--resume"
              # 上传成功后本地临时目录可能已被清理。恢复分发只需要精确定位 ASC
@@ -212,6 +252,71 @@ if ENV.fetch("TESTFLIGHT_INVITE_PENDING_TESTERS", "1") == "1"
   end
 end
 
+external_state = "disabled"
+external_invited_count = 0
+unless external_group_id.empty?
+  abort_release("已配置外测组但没有 TESTFLIGHT_PRIMARY_TESTER_EMAILS") if primary_tester_emails.empty?
+
+  external_group = client.get("/v1/betaGroups/#{external_group_id}").fetch("data")
+  abort_release("目标外测组却被配置成内部组") if external_group.dig("attributes", "isInternalGroup") == true
+
+  primary_tester_emails.each do |email|
+    ensure_external_tester(client, app.fetch("id"), external_group_id, email)
+  end
+
+  external_builds = client.get("/v1/betaGroups/#{external_group_id}/builds", { "limit" => "200" }).fetch("data")
+  unless external_builds.any? { |item| item.fetch("id") == build_id }
+    client.post("/v1/betaGroups/#{external_group_id}/relationships/builds", {
+      data: [{ type: "builds", id: build_id }]
+    })
+  end
+
+  if ENV.fetch("TESTFLIGHT_EXTERNAL_AUTO_NOTIFY", "1") == "1"
+    client.patch("/v1/buildBetaDetails/#{build_id}", {
+      data: { type: "buildBetaDetails", id: build_id, attributes: { autoNotifyEnabled: true } }
+    }, allowed_statuses: [409])
+  end
+
+  beta_detail = client.get("/v1/builds/#{build_id}/buildBetaDetail").fetch("data")
+  external_state = beta_detail.dig("attributes", "externalBuildState").to_s
+  if external_state == "READY_FOR_BETA_SUBMISSION" && ENV.fetch("TESTFLIGHT_EXTERNAL_AUTO_SUBMIT", "1") == "1"
+    submission = client.post("/v1/betaAppReviewSubmissions", {
+      data: {
+        type: "betaAppReviewSubmissions",
+        relationships: { build: { data: { type: "builds", id: build_id } } }
+      }
+    }).fetch("data")
+    external_state = submission.dig("attributes", "betaReviewState").to_s
+  end
+
+  external_testers = client.get("/v1/betaGroups/#{external_group_id}/betaTesters", { "limit" => "200" })
+  external_tester_data = external_testers.fetch("data")
+  external_emails = external_tester_data.map { |tester| tester.dig("attributes", "email").to_s.downcase }
+  missing_emails = primary_tester_emails.reject { |email| external_emails.include?(email.downcase) }
+  abort_release("外测组缺少主测试员：#{missing_emails.join(', ')}") unless missing_emails.empty?
+
+  min_external_testers = ENV.fetch("TESTFLIGHT_MIN_EXTERNAL_TESTERS", primary_tester_emails.length.to_s).to_i
+  abort_release("外测组测试员少于 #{min_external_testers} 人") if external_tester_data.length < min_external_testers
+
+  if external_state == "IN_BETA_TESTING"
+    external_tester_data.select do |tester|
+      primary_tester_emails.map(&:downcase).include?(tester.dig("attributes", "email").to_s.downcase) &&
+        tester.dig("attributes", "state") == "NOT_INVITED"
+    end.each do |tester|
+      client.post("/v1/betaTesterInvitations", {
+        data: {
+          type: "betaTesterInvitations",
+          relationships: {
+            app: { data: { type: "apps", id: app.fetch("id") } },
+            betaTester: { data: { type: "betaTesters", id: tester.fetch("id") } }
+          }
+        }
+      })
+      external_invited_count += 1
+    end
+  end
+end
+
 localizations = client.get("/v1/builds/#{build_id}/betaBuildLocalizations", { "limit" => "20" }).fetch("data")
 localization = localizations.find { |item| item.dig("attributes", "locale") == "zh-Hans" } || localizations.first
 actual_whats_new = localization&.dig("attributes", "whatsNew").to_s
@@ -219,4 +324,5 @@ abort_release("What to Test 回读不一致") unless actual_whats_new == whats_n
 
 puts "Mimitag TestFlight 内测发布成功：#{metadata[:version]} (#{metadata[:build]}) " \
      "build=#{build_id} group=#{group.dig('attributes', 'name')} testers=#{tester_count} " \
-     "invitations=#{invited_count} whatsNew=verified"
+     "invitations=#{invited_count} whatsNew=verified external=#{external_state} " \
+     "externalInvitations=#{external_invited_count}"
