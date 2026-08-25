@@ -263,6 +263,7 @@ final class SessionStore: ObservableObject {
     let carStatusSnapshotCoordinator: CarStatusSnapshotCoordinator
     let runtimeCompletionNotificationsEnabled: Bool
     let historySavingsNoticeStore: HistorySavingsNoticeStore
+    let historySnapshotStore: any HistorySnapshotPersisting
     let queuedTurnStore: any QueuedTurnPersisting
     let terminalStreamStore = TerminalStreamStore()
     let hostWarmSnapshotCache = HostWarmSnapshotCache()
@@ -535,6 +536,7 @@ final class SessionStore: ObservableObject {
         sessionReminderStore: SessionReminderStore? = nil,
         carStatusSnapshotCoordinator: CarStatusSnapshotCoordinator? = nil,
         historySavingsNoticeStore: HistorySavingsNoticeStore? = nil,
+        historySnapshotStore: (any HistorySnapshotPersisting)? = nil,
         queuedTurnStore: (any QueuedTurnPersisting)? = nil,
         sessionReminderScheduler: (any SessionReminderScheduling)? = nil,
         sessionReminderNow: @escaping () -> Date = Date.init,
@@ -630,6 +632,16 @@ final class SessionStore: ObservableObject {
             self.historySavingsNoticeStore = HistorySavingsNoticeStore(defaults: defaults)
         } else {
             self.historySavingsNoticeStore = HistorySavingsNoticeStore()
+        }
+        if let historySnapshotStore {
+            self.historySnapshotStore = historySnapshotStore
+        } else if clientFactory != nil {
+            self.historySnapshotStore = FileHistorySnapshotStore(
+                directoryURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("SessionStore.HistorySnapshots.\(UUID().uuidString)", isDirectory: true)
+            )
+        } else {
+            self.historySnapshotStore = FileHistorySnapshotStore()
         }
         if let queuedTurnStore {
             self.queuedTurnStore = queuedTurnStore

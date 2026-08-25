@@ -280,6 +280,12 @@ struct HistoryLoadSignature: Equatable {
         self.revision = session.revision
         self.lastSeq = session.lastSeq
     }
+
+    init(updatedAt: Date?, revision: ModelRevision?, lastSeq: EventSequence?) {
+        self.updatedAt = updatedAt
+        self.revision = revision
+        self.lastSeq = lastSeq
+    }
 }
 
 struct ExternalActivityHistoryAttempt: Equatable {

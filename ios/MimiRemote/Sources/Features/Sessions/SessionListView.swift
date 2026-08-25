@@ -291,20 +291,30 @@ enum SessionLibraryStatusFilter: String, CaseIterable, Identifiable {
 
 /// 会话生命周期是列表的第一层信息。保持输入顺序，只负责把仍在进行的任务和历史记录分开。
 struct SessionListPartition: Equatable {
+    let attention: [AgentSession]
     let active: [AgentSession]
     let pinned: [AgentSession]
     let history: [AgentSession]
 
-    init(active: [AgentSession], pinned: [AgentSession] = [], history: [AgentSession]) {
+    init(
+        attention: [AgentSession] = [],
+        active: [AgentSession],
+        pinned: [AgentSession] = [],
+        history: [AgentSession]
+    ) {
+        self.attention = attention
         self.active = active
         self.pinned = pinned
         self.history = history
     }
 
     init(sessions: [AgentSession]) {
-        active = sessions.filter(\.isRunning)
+        let snapshot = TaskAttentionSnapshot(sessions: sessions)
+        let attentionIDs = Set(snapshot.attentionItems.map(\.id))
+        attention = snapshot.attentionItems.map(\.session)
+        active = sessions.filter { $0.isRunning && !attentionIDs.contains($0.id) }
         pinned = []
-        history = sessions.filter { !$0.isRunning }
+        history = sessions.filter { !$0.isRunning && !attentionIDs.contains($0.id) }
     }
 }
 
@@ -413,6 +423,15 @@ struct SessionListView: View {
             }
 
             if presentationState == .content {
+                if !sessionPartition.attention.isEmpty {
+                    sessionSection(
+                        title: "\(L10n.text("ui.need_to_be_processed"))  \(sessionPartition.attention.count)",
+                        sessions: sessionPartition.attention,
+                        isActiveSection: true,
+                        tokens: tokens
+                    )
+                }
+
                 if !sessionPartition.active.isEmpty {
                     sessionSection(
                         title: L10n.text("ui.in_progress"),
@@ -760,11 +779,21 @@ struct SessionListView: View {
             latestByID[session.id] = session
         }
         let history = membership.historyIDs.compactMap { latestByID[$0] }
-        let pinned = history.filter { sessionStore.isSessionPinned($0.id) }
+        let attentionSnapshot = TaskAttentionSnapshot(sessions: visibleSessions)
+        let attentionIDs = Set(attentionSnapshot.attentionItems.map(\.id))
+        let attention = attentionSnapshot.attentionItems.map(\.session)
+        let pinned = history.filter {
+            !attentionIDs.contains($0.id) && sessionStore.isSessionPinned($0.id)
+        }
         return SessionListPartition(
-            active: membership.activeIDs.compactMap { latestByID[$0] },
+            attention: attention,
+            active: membership.activeIDs.compactMap { latestByID[$0] }.filter {
+                !attentionIDs.contains($0.id)
+            },
             pinned: pinned,
-            history: history.filter { !sessionStore.isSessionPinned($0.id) }
+            history: history.filter {
+                !attentionIDs.contains($0.id) && !sessionStore.isSessionPinned($0.id)
+            }
         )
     }
 

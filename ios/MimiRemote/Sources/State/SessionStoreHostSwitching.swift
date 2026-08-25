@@ -89,6 +89,9 @@ extension SessionStore {
         recentWorkspaceStore.remove(profileID: profileID)
         sessionListPreferenceStore.remove(profileID: profileID)
         sessionHistoryReadStateStore.remove(profileID: profileID)
+        Task {
+            await historySnapshotStore.remove(profileID: profileID)
+        }
         sessionControlStateStore.remove(profileID: profileID)
         sessionReminderStore.remove(profileID: profileID)
         sessionReminderScheduler.cancel(profileID: profileID)

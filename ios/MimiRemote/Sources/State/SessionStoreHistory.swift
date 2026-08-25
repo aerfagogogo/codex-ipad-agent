@@ -320,10 +320,38 @@ extension SessionStore {
         if canReuseFreshEmptyHistory(for: session) {
             return true
         }
+        let hydratedFromDisk: Bool
+        if !conversationStore.hasLoadedHistory(sessionID: session.id) {
+            hydratedFromDisk = await hydrateHistorySnapshotIfAvailable(for: session)
+        } else {
+            hydratedFromDisk = false
+        }
+        // 本地快照只负责首屏。即使签名看起来没变，也在后台向远端权威源对账一次。
+        if hydratedFromDisk {
+            return await loadHistory(for: session)
+        }
         guard !canReuseLoadedHistory(for: session, loadMode: .full) else {
             return true
         }
         return await loadHistory(for: session)
+    }
+
+    @discardableResult
+    func hydrateHistorySnapshotIfAvailable(for session: AgentSession) async -> Bool {
+        let profileID = appStore.activeHostScope.profileID
+        guard let snapshot = await historySnapshotStore.load(profileID: profileID, sessionID: session.id),
+              let page = snapshot.page else {
+            return false
+        }
+        applyHistoryFirstPage(page, sessionID: session.id)
+        updateHistoryPageState(
+            sessionID: session.id,
+            page: page,
+            preserveExistingCursorOnEmptyPage: true
+        )
+        historyLoadedSignatureBySessionID[session.id] = snapshot.signature
+        historyLoadedQualityBySessionID[session.id] = page.loadMode == .full ? .full : .summary
+        return true
     }
 
     func canReuseFreshEmptyHistory(for session: AgentSession) -> Bool {
@@ -644,6 +672,11 @@ extension SessionStore {
         updateHistoryPageState(sessionID: sessionID, page: result.page, preserveExistingCursorOnEmptyPage: true)
         historyLoadedSignatureBySessionID[sessionID] = job.sessionSignature
         historyLoadedQualityBySessionID[sessionID] = job.loadMode == .full ? .full : .summary
+        persistHistorySnapshot(
+            result.page,
+            sessionID: sessionID,
+            signature: job.sessionSignature
+        )
         if job.loadMode == .full,
            let activityRevision = job.externalActivityRevision,
            let activityTurnID = job.externalActivityTurnID?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -675,6 +708,22 @@ extension SessionStore {
             setStatusMessage(effectiveSuccessStatusMessage)
         }
         return true
+    }
+
+    func persistHistorySnapshot(
+        _ page: HistoryMessagesPage,
+        sessionID: SessionID,
+        signature: HistoryLoadSignature
+    ) {
+        let profileID = appStore.activeHostScope.profileID
+        let snapshot = PersistedHistorySnapshot(
+            sessionID: sessionID,
+            signature: signature,
+            page: page
+        )
+        Task {
+            await historySnapshotStore.save(snapshot, profileID: profileID)
+        }
     }
 
     func failHistoryLoadJob(

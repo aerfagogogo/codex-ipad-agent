@@ -1408,12 +1408,54 @@ final class ConversationDataFlowTests: XCTestCase {
 
         let partition = SessionListPartition(sessions: sessions)
 
-        XCTAssertEqual(partition.active.map(\.id), ["running", "approval"])
-        XCTAssertEqual(partition.history.map(\.id), ["failed", "history"])
+        XCTAssertEqual(partition.attention.map(\.id), ["approval", "failed"])
+        XCTAssertEqual(partition.active.map(\.id), ["running"])
+        XCTAssertEqual(partition.history.map(\.id), ["history"])
         XCTAssertTrue(SessionLibraryStatusFilter.active.includes(sessions[1]))
         XCTAssertTrue(SessionLibraryStatusFilter.needsAttention.includes(sessions[1]))
         XCTAssertTrue(SessionLibraryStatusFilter.history.includes(sessions[2]))
         XCTAssertTrue(SessionLibraryStatusFilter.needsAttention.includes(sessions[2]))
+    }
+
+    func testHistorySnapshotHydratesConversationBeforeRemoteRefresh() async throws {
+        let suiteName = "ConversationDataFlowTests.HistorySnapshot.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let appStore = AppStore(defaults: defaults, tokenStore: TokenStore(keychain: TestKeychainOperations()))
+        let project = makeProject(id: "project-cached-history")
+        let session = makeSession(
+            id: "session-cached-history",
+            projectID: project.id,
+            title: "缓存会话",
+            status: SessionStatus.history.rawValue,
+            source: "codex"
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ConversationDataFlowTests.HistorySnapshot.\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let snapshotStore = FileHistorySnapshotStore(directoryURL: directory)
+        let snapshot = PersistedHistorySnapshot(
+            sessionID: session.id,
+            signature: HistoryLoadSignature(session: session),
+            page: HistoryMessagesPage(messages: [
+                CodexHistoryMessage(role: "assistant", content: "本地首屏", createdAt: Date())
+            ])
+        )
+        await snapshotStore.save(snapshot, profileID: appStore.activeHostScope.profileID)
+        let conversationStore = ConversationStore()
+        let store = SessionStore(
+            appStore: appStore,
+            conversationStore: conversationStore,
+            logStore: LogStore(),
+            historySnapshotStore: snapshotStore,
+            clientFactory: { MockSessionStoreClient(projects: [project], sessions: [session]) }
+        )
+
+        let hydrated = await store.hydrateHistorySnapshotIfAvailable(for: session)
+
+        XCTAssertTrue(hydrated)
+        XCTAssertEqual(conversationStore.messages(for: session.id).map(\.content), ["本地首屏"])
     }
 
     func testSessionListPresentationRequiresOpenedWorkspaceOnlyAfterConnectionSucceeds() {
