@@ -13,13 +13,14 @@ This document records the product mechanisms retained before the standalone Mimi
 - Workspace context remains attached to a real session; tapping an item opens that session rather than a synthetic dashboard card.
 - Local-first recovery is a projection cache only. The remote runtime remains authoritative and refreshes after hydration.
 - Runtime-specific behavior belongs behind the shared session boundary instead of creating a parallel app navigation tree.
+- The personal MimiTag app icon is retained across the iOS, iPadOS, Catalyst, and macOS asset catalogs on the customization branch. Upstream `main` remains visually untouched.
 
 The first implementation lives in `TaskAttentionSnapshot` and the protected history snapshot store. It keeps MimiTag's useful operating model while using Mimi Remote's current session, approval, paging, and WebSocket paths.
 
 ## Deliberately not migrated
 
 - The first-class Team workspace, role cards, team conversation dashboard, and `/api/team` subsystem. They duplicate the session/task hierarchy and recreate the high-density multi-role UI that Remote Ops is meant to remove.
-- The `mimitag` app target, bundle identity, icons, signing configuration, and repository-wide rename. This fork follows the upstream Mimi Remote structure and brand.
+- The `mimitag` app target, bundle identity, signing configuration, and repository-wide rename. This fork follows the upstream Mimi Remote structure while its customization branch keeps the owner's MimiTag icon.
 - A separate `ClaudeCLIStore` and Claude-only navigation surface. Current Claude support stays in the shared runtime/session channel.
 - Personal workflow files and release metadata that do not affect the handheld operations experience.
 
