@@ -194,10 +194,29 @@ testers = client.get("/v1/betaGroups/#{group_id}/betaTesters", { "limit" => "200
 tester_count = testers.dig("meta", "paging", "total") || testers.fetch("data").length
 abort_release("目标内测组没有测试员") if tester_count.zero?
 
+# 内测组有关联测试员不等于邀请已经发出。首次发布时主动邀请仍处于
+# NOT_INVITED 的测试员，避免构建在 ASC 后台可见、手机端却收不到。
+invited_count = 0
+if ENV.fetch("TESTFLIGHT_INVITE_PENDING_TESTERS", "1") == "1"
+  testers.fetch("data").select { |tester| tester.dig("attributes", "state") == "NOT_INVITED" }.each do |tester|
+    client.post("/v1/betaTesterInvitations", {
+      data: {
+        type: "betaTesterInvitations",
+        relationships: {
+          app: { data: { type: "apps", id: app.fetch("id") } },
+          betaTester: { data: { type: "betaTesters", id: tester.fetch("id") } }
+        }
+      }
+    })
+    invited_count += 1
+  end
+end
+
 localizations = client.get("/v1/builds/#{build_id}/betaBuildLocalizations", { "limit" => "20" }).fetch("data")
 localization = localizations.find { |item| item.dig("attributes", "locale") == "zh-Hans" } || localizations.first
 actual_whats_new = localization&.dig("attributes", "whatsNew").to_s
 abort_release("What to Test 回读不一致") unless actual_whats_new == whats_new
 
-puts "Mimi TestFlight 内测发布成功：#{metadata[:version]} (#{metadata[:build]}) " \
-     "build=#{build_id} group=#{group.dig('attributes', 'name')} testers=#{tester_count} whatsNew=verified"
+puts "Mimitag TestFlight 内测发布成功：#{metadata[:version]} (#{metadata[:build]}) " \
+     "build=#{build_id} group=#{group.dig('attributes', 'name')} testers=#{tester_count} " \
+     "invitations=#{invited_count} whatsNew=verified"
