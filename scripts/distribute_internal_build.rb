@@ -152,6 +152,7 @@ expected_bundle_id = required_env("IOS_BUNDLE_ID")
 group_id = required_env("TESTFLIGHT_BETA_GROUP_ID")
 whats_new = required_env("TESTFLIGHT_WHATS_NEW")
 external_group_id = ENV.fetch("TESTFLIGHT_EXTERNAL_BETA_GROUP_ID", "").strip
+external_distribution_enabled = ENV.fetch("TESTFLIGHT_EXTERNAL_DISTRIBUTION", "0") == "1"
 primary_tester_emails = ENV.fetch("TESTFLIGHT_PRIMARY_TESTER_EMAILS", "")
                            .split(/[\s,;]+/).map(&:strip).reject(&:empty?).uniq
 ipa = ARGV.fetch(0) { abort_release("用法：distribute_internal_build.rb APP.ipa|--resume") }
@@ -254,7 +255,8 @@ end
 
 external_state = "disabled"
 external_invited_count = 0
-unless external_group_id.empty?
+if external_distribution_enabled
+  abort_release("已启用外测但没有 TESTFLIGHT_EXTERNAL_BETA_GROUP_ID") if external_group_id.empty?
   abort_release("已配置外测组但没有 TESTFLIGHT_PRIMARY_TESTER_EMAILS") if primary_tester_emails.empty?
 
   external_group = client.get("/v1/betaGroups/#{external_group_id}").fetch("data")
