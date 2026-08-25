@@ -118,7 +118,7 @@ def tester_name_parts(email)
   [first_name, last_name]
 end
 
-def ensure_external_tester(client, app_id, group_id, email)
+def ensure_beta_tester(client, app_id, group_id, email)
   tester = client.get("/v1/betaTesters", {
     "filter[email]" => email,
     "filter[apps]" => app_id,
@@ -229,6 +229,10 @@ end
 verified = client.get("/v1/betaGroups/#{group_id}/builds", { "limit" => "200" }).fetch("data")
 abort_release("构建未成功关联内测组") unless verified.any? { |item| item.fetch("id") == build_id }
 
+primary_tester_emails.each do |email|
+  ensure_beta_tester(client, app.fetch("id"), group_id, email)
+end
+
 # 发布成功不能只看组关联。继续回读测试员和 What to Test，避免产生“组里没有人”
 # 或测试说明写入失败但脚本仍报成功的半完成状态。
 testers = client.get("/v1/betaGroups/#{group_id}/betaTesters", { "limit" => "200" })
@@ -239,7 +243,12 @@ abort_release("目标内测组没有测试员") if tester_count.zero?
 # NOT_INVITED 的测试员，避免构建在 ASC 后台可见、手机端却收不到。
 invited_count = 0
 if ENV.fetch("TESTFLIGHT_INVITE_PENDING_TESTERS", "1") == "1"
-  testers.fetch("data").select { |tester| tester.dig("attributes", "state") == "NOT_INVITED" }.each do |tester|
+  internal_invite_emails = primary_tester_emails.map(&:downcase)
+  pending_internal_testers = testers.fetch("data").select do |tester|
+    tester.dig("attributes", "state") == "NOT_INVITED" &&
+      (internal_invite_emails.empty? || internal_invite_emails.include?(tester.dig("attributes", "email").to_s.downcase))
+  end
+  pending_internal_testers.each do |tester|
     client.post("/v1/betaTesterInvitations", {
       data: {
         type: "betaTesterInvitations",
@@ -263,7 +272,7 @@ if external_distribution_enabled
   abort_release("目标外测组却被配置成内部组") if external_group.dig("attributes", "isInternalGroup") == true
 
   primary_tester_emails.each do |email|
-    ensure_external_tester(client, app.fetch("id"), external_group_id, email)
+    ensure_beta_tester(client, app.fetch("id"), external_group_id, email)
   end
 
   external_builds = client.get("/v1/betaGroups/#{external_group_id}/builds", { "limit" => "200" }).fetch("data")
