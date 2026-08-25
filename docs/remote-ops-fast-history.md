@@ -6,6 +6,8 @@
 
 从旧 MimiTag 保留的只有任务岛状态模型：Codex 与 Claude 会话统一去重，审批、待输入、失败优先，点击仍进入真实会话。它作为原会话列表顶部的“需要处理”分组存在，不重复展示任务。
 
+完整的旧仓库吸收取舍见 [`legacy-mimitag-extraction.md`](legacy-mimitag-extraction.md)。独立 Team 工作区、角色卡和 Claude 专用侧栏不会迁入；有价值的机制只通过统一 session 边界实现。
+
 ## FastNote 启发的同步方式
 
 借鉴的是 local-first 机制，不直接同步 Codex/Claude 的原始数据库或会话文件：
