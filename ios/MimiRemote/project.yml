@@ -1,6 +1,6 @@
 name: MimiRemote
 options:
-  bundleIdPrefix: com.gaixianggeng
+  bundleIdPrefix: com.aerfagogogo
   # 与当前工程的 Xcode 27 元数据保持一致，避免每次 XcodeGen 把 scheme 降级到旧版本。
   xcodeVersion: "27.0"
   deploymentTarget:
@@ -8,7 +8,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    DEVELOPMENT_TEAM: 9HZ89R58PZ
+    DEVELOPMENT_TEAM: FT75GFXD73
     # iOS 18–25 走普通材质与功能降级；iOS 26+ 继续启用 Liquid Glass 和新 Speech API。
     IPHONEOS_DEPLOYMENT_TARGET: "18.0"
     MACOSX_DEPLOYMENT_TARGET: "26.0"
@@ -68,7 +68,7 @@ targets:
           - iOS
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerfagogogo.mimitag
         PRODUCT_NAME: MimiRemote
         PRODUCT_MODULE_NAME: MimiRemote
         INFOPLIST_FILE: Resources/Info.plist
@@ -108,7 +108,7 @@ targets:
         buildPhase: resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimi.carstatuswidget
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerfagogogo.mimitag.carstatuswidget
         PRODUCT_NAME: MimiCarStatusWidget
         INFOPLIST_FILE: WidgetExtension/Info.plist
         CODE_SIGN_ENTITLEMENTS: WidgetExtension/MimiCarStatusWidget.entitlements
@@ -164,7 +164,7 @@ targets:
         product: SnapshotTesting
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimiTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerfagogogo.mimitagTests
         SDKROOT: auto
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: "YES"
@@ -182,7 +182,7 @@ targets:
       - target: MimiRemote
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.gaixianggeng.mimiUITests
+        PRODUCT_BUNDLE_IDENTIFIER: com.aerfagogogo.mimitagUITests
         GENERATE_INFOPLIST_FILE: "YES"
         TARGETED_DEVICE_FAMILY: "1,2"
         TEST_TARGET_NAME: MimiRemote

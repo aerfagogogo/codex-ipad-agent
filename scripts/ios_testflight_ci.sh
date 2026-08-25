@@ -4,8 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="$ROOT_DIR/ios/MimiRemote/MimiRemote.xcodeproj"
 SCHEME="MimiRemote"
-IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.gaixianggeng.mimi}"
-IOS_WIDGET_BUNDLE_ID="${IOS_WIDGET_BUNDLE_ID:-com.gaixianggeng.mimi.carstatuswidget}"
+IOS_BUNDLE_ID="${IOS_BUNDLE_ID:-com.aerfagogogo.mimitag}"
+IOS_WIDGET_BUNDLE_ID="${IOS_WIDGET_BUNDLE_ID:-com.aerfagogogo.mimitag.carstatuswidget}"
+IOS_APP_GROUP_ID="${IOS_APP_GROUP_ID:-group.com.aerfagogogo.mimitag}"
 IOS_TESTFLIGHT_UPLOAD="${IOS_TESTFLIGHT_UPLOAD:-1}"
 IOS_TESTFLIGHT_VALIDATE="${IOS_TESTFLIGHT_VALIDATE:-0}"
 TESTFLIGHT_WHATS_NEW="${TESTFLIGHT_WHATS_NEW:-}"
@@ -222,7 +223,7 @@ for signed_bundle in "$archive/Products/Applications/MimiRemote.app" "$widget_pa
   entitlements_plist="$output/$(basename "$signed_bundle").entitlements.plist"
   codesign -d --entitlements :- "$signed_bundle" > "$entitlements_plist" 2>/dev/null
   app_groups="$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.application-groups' "$entitlements_plist" 2>/dev/null || true)"
-  [[ "$app_groups" == *"group.com.gaixianggeng.mimi"* ]] \
+  [[ "$app_groups" == *"$IOS_APP_GROUP_ID"* ]] \
     || fail "$(basename "$signed_bundle") missing shared App Group entitlement"
 done
 echo "ios-testflight-ci: archive toolchain BuildMachineOSBuild=$(plutil -extract BuildMachineOSBuild raw -o - "$archive_info") DTXcodeBuild=$(plutil -extract DTXcodeBuild raw -o - "$archive_info") DTSDKName=$(plutil -extract DTSDKName raw -o - "$archive_info")"

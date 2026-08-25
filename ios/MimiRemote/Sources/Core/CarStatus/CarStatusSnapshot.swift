@@ -120,7 +120,7 @@ struct CarStatusSnapshotV1: Codable, Equatable {
 }
 
 struct CarStatusSnapshotStore {
-    static let appGroupID = "group.com.gaixianggeng.mimi"
+    static let appGroupID = "group.com.aerfagogogo.mimitag"
     static let snapshotKey = "carStatus.snapshot.v1"
 
     static func load(defaults: UserDefaults? = UserDefaults(suiteName: appGroupID)) -> CarStatusSnapshotV1? {

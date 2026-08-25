@@ -1,5 +1,5 @@
 /* Localized system permission prompts. Keep the base Info.plist in English as the fallback. */
-"CFBundleDisplayName" = "mimi";
+"CFBundleDisplayName" = "Mimitag";
 "NSLocalNetworkUsageDescription" = "Allow Mimi Remote to find and connect to a development environment you configure.";
 "NSCameraUsageDescription" = "Allow Mimi Remote to scan pairing QR codes and take photos you choose to attach to messages.";
 "NSMicrophoneUsageDescription" = "Allow Mimi Remote to turn your speech into text in the message composer.";

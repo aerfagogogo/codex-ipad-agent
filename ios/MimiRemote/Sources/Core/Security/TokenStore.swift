@@ -51,7 +51,7 @@ enum TokenStoreError: LocalizedError {
 }
 
 struct TokenStore {
-    private let service = "com.gaixianggeng.mimiremote"
+    private let service = "com.aerfagogogo.mimitag"
     private let legacyAccount = "agentd-token"
     private let profileAccountPrefix = "agentd-profile."
     private let keychain: any KeychainOperating

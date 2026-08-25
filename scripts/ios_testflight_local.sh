@@ -414,7 +414,7 @@ widget_profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$widget_profile
 widget_profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$widget_profile_plist")"
 widget_profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$widget_profile_plist")"
 widget_profile_expiration="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$widget_profile_plist")"
-widget_bundle_id="${IOS_WIDGET_BUNDLE_ID:-com.gaixianggeng.mimi.carstatuswidget}"
+widget_bundle_id="${IOS_WIDGET_BUNDLE_ID:-com.aerfagogogo.mimitag.carstatuswidget}"
 [[ "$widget_profile_team" == "$DEVELOPMENT_TEAM" ]] || fail "widget provisioning profile team mismatch"
 [[ "$widget_profile_app_id" == "$DEVELOPMENT_TEAM.$widget_bundle_id" ]] || fail "widget provisioning profile bundle id mismatch"
 if [[ -n "${IOS_WIDGET_EXPECTED_PROVISIONING_PROFILE_NAME:-}" ]]; then
@@ -425,8 +425,9 @@ ruby -rtime -e 'exit(Time.parse(ARGV.fetch(0)) > Time.now ? 0 : 1)' "$widget_pro
 
 for entitlement_plist in "$profile_plist" "$widget_profile_plist"; do
   profile_app_groups="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' "$entitlement_plist" 2>/dev/null || true)"
-  [[ "$profile_app_groups" == *"group.com.gaixianggeng.mimi"* ]] \
-    || fail "provisioning profile missing group.com.gaixianggeng.mimi App Group"
+  expected_app_group="${IOS_APP_GROUP_ID:-group.com.aerfagogogo.mimitag}"
+  [[ "$profile_app_groups" == *"$expected_app_group"* ]] \
+    || fail "provisioning profile missing $expected_app_group App Group"
 done
 
 installed_widget_profile="$profiles_dir/$widget_profile_uuid.mobileprovision"
